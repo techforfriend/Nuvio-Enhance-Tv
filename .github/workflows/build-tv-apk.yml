@@ -29,7 +29,11 @@ jobs:
           java-version: 17
 
       - name: Build TV APK (fullDebug)
-        run: ./gradlew :app:assembleFullDebug --no-daemon
+        # --stacktrace: run 42340494523 failed in :app:packageFullDebug
+        # (IncrementalSplitterRunnable) with an empty exception message, so
+        # the cause is invisible without a stack trace. Remove once the
+        # packaging failure is diagnosed.
+        run: ./gradlew :app:assembleFullDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
