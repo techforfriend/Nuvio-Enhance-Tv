@@ -1,4 +1,4 @@
-# Nuvio KE
+# Nuvio enhanced plus tv
 
 An unofficial Android TV fork of [NuvioMedia's Nuvio](https://github.com/NuvioMedia/NuvioTV): every screen redesigned,
 playback tuned for big 4K remuxes and lossless audio, and everything a Stremio addon already does (scrapers, debrid,
