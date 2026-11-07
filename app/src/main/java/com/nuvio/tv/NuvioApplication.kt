@@ -48,6 +48,14 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        // CloudStream: restore the plugin registry early (SharedPreferences read
+        // + Dex runtime context) so stream resolution can use installed
+        // providers. Plugin loading itself stays lazy — first stream/search call.
+        // Uses filesDir/cloudstream/packages and prefs nuvio_cloudstream, which
+        // the X15 legacy sweep below does NOT touch (it deletes cs_extensions /
+        // plugin_code / cs3_plugin_preferences).
+        com.nuvio.tv.core.cloudstream.CloudStreamStorage.initialize(this)
+        com.nuvio.tv.core.cloudstream.CloudStreamRepository.initialize()
         // C-1: hydrate the AFR fps cache from disk (background load) so cold
         // rewatches take the preflight hit path (switch before prepare).
         com.nuvio.tv.core.player.AfrFpsCache.initFrameRateCachePersistence(this)

@@ -179,6 +179,7 @@ sealed class Screen(val route: String) {
         const val ENTRY_KEY = "settings_entry"
     }
     data object AddonManager : Screen("addon_manager")
+    data object CloudStreamManager : Screen("cloudstream_manager")
     data object CatalogOrder : Screen("catalog_order")
     data object ManageProfiles : Screen("manage_profiles")
     data object AuthQrSignIn : Screen("auth_qr_sign_in")

@@ -103,3 +103,37 @@
 # Native code reflects into multiple classes/methods under is.xyz.mpv,
 # so keep the whole package to avoid JNI lookup crashes after R8.
 -keep class is.xyz.mpv.** { *; }
+
+# ── CloudStream (CS3) runtime ─────────────────────────────────────────────────
+# Plugins are loaded at runtime via PathClassLoader and reflect into the
+# runtime API, so their classes and the host's CS3 layer must survive R8.
+# Adapted from Nuvio Enhanced-2's proguard-cloudstream-full.pro; -dontoptimize
+# is deliberately left out — the release build stays optimised unless a
+# runtime plugin break proves otherwise.
+-keep class com.lagradost.cloudstream3.** { *; }
+-keep class com.lagradost.api.** { *; }
+-keep class com.lagradost.nicehttp.** { *; }
+-keep class com.nuvio.tv.core.cloudstream.** { *; }
+-keep class com.fasterxml.jackson.** { *; }
+-keepnames class com.fasterxml.jackson.** { *; }
+-keep class org.jsoup.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-keep class com.uwetrottmann.tmdb2.** { *; }
+-keep class me.xdrop.fuzzywuzzy.** { *; }
+-keep class dev.whyoleg.cryptography.** { *; }
+-keep class org.schabi.newpipe.extractor.** { *; }
+-keep class kotlinx.datetime.** { *; }
+-keep class kotlinx.serialization.** { *; }
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-dontwarn com.lagradost.**
+-dontwarn com.fasterxml.jackson.**
+-dontwarn org.jsoup.**
+-dontwarn org.mozilla.javascript.**
+-dontwarn com.uwetrottmann.tmdb2.**
+-dontwarn me.xdrop.fuzzywuzzy.**
+-dontwarn dev.whyoleg.cryptography.**
+-dontwarn org.schabi.newpipe.extractor.**
+-dontwarn kotlinx.datetime.**
+-dontwarn okhttp3.internal.**
+-dontwarn okio.**

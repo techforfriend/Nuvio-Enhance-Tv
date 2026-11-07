@@ -25,6 +25,8 @@ import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -65,6 +68,7 @@ import com.nuvio.tv.domain.model.MetaPreview
 import com.nuvio.tv.domain.model.isPlaceholder
 import com.nuvio.tv.ui.components.NuvioScrollDefaults
 import com.nuvio.tv.ui.components.marquee.MarqueeActionTile
+import com.nuvio.tv.ui.components.marquee.MarqueeGlassTextButton
 import com.nuvio.tv.ui.theme.NuvioTheme
 import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.util.StableRef
@@ -784,19 +788,34 @@ internal fun MarqueeRowTitle(row: HeroCarouselRow, active: () -> Boolean) {
         )
     }
     val titleSuffix = row.titleSuffix
-    if (titleSuffix == null) {
+    val headerAction = row.headerAction
+    if (titleSuffix == null && headerAction == null) {
         title(titleModifier)
     } else {
-        Row(modifier = titleModifier, horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)) {
+        Row(
+            modifier = titleModifier,
+            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             title(Modifier.alignByBaseline().weight(1f, fill = false))
-            Text(
-                text = titleSuffix,
-                style = NuvioTheme.textStyles.meta,
-                color = marquee.onImage3,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.alignByBaseline()
-            )
+            if (titleSuffix != null) {
+                Text(
+                    text = titleSuffix,
+                    style = NuvioTheme.textStyles.meta,
+                    color = marquee.onImage3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.alignByBaseline()
+                )
+            }
+            if (headerAction != null) {
+                MarqueeGlassTextButton(
+                    label = headerAction.label,
+                    onClick = headerAction.onClick,
+                    icon = Icons.Filled.Layers,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+            }
         }
     }
 }

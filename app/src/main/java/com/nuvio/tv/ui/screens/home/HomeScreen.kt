@@ -33,6 +33,12 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.domain.model.MetaPreview
+import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
+import com.nuvio.tv.ui.screens.cloudstream.CloudStreamHomePlayTarget
+import com.nuvio.tv.ui.screens.cloudstream.CloudStreamHomeViewModel
+import com.nuvio.tv.ui.screens.settings.SettingsPickerOption
+import com.nuvio.tv.ui.screens.settings.SettingsPickerPanel
+import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.components.errorStateText
 import com.nuvio.tv.ui.components.posteroptions.PosterOptionsHost
 import androidx.compose.ui.text.AnnotatedString
@@ -47,7 +53,9 @@ private const val HOME_STABLE_GATE_TIMEOUT_MS = 5_000L
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
+    cloudStreamHomeViewModel: CloudStreamHomeViewModel = hiltViewModel(),
     onNavigateToDetail: (String, String, String) -> Unit,
+    onNavigateToCloudStreamStream: (CloudStreamHomePlayTarget) -> Unit = {},
     onContinueWatchingClick: (ContinueWatchingItem) -> Unit = { item ->
         onNavigateToDetail(
             when (item) {
@@ -75,8 +83,33 @@ fun HomeScreen(
     val hasCatalogContent = uiState.catalogRows.any { it.items.isNotEmpty() }
     val hasCollectionContent = uiState.homeRows.any { it is HomeRow.CollectionRow }
     val hasHeroContent = uiState.heroItems.isNotEmpty()
+    // CloudStream section: the selected provider's main-page sections, as Marquee
+    // rows appended after the addon rows. Empty while no CS3 plugin is runnable.
+    val cs3State by cloudStreamHomeViewModel.uiState.collectAsStateWithLifecycle()
+    val cs3Rows: StableList<HeroCarouselRow> = remember(
+        cs3State.sections,
+        cs3State.selectedProviderId,
+        cs3State.selectedProvider?.name,
+        modernPresentation.rows.list.size
+    ) {
+        val providerId = cs3State.selectedProviderId
+        val providerName = cs3State.selectedProvider?.name
+        if (providerId == null || providerName == null) {
+            StableList()
+        } else {
+            cloudStreamHomeRows(
+                sections = cs3State.sections,
+                providerId = providerId,
+                providerName = providerName,
+                baseRowIndex = modernPresentation.rows.list.size,
+                onProviderClick = { cloudStreamHomeViewModel.showProviderPicker() }
+            )
+        }
+    }
+    val hasCloudStreamContent = cs3State.sections.isNotEmpty()
     val modernPresentationReady =
         modernPresentation.rows.list.isNotEmpty() ||
+            hasCloudStreamContent ||
             (uiState.heroSectionEnabled && hasHeroContent && !hasCatalogContent && !hasCollectionContent)
     var showHomeContentWithAnimation by rememberSaveable { mutableStateOf(false) }
     var hasShownInitialHomeContent by rememberSaveable { mutableStateOf(false) }
@@ -133,8 +166,9 @@ fun HomeScreen(
             !uiState.isLoading &&
             initialCwResolved &&
             modernPresentationReady &&
-            // When addons are installed, require at least one catalog row.
-            (hasCatalogContent || uiState.installedAddonsCount == 0)
+            // When addons are installed, require at least one catalog row —
+            // unless the CloudStream section already has content.
+            (hasCatalogContent || hasCloudStreamContent || uiState.installedAddonsCount == 0)
         ) {
             Log.d("HomeGate", "RELEASE: catalogs=$hasCatalogContent cwResolved=$initialCwResolved cwItems=${uiState.continueWatchingItems.size} addons=${uiState.installedAddonsCount}")
             homeStableGateReleased = true
@@ -158,7 +192,8 @@ fun HomeScreen(
     val hasAnyContent = uiState.catalogRows.isNotEmpty() ||
         (uiState.continueWatchingEnabled && uiState.continueWatchingItems.isNotEmpty()) ||
         uiState.heroItems.isNotEmpty() ||
-        hasCollectionContent
+        hasCollectionContent ||
+        hasCloudStreamContent
     val showStartupLoader = when {
         !uiState.layoutPreferencesReady -> true
         uiState.isLoading && !hasAnyContent -> true
@@ -257,6 +292,20 @@ fun HomeScreen(
                         ModernHomeRoute(
                             viewModel = viewModel,
                             uiState = uiState,
+                            cloudStreamRows = cs3Rows,
+                            onCloudStreamCardClick = { itemId, _ ->
+                                val rest = itemId.removePrefix(
+                                    CloudStreamStreamSource.CS3_VIDEO_ID_PREFIX
+                                )
+                                val providerId = rest.substringBefore('|')
+                                val data = rest.substringAfter('|', "")
+                                cs3State.sections
+                                    .flatMap { it.items }
+                                    .firstOrNull {
+                                        it.providerId == providerId && it.data == data
+                                    }
+                                    ?.let { cloudStreamHomeViewModel.onCardClick(it) }
+                            },
                             onNavigateToDetail = onNavigateToDetailStable,
                             onContinueWatchingClick = onContinueWatchingClickStable,
                             onContinueWatchingStartFromBeginning = onContinueWatchingStartFromBeginningStable,
@@ -306,12 +355,51 @@ fun HomeScreen(
         controller = viewModel.posterOptions,
         onNavigateToDetail = onNavigateToDetail
     )
+
+    // CloudStream: provider picker (the pill in the first CS3 row's title) and
+    // the episode picker for series cards.
+    val cs3ShowProviderPicker by cloudStreamHomeViewModel.showProviderPicker.collectAsStateWithLifecycle()
+    if (cs3ShowProviderPicker) {
+        SettingsPickerPanel(
+            title = stringResource(R.string.cs3_home_provider_title),
+            options = cs3State.providers.map {
+                SettingsPickerOption(it.metadata.id.value, it.metadata.name)
+            },
+            selectedValue = cs3State.selectedProviderId ?: "",
+            onSelect = { cloudStreamHomeViewModel.selectProvider(it) },
+            onDismiss = { cloudStreamHomeViewModel.dismissProviderPicker() }
+        )
+    }
+    val cs3PendingEpisodes by cloudStreamHomeViewModel.pendingEpisodes.collectAsStateWithLifecycle()
+    cs3PendingEpisodes?.let { pick ->
+        SettingsPickerPanel(
+            title = pick.item.name,
+            options = pick.episodes.mapIndexed { index, episode ->
+                SettingsPickerOption(index, cloudStreamEpisodeLabel(episode))
+            },
+            selectedValue = -1,
+            onSelect = { index ->
+                cloudStreamHomeViewModel.onEpisodeSelected(pick.episodes[index])
+            },
+            onDismiss = { cloudStreamHomeViewModel.dismissEpisodePicker() }
+        )
+    }
+
+    // A resolved card click navigates to the Stream screen once.
+    val cs3PendingPlay by cloudStreamHomeViewModel.pendingPlay.collectAsStateWithLifecycle()
+    LaunchedEffect(cs3PendingPlay) {
+        val target = cs3PendingPlay ?: return@LaunchedEffect
+        onNavigateToCloudStreamStream(target)
+        cloudStreamHomeViewModel.consumePendingPlay()
+    }
 }
 
 @Composable
 private fun ModernHomeRoute(
     viewModel: HomeViewModel,
     uiState: HomeUiState,
+    cloudStreamRows: StableList<HeroCarouselRow> = StableList(),
+    onCloudStreamCardClick: (String, String) -> Unit = { _, _ -> },
     onNavigateToDetail: (String, String, String) -> Unit,
     onContinueWatchingClick: (ContinueWatchingItem) -> Unit,
     onContinueWatchingStartFromBeginning: (ContinueWatchingItem) -> Unit,
@@ -362,6 +450,8 @@ private fun ModernHomeRoute(
         failedEnrichmentIds = failedEnrichmentIds,
         trailerPreviewUrls = viewModel.trailerPreviewUrls,
         trailerPreviewAudioUrls = viewModel.trailerPreviewAudioUrls,
+        cloudStreamRows = cloudStreamRows,
+        onCloudStreamCardClick = onCloudStreamCardClick,
         onNavigateToDetail = onNavigateToDetail,
         onContinueWatchingClick = onContinueWatchingClick,
         onContinueWatchingStartFromBeginning = onContinueWatchingStartFromBeginning,

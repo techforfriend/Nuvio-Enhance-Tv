@@ -27,6 +27,7 @@ internal object SettingsAccess {
         Screen.ManageProfiles.route,
         Screen.AuthQrSignIn.route,
         Screen.AddonManager.route,
+        Screen.CloudStreamManager.route,
         Screen.CatalogOrder.route,
         Screen.Collections.route,
         Screen.CollectionEditor.route,

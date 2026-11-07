@@ -27,6 +27,7 @@ import com.nuvio.tv.ui.screens.detail.MetaDetailsScreen
 import com.nuvio.tv.ui.screens.home.HomeScreen
 import com.nuvio.tv.ui.screens.addon.AddonManagerScreen
 import com.nuvio.tv.ui.screens.addon.CatalogOrderScreen
+import com.nuvio.tv.ui.screens.cloudstream.CloudStreamManagerScreen
 import com.nuvio.tv.ui.screens.library.LibraryScreen
 import com.nuvio.tv.livetv.ui.LiveTvScreen
 import com.nuvio.tv.livetv.ui.LiveTvSourcesScreen
@@ -154,6 +155,24 @@ fun NuvioNavHost(
                 onContinueWatchingPlayManually = { item ->
                     navController.navigate(
                         continueWatchingStreamRoute(item, manualSelection = true)
+                    )
+                },
+                onNavigateToCloudStreamStream = { target ->
+                    // Direct CS3 play from a Home card: no Detail exists for a CS3
+                    // title, so back returns to Home and contentId stays blank so the
+                    // Stream screen never tries to open Detail for it.
+                    navController.navigate(
+                        Screen.Stream.createRoute(
+                            videoId = target.videoId,
+                            contentType = target.contentType,
+                            title = target.title,
+                            poster = target.posterUrl,
+                            season = target.season,
+                            episode = target.episode,
+                            contentId = "",
+                            contentName = target.title,
+                            returnToHomeOnBack = true
+                        )
                     )
                 },
                 onNavigateToFolderDetail = { collectionId, folderId ->
@@ -711,6 +730,7 @@ fun NuvioNavHost(
                 entryName = settingsEntry,
                 onEntryConsumed = { backStackEntry.savedStateHandle[Screen.Settings.ENTRY_KEY] = null },
                 onNavigateToAddons = { navController.navigate(Screen.AddonManager.route) },
+                onNavigateToCloudStream = { navController.navigate(Screen.CloudStreamManager.route) },
                 onNavigateToCatalogOrder = { navController.navigate(Screen.CatalogOrder.route) },
                 onNavigateToCollections = { navController.navigate(Screen.Collections.route) },
                 onNavigateToAuthQrSignIn = { navController.navigate(Screen.AuthQrSignIn.route) },
@@ -747,6 +767,10 @@ fun NuvioNavHost(
 
         composable(Screen.AddonManager.route) {
             AddonManagerScreen(onBackPress = { navController.popBackStack() })
+        }
+
+        composable(Screen.CloudStreamManager.route) {
+            CloudStreamManagerScreen(onBackPress = { navController.popBackStack() })
         }
 
         composable(Screen.CatalogOrder.route) {

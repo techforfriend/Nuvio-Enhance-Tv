@@ -3,6 +3,8 @@ package com.nuvio.tv.data.repository
 import android.content.Context
 import android.util.Log
 import com.nuvio.tv.R
+import com.nuvio.tv.core.cloudstream.CloudStreamRepository
+import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
 import com.nuvio.tv.core.di.aioStreamDataUserAgent
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.network.safeAddonApiCall
@@ -79,7 +81,8 @@ class StreamRepositoryImpl @Inject constructor(
     private val api: AddonApi,
     private val addonRepository: AddonRepository,
     private val profileManager: ProfileManager,
-    private val healthStore: AddonHealthStore
+    private val healthStore: AddonHealthStore,
+    private val cloudStreamStreamSource: CloudStreamStreamSource
 ) : StreamRepository {
 
     /**
@@ -144,7 +147,9 @@ class StreamRepositoryImpl @Inject constructor(
                 fetchStreamsFromAllSources(
                     type = type,
                     videoId = videoId,
-                    addons = sourceConfiguration.addons
+                    addons = sourceConfiguration.addons,
+                    season = season,
+                    episode = episode
                 )
             }
         )
@@ -169,7 +174,9 @@ class StreamRepositoryImpl @Inject constructor(
     private fun fetchStreamsFromAllSources(
         type: String,
         videoId: String,
-        addons: List<Addon>
+        addons: List<Addon>,
+        season: Int? = null,
+        episode: Int? = null
     ): Flow<NetworkResult<List<AddonStreams>>> = flow {
         emit(NetworkResult.Loading)
         // P0 instrument: whole-scrape wall time. Grep anchor: SCRAPE_TOTAL.
@@ -182,6 +189,28 @@ class StreamRepositoryImpl @Inject constructor(
             }
 
             val attemptedAddonNames = streamAddons.map { (addon, _) -> addon.displayName }
+            // CloudStream counts as one extra source when an IMDb id is present and
+            // at least one provider is installed, enabled and verified — or when the
+            // video id names a CS3 title directly (Home section play, "cs3:...").
+            val isDirectCs3VideoId =
+                videoId.trim().startsWith(CloudStreamStreamSource.CS3_VIDEO_ID_PREFIX)
+            val cs3Active = (isDirectCs3VideoId ||
+                cloudStreamStreamSource.imdbIdFromVideoId(videoId) != null) &&
+                CloudStreamRepository.runnablePlugins().isNotEmpty()
+            val cs3ProviderNames = if (cs3Active) {
+                if (isDirectCs3VideoId) {
+                    val directProviderId = videoId.trim()
+                        .removePrefix(CloudStreamStreamSource.CS3_VIDEO_ID_PREFIX)
+                        .substringBefore('|').trim()
+                    CloudStreamRepository.runnablePlugins()
+                        .filter { it.metadata.id.value == directProviderId }
+                        .map { it.metadata.name }
+                } else {
+                    CloudStreamRepository.runnablePlugins().map { it.metadata.name }
+                }
+            } else {
+                emptyList()
+            }
             val attemptedFailures = java.util.Collections.synchronizedList(
                 mutableListOf<StreamAttemptFailure>()
             )
@@ -193,10 +222,10 @@ class StreamRepositoryImpl @Inject constructor(
                 // Channel to receive results as they complete
                 val resultChannel = Channel<AddonStreams>(Channel.UNLIMITED)
                 
-                // Track number of pending jobs; the last addon job's finally
-                // closes the channel. With no stream addons nothing would ever
+                // Track number of pending jobs; the last job's finally
+                // closes the channel. With no jobs nothing would ever
                 // close it, so close up front and let the drain loop fall through.
-                val totalJobs = streamAddons.size
+                val totalJobs = streamAddons.size + if (cs3Active) 1 else 0
                 val completedJobs = java.util.concurrent.atomic.AtomicInteger(0)
                 if (totalJobs == 0) resultChannel.close()
 
@@ -326,6 +355,65 @@ class StreamRepositoryImpl @Inject constructor(
                     }
                 }
 
+                // CloudStream job: same shape as an addon job — one AddonStreams
+                // group per provider, same deadline, same channel close accounting.
+                if (cs3Active) {
+                    launch {
+                        val cs3T0 = android.os.SystemClock.elapsedRealtime()
+                        var cs3Outcome = "cancelled"
+                        var cs3StreamCount = 0
+                        try {
+                            withTimeout(ADDON_STREAM_FETCH_TIMEOUT_MS) {
+                                val groups = cloudStreamStreamSource.fetchStreams(videoId, season, episode)
+                                if (groups.isNotEmpty()) {
+                                    cs3Outcome = "ok"
+                                    cs3StreamCount = groups.sumOf { it.streams.size }
+                                    groups.forEach { resultChannel.send(it) }
+                                } else {
+                                    cs3Outcome = "empty"
+                                    attemptedFailures += StreamAttemptFailure(
+                                        addonName = "CloudStream",
+                                        kind = StreamFailureKind.MISSING,
+                                        detail = context.getString(com.nuvio.tv.R.string.stream_error_detail_no_streams_for_id)
+                                    )
+                                }
+                            }
+                        } catch (e: TimeoutCancellationException) {
+                            if (!isActive) {
+                                cs3Outcome = "cancelled"
+                                throw e
+                            }
+                            cs3Outcome = "timeout"
+                            Log.w(TAG, "CloudStream exceeded ${ADDON_STREAM_FETCH_TIMEOUT_MS}ms - abandoning")
+                            attemptedFailures += StreamAttemptFailure(
+                                addonName = "CloudStream",
+                                kind = StreamFailureKind.REQUEST_FAILED,
+                                detail = context.getString(com.nuvio.tv.R.string.stream_error_detail_addon_timeout)
+                            )
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            cs3Outcome = "error"
+                            Log.e(TAG, "CloudStream failed: ${e.message}")
+                            attemptedFailures += StreamAttemptFailure(
+                                addonName = "CloudStream",
+                                kind = StreamFailureKind.REQUEST_FAILED,
+                                detail = e.message ?: context.getString(com.nuvio.tv.R.string.stream_error_detail_addon_request_failed)
+                            )
+                        } finally {
+                            val cs3Ms = android.os.SystemClock.elapsedRealtime() - cs3T0
+                            Log.i(
+                                TAG,
+                                "ADDON_MS name=CloudStream " +
+                                    "ms=$cs3Ms " +
+                                    "streams=$cs3StreamCount outcome=$cs3Outcome"
+                            )
+                            if (completedJobs.incrementAndGet() >= totalJobs) {
+                                resultChannel.close()
+                            }
+                        }
+                    }
+                }
+
                 // Emit results as they arrive, greedily draining whatever has
                 // already queued so groups that landed together share one emission.
                 // tryReceive never blocks, so a lone arrival is emitted immediately.
@@ -355,7 +443,7 @@ class StreamRepositoryImpl @Inject constructor(
                 val errorMessage = buildAggregateFailureMessage(
                     type = type,
                     id = videoId,
-                    attemptedAddonNames = attemptedAddonNames,
+                    attemptedAddonNames = attemptedAddonNames + cs3ProviderNames,
                     failures = attemptedFailures.toList()
                 )
                 if (errorMessage != null) {
@@ -376,6 +464,9 @@ class StreamRepositoryImpl @Inject constructor(
         addons.forEach { addon ->
             append("|addon:").append(addon)
         }
+        // CloudStream registry changes (install/enable/remove/refresh) bump the
+        // revision, so a stale cached session never hides a new provider.
+        append("|cs3:").append(CloudStreamRepository.uiState.value.registryRevision)
     }.sha256()
 
     private fun String.sha256(): String =

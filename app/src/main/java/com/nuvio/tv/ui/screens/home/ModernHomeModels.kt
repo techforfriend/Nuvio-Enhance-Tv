@@ -130,7 +130,18 @@ data class HeroCarouselRow(
     val apiType: String? = null,
     val supportsSkip: Boolean = false,
     val hasMore: Boolean = false,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    /**
+     * Optional focusable pill rendered beside the row title (CloudStream's provider
+     * selector). Only the first row of a section carries one.
+     */
+    val headerAction: MarqueeRowHeaderAction? = null
+)
+
+/** Label + click of a pill rendered beside a row title. */
+data class MarqueeRowHeaderAction(
+    val label: String,
+    val onClick: () -> Unit
 )
 
 @Immutable

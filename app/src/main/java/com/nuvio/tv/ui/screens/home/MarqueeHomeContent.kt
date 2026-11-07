@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.metrics.performance.PerformanceMetricsState
 import com.nuvio.tv.LocalContentFocusRequester
 import com.nuvio.tv.LocalTopBarFocused
+import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
 import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
 import com.nuvio.tv.domain.model.ContinueWatchingItem
 import com.nuvio.tv.domain.model.MetaPreview
@@ -41,7 +42,9 @@ import com.nuvio.tv.domain.model.isPlaceholder
 import com.nuvio.tv.ui.components.ContinueWatchingOptionsDialog
 import com.nuvio.tv.ui.components.rememberAmbientAccentProvider
 import com.nuvio.tv.ui.theme.NuvioTheme
+import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.util.StableRef
+import com.nuvio.tv.ui.util.asStable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import com.nuvio.tv.domain.model.isPlaceholderItemId
@@ -92,7 +95,11 @@ fun MarqueeHomeContent(
     scrollToTopTrigger: Int = 0,
     onRequestLazyCatalogLoad: (String) -> Unit = {},
     onRowItemFocusedCallback: (String, Int, Boolean) -> Unit = { _, _, _ -> },
-    topLine: (@Composable () -> Unit)? = null
+    topLine: (@Composable () -> Unit)? = null,
+    // CloudStream Home section: rows built from the selected provider's main page
+    // (empty when no CS3 plugin is runnable) and the card-click handler.
+    cloudStreamRows: StableList<HeroCarouselRow> = StableList(),
+    onCloudStreamCardClick: (String, String) -> Unit = { _, _ -> }
 ) {
     val topBarFocused = LocalTopBarFocused.current
     val topBarFocusedState = rememberUpdatedState(topBarFocused)
@@ -101,7 +108,15 @@ fun MarqueeHomeContent(
     // Trailer autoplay plays behind the hero only (Marquee layout verdicts: EXPANDED_CARD retires).
     val autoplayEnabled = uiState.focusedPosterBackdropTrailerEnabled
     val continueWatchingPoster = uiState.continueWatchingCardStyle == ContinueWatchingCardStyle.POSTER
-    val carouselRows = modernPresentation.rows
+    // Home rows = addon catalog rows + the CloudStream section (appended last).
+    // Everything below (hero, focus, lookups) works off this merged list.
+    val carouselRows = remember(modernPresentation.rows, cloudStreamRows) {
+        if (cloudStreamRows.list.isEmpty()) {
+            modernPresentation.rows
+        } else {
+            (modernPresentation.rows.list + cloudStreamRows.list).asStable()
+        }
+    }
 
     val hasCollections = remember(uiState.homeRows) { uiState.homeRows.any { it is HomeRow.CollectionRow } }
     if (hasCollections && uiState.catalogRows.isEmpty() && uiState.installedAddonsCount > 0 && uiState.isLoading) {
@@ -110,7 +125,31 @@ fun MarqueeHomeContent(
     }
     if (carouselRows.list.isEmpty()) return
 
-    val lookups = modernPresentation.lookups
+    // Lookups merged the same way: CS3 rows are absent from the pipeline's
+    // lookups, so focus restore, active-row tracking and the stale-selection
+    // check would otherwise treat them as unknown.
+    val lookups = remember(carouselRows, modernPresentation.lookups) {
+        val base = modernPresentation.lookups
+        if (cloudStreamRows.list.isEmpty()) {
+            base
+        } else {
+            val rows = carouselRows.list
+            CarouselRowLookups(
+                rowIndexByKey = (base.rowIndexByKey.map +
+                    rows.mapIndexed { index, row -> row.key to index }.toMap()).asStable(),
+                rowByKey = (base.rowByKey.map + rows.associateBy { it.key }).asStable(),
+                rowKeyByGlobalRowIndex = (base.rowKeyByGlobalRowIndex.map +
+                    rows.associate { it.globalRowIndex to it.key }).asStable(),
+                activeRowKeys = (base.activeRowKeys.set + rows.map { it.key }).asStable(),
+                activeCatalogItemIds = (base.activeCatalogItemIds.set +
+                    rows.flatMap { row ->
+                        row.items.list.mapNotNull {
+                            (it.payload as? ModernPayload.Catalog)?.itemId
+                        }
+                    }).asStable(),
+            )
+        }
+    }
     val rowIndexByKey = lookups.rowIndexByKey
     val rowByKey = lookups.rowByKey
 
@@ -449,6 +488,17 @@ fun MarqueeHomeContent(
             onNavigateToDetail(itemId, itemType, addonBaseUrl)
         }
     }
+    // CS3 Home cards never open Detail (their ids are not Stremio meta ids);
+    // they resolve to a Stream-screen play target instead.
+    val navigateToDetailOrCloudStream = remember(navigateToDetailWithArt, onCloudStreamCardClick) {
+        { itemId: String, itemType: String, addonBaseUrl: String ->
+            if (itemId.startsWith(CloudStreamStreamSource.CS3_VIDEO_ID_PREFIX)) {
+                onCloudStreamCardClick(itemId, itemType)
+            } else {
+                navigateToDetailWithArt(itemId, itemType, addonBaseUrl)
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         MarqueeBackdrop(
@@ -506,7 +556,7 @@ fun MarqueeHomeContent(
             isCatalogItemWatched = isCatalogItemWatched,
             onCatalogItemLongPress = onCatalogItemLongPress,
             onPreloadAdjacentItem = onPreloadAdjacentItem,
-            onNavigateToDetail = navigateToDetailWithArt,
+            onNavigateToDetail = navigateToDetailOrCloudStream,
             onNavigateToFolderDetail = onNavigateToFolderDetail,
             onLoadMoreCatalog = onLoadMoreCatalog,
             onContinueWatchingClick = onContinueWatchingClick,

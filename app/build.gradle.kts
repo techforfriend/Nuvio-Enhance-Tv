@@ -457,6 +457,26 @@ dependencies {
     // Kotlinx Serialization
     implementation(libs.kotlinx.serialization.json)
 
+    // CloudStream (CS3) runtime — mirrors Nuvio Enhanced-2's full flavour.
+    // .cs3 plugins load through the embedded runtime AAR; the rest are the
+    // libraries that runtime and standard providers link against.
+    implementation(files("libs/cloudstream-runtime-api-4.8.0-3496e5f.aar"))
+    implementation(libs.jackson.module.kotlin)
+    implementation(libs.jsoup)
+    implementation(libs.kotlinx.datetime)
+    implementation("com.github.Blatzar:NiceHttp:0.4.18")
+    implementation(libs.conscrypt.android)
+    implementation(libs.fuzzywuzzy)
+    implementation(libs.rhino)
+    implementation(libs.tmdb.java)
+    implementation(libs.cryptography.core)
+    implementation(libs.cryptography.provider.optimal)
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.3") {
+        exclude(group = "org.mozilla", module = "rhino-engine")
+    }
+    implementation(kotlin("reflect"))
+    implementation("androidx.annotation:annotation:1.10.0")
+
     // Performance profiling
     implementation("androidx.metrics:metrics-performance:1.0.0-rc01")  // JankStats
     debugImplementation("androidx.compose.runtime:runtime-tracing")

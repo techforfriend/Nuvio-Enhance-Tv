@@ -1,0 +1,39 @@
+name: Build TV APK
+
+# Manually triggered. Builds the :app module's fullDebug variant and uploads the
+# APK — this is the compile check for the CloudStream (CS3) port and the APK
+# for phone testing.
+#
+# A release build is deliberately NOT built here: signing needs the
+# NUVIO_RELEASE_STORE_FILE / NUVIO_RELEASE_KEY_ALIAS / NUVIO_RELEASE_KEY_PASSWORD /
+# NUVIO_RELEASE_STORE_PASSWORD secrets (Spec 49 R1) and a release build without
+# them fails at signing instead of signing with a guessable password.
+# The debug APK installs side-by-side as com.nuvio.tv.ke and is unsigned by
+# the release key, so it cannot update an existing release install.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build TV APK (fullDebug)
+        run: ./gradlew :app:assembleFullDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuvio-ke-tv-apk
+          path: app/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error

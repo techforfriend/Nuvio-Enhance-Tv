@@ -203,6 +203,7 @@ fun SettingsScreen(
     entryName: String? = null,
     onEntryConsumed: () -> Unit = {},
     onNavigateToAddons: () -> Unit = {},
+    onNavigateToCloudStream: () -> Unit = {},
     onNavigateToCatalogOrder: () -> Unit = {},
     onNavigateToCollections: () -> Unit = {},
     onNavigateToAuthQrSignIn: () -> Unit = {},
@@ -421,6 +422,7 @@ fun SettingsScreen(
                     onNavigateToManageProfiles = onNavigateToManageProfiles,
                     onNavigateToDpadComboSetup = onNavigateToDpadComboSetup,
                     onNavigateToAddons = onNavigateToAddons,
+                    onNavigateToCloudStream = onNavigateToCloudStream,
                     onNavigateToCatalogOrder = onNavigateToCatalogOrder,
                     onNavigateToCollections = onNavigateToCollections,
                     onNavigateToAuthQrSignIn = onNavigateToAuthQrSignIn
@@ -516,6 +518,7 @@ private fun SettingsDetailPane(
     onNavigateToManageProfiles: () -> Unit,
     onNavigateToDpadComboSetup: (String) -> Unit,
     onNavigateToAddons: () -> Unit,
+    onNavigateToCloudStream: () -> Unit,
     onNavigateToCatalogOrder: () -> Unit,
     onNavigateToCollections: () -> Unit,
     onNavigateToAuthQrSignIn: () -> Unit
@@ -541,7 +544,8 @@ private fun SettingsDetailPane(
         SettingsCategory.INTEGRATION -> TmdbSettingsContent(
             initialFocusRequester = initialFocusRequester,
             openKeyPanel = openPanel,
-            onKeyPanelOpened = onPanelOpened
+            onKeyPanelOpened = onPanelOpened,
+            onNavigateToCloudStream = onNavigateToCloudStream
         )
         SettingsCategory.PLAYBACK -> PlaybackSettingsContent(
             initialFocusRequester = initialFocusRequester,

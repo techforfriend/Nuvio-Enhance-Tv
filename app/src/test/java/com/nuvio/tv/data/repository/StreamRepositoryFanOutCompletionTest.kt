@@ -2,6 +2,7 @@ package com.nuvio.tv.data.repository
 
 import android.content.Context
 import com.nuvio.tv.R
+import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
 import com.nuvio.tv.core.di.aioStreamDataUserAgent
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.profile.ProfileManager
@@ -326,7 +327,8 @@ class StreamRepositoryFanOutCompletionTest {
                 api = api,
                 addonRepository = addonRepository,
                 profileManager = profileManager,
-                healthStore = mockk(relaxed = true)
+                healthStore = mockk(relaxed = true),
+                cloudStreamStreamSource = CloudStreamStreamSource()
             ),
             api = api
         )

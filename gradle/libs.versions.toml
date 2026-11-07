@@ -28,6 +28,17 @@ zxing = "3.5.3"
 supabase = "3.2.1"
 ktor = "3.1.1"
 kotlinxSerialization = "1.8.1"
+
+# CloudStream (CS3) runtime — mirrors Nuvio Enhanced-2's full flavour
+jacksonModuleKotlin = "2.13.1"
+jsoup = "1.22.1"
+kotlinxDatetime = "0.8.0"
+conscryptAndroid = "2.5.2"
+fuzzywuzzy = "1.4.0"
+rhino = "1.8.1"
+tmdbJava = "2.13.0"
+cryptography = "0.6.0"
+newpipeExtractor = "v0.26.3"
 benchmarkMacro = "1.5.0"
 androidxTestExtJunit = "1.2.1"
 androidxTestRunner = "1.6.2"
@@ -113,6 +124,17 @@ ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp", version.r
 
 # Kotlinx Serialization
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+
+# CloudStream (CS3) runtime — mirrors Nuvio Enhanced-2's full flavour
+jackson-module-kotlin = { group = "com.fasterxml.jackson.module", name = "jackson-module-kotlin", version.ref = "jacksonModuleKotlin" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime", version.ref = "kotlinxDatetime" }
+conscrypt-android = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscryptAndroid" }
+fuzzywuzzy = { group = "me.xdrop", name = "fuzzywuzzy", version.ref = "fuzzywuzzy" }
+rhino = { group = "org.mozilla", name = "rhino", version.ref = "rhino" }
+tmdb-java = { group = "com.uwetrottmann.tmdb2", name = "tmdb-java", version.ref = "tmdbJava" }
+cryptography-core = { group = "dev.whyoleg.cryptography", name = "cryptography-core", version.ref = "cryptography" }
+cryptography-provider-optimal = { group = "dev.whyoleg.cryptography", name = "cryptography-provider-optimal", version.ref = "cryptography" }
 androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "benchmarkMacro" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }

@@ -1,6 +1,7 @@
 package com.nuvio.tv.data.repository
 
 import android.content.Context
+import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.dto.StreamDto
@@ -151,7 +152,8 @@ class AnimeTypeRoutingTest {
             api = api,
             addonRepository = addonRepository,
             profileManager = profileManager,
-            healthStore = mockk(relaxed = true)
+            healthStore = mockk(relaxed = true),
+            cloudStreamStreamSource = CloudStreamStreamSource()
         )
 
         withTimeout(5_000) {

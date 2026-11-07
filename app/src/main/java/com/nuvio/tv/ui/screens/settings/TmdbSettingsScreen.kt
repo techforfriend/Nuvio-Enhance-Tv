@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -22,6 +23,10 @@ import com.nuvio.tv.core.tmdb.savedKeyEnding
 import com.nuvio.tv.data.local.AVAILABLE_TMDB_LANGUAGES
 import com.nuvio.tv.data.local.displayName
 import com.nuvio.tv.ui.components.marquee.LocalMarqueeToast
+import com.nuvio.tv.ui.screens.cloudstream.CloudStreamManagerViewModel
+
+/** Row key of the CloudStream extensions row in the Integrations pane. */
+internal const val CLOUDSTREAM_ROW_KEY = "cloudstream_extensions"
 
 /** Row key of the TMDB API key row, which Settings' deep entry focuses ([SettingsEntry.TMDB_KEY]). */
 internal const val TMDB_KEY_ROW_KEY = "tmdb_api_key"
@@ -43,9 +48,11 @@ internal const val TMDB_KEY_ROW_KEY = "tmdb_api_key"
 @Composable
 fun TmdbSettingsContent(
     viewModel: TmdbSettingsViewModel = hiltViewModel(),
+    cloudStreamViewModel: CloudStreamManagerViewModel = hiltViewModel(),
     initialFocusRequester: FocusRequester? = null,
     openKeyPanel: Boolean = false,
-    onKeyPanelOpened: () -> Unit = {}
+    onKeyPanelOpened: () -> Unit = {},
+    onNavigateToCloudStream: () -> Unit = {}
 ) {
     // Null until loaded (see the ViewModel); rows wait for both.
     val settings = viewModel.uiState.collectAsStateWithLifecycle().value
@@ -53,6 +60,7 @@ fun TmdbSettingsContent(
     val keyPanel = viewModel.keyPanel.collectAsStateWithLifecycle().value
     val keySavedNotice = viewModel.keySavedNotice.collectAsStateWithLifecycle().value
     val phoneUrl = viewModel.phoneUrl.collectAsStateWithLifecycle().value
+    val cloudStreamState = cloudStreamViewModel.uiState.collectAsStateWithLifecycle().value
     var showLanguageDialog by remember { mutableStateOf(false) }
     val toast = LocalMarqueeToast.current
     val tmdb = stringResource(R.string.settings_tmdb_name)
@@ -163,6 +171,20 @@ fun TmdbSettingsContent(
                 checked = hasKey && settings.useCollections,
                 enabled = hasKey && settings.enabled,
                 onCheckedChange = { viewModel.onEvent(TmdbSettingsEvent.ToggleCollections(it)) }
+            )
+        }
+        item(key = "cloudstream_section") {
+            SettingsSectionLabel(text = stringResource(R.string.cs3_title))
+        }
+        item(key = CLOUDSTREAM_ROW_KEY) {
+            val returnRow = rememberSettingsReturnTarget(CLOUDSTREAM_ROW_KEY)
+            val installedCount = cloudStreamState.plugins.count { it.isInstalled }
+            SettingsValueRow(
+                title = stringResource(R.string.cs3_title),
+                subtitle = stringResource(R.string.cs3_subtitle),
+                value = stringResource(R.string.cs3_plugins_installed_count, installedCount),
+                onClick = { returnRow.launch(onNavigateToCloudStream) },
+                modifier = Modifier.focusRequester(returnRow.requester)
             )
         }
     }
