@@ -89,11 +89,11 @@ fun HomeScreen(
     val cs3Rows: StableList<HeroCarouselRow> = remember(
         cs3State.sections,
         cs3State.selectedProviderId,
-        cs3State.selectedProvider?.name,
+        cs3State.selectedProvider?.metadata.name,
         modernPresentation.rows.list.size
     ) {
         val providerId = cs3State.selectedProviderId
-        val providerName = cs3State.selectedProvider?.name
+        val providerName = cs3State.selectedProvider?.metadata.name
         if (providerId == null || providerName == null) {
             StableList()
         } else {
