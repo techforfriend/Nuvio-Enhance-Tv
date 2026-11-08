@@ -19,6 +19,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # The publish step creates the GitHub Release, so the job needs write
+    # access to the repo's contents.
+    permissions:
+      contents: write
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
@@ -51,9 +55,32 @@ jobs:
         # first time on this port.
         run: ./gradlew :app:assembleFullRelease --no-daemon --stacktrace
 
-      - name: Upload APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: nuvio-enhanced-tv-release-apk
-          path: app/build/outputs/apk/full/release/*.apk
-          if-no-files-found: error
+      # No artifact is kept: the release is published directly from the build.
+      # The APKs are renamed to NuvioAK-<versionName>-<versionCode>-<abi>.apk,
+      # the name the in-app update check parses (core/update/UpdateRelease.kt);
+      # names come from the build's output-metadata.json, never typed by hand.
+      - name: Name release APKs
+        run: |
+          python3 - <<'PYEOF'
+          import json, shutil
+          from pathlib import Path
+          build = Path("app/build/outputs/apk/full/release")
+          meta = json.loads((build / "output-metadata.json").read_text())
+          for el in meta["elements"]:
+              abi = next(f["value"] for f in el.get("filters", []) if f["filterType"] == "ABI")
+              src = build / el["outputFile"]
+              dst = Path(f"NuvioAK-{el['versionName']}-{el['versionCode']}-{abi}.apk")
+              shutil.copyfile(src, dst)
+              print(f"{src.name} -> {dst.name}")
+          PYEOF
+
+      # Tag and title are for this release (0.9.0-ak52); a later release updates
+      # them together with the notes file.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.9.0-ak52 \
+            --title "Nuvio Enhanced TV 0.9.0-ak52" \
+            --notes-file .github/release-notes-0.9.0-ak52.md \
+            NuvioAK-*.apk
