@@ -99,15 +99,19 @@ object CloudStreamRepositoryParser {
     }
 }
 
+/** Case-insensitive prefix strip: String.removePrefix takes no ignoreCase flag. */
+private fun String.removePrefixIgnoreCase(prefix: String): String =
+    if (startsWith(prefix, ignoreCase = true)) substring(prefix.length) else this
+
 fun normalizeCloudStreamRepositoryUrl(rawUrl: String): String {
     var value = rawUrl.trim()
     require(value.isNotBlank()) { "CloudStream repository URL is required" }
     // URI schemes are case-insensitive (RFC 3986 §3.1): strip them case-insensitively,
     // otherwise e.g. "CloudStreamRepo://…" is not stripped and gets "https://" prepended.
     value = value
-        .removePrefix("cloudstreamrepo://", ignoreCase = true)
-        .removePrefix("https://cs.repo/?", ignoreCase = true)
-        .removePrefix("http://cs.repo/?", ignoreCase = true)
+        .removePrefixIgnoreCase("cloudstreamrepo://")
+        .removePrefixIgnoreCase("https://cs.repo/?")
+        .removePrefixIgnoreCase("http://cs.repo/?")
         .trim()
     if (!value.startsWith("http://", ignoreCase = true) && !value.startsWith("https://", ignoreCase = true)) {
         value = "https://$value"
