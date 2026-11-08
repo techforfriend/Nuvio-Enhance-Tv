@@ -4,13 +4,13 @@ name: Build TV APK (Release)
 # shrinkResources, R8) and uploads both ABI-split APKs (armeabi-v7a +
 # arm64-v8a) — the APKs for phone installs.
 #
-# Signing: no release keystore exists on CI, so this signs with the debug key
-# (CI_USE_DEBUG_SIGNING=true). The APKs install fine, but they cannot update an
-# install signed with a release key, and a future release-key build installs
-# as a separate app unless the old one is uninstalled first. To sign with a
-# real release key, add the NUVIO_RELEASE_STORE_FILE / NUVIO_RELEASE_KEY_ALIAS /
-# NUVIO_RELEASE_KEY_PASSWORD / NUVIO_RELEASE_STORE_PASSWORD secrets (Spec 49 R1)
-# and drop CI_USE_DEBUG_SIGNING from the build step.
+# Signing: the release key lives in GitHub Secrets (Spec 49 R1). The keystore
+# itself is a base64 secret (NUVIO_RELEASE_KEYSTORE_BASE64); the step below
+# decodes it to nuviotv.jks and the build step passes it plus the alias and
+# passwords through the NUVIO_RELEASE_* env vars build.gradle.kts reads.
+# A release build without these secrets fails at signing instead of signing
+# with a guessable password — and it must never fall back to the debug key,
+# or installed devices could not update to the next release.
 
 on:
   workflow_dispatch:
@@ -29,9 +29,22 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Write release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "NUVIO_RELEASE_KEYSTORE_BASE64 secret is not set" >&2
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > nuviotv.jks
+
       - name: Build TV APK (fullRelease)
         env:
-          CI_USE_DEBUG_SIGNING: "true"
+          NUVIO_RELEASE_STORE_FILE: ${{ github.workspace }}/nuviotv.jks
+          NUVIO_RELEASE_KEY_ALIAS: ${{ secrets.NUVIO_RELEASE_KEY_ALIAS }}
+          NUVIO_RELEASE_KEY_PASSWORD: ${{ secrets.NUVIO_RELEASE_KEY_PASSWORD }}
+          NUVIO_RELEASE_STORE_PASSWORD: ${{ secrets.NUVIO_RELEASE_STORE_PASSWORD }}
         # --stacktrace: the debug workflow's packageFullDebug once failed with
         # an empty exception message (OOM, fixed by the 4 GB daemon heap);
         # keep the flag for the first release builds, where R8 runs for the
