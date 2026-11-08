@@ -94,7 +94,7 @@ internal fun releaseNotesText(notes: String): String =
         .replace(BLANK_RUNS, "\n\n")
         .trim()
 
-/** "Nuvio KE 0.9.0-ke51" (the panel title), or with its build, "Nuvio KE 0.9.0-ke51 (1392)" (the About row). */
+/** "Nuvio AK 0.9.0-ak51" (the panel title), or with its build, "Nuvio AK 0.9.0-ak51 (1392)" (the About row). */
 @Composable
 internal fun releaseName(release: KnownRelease, withBuild: Boolean): String = stringResource(
     R.string.update_release_name,

@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Drift guard for profile-settings sync (Spec 16 §T26, docs/specs/016-upstream-ports-ke22.md): every key PlayerSettingsDataStore
+ * Drift guard for profile-settings sync (Spec 16 §T26, docs/specs/016-upstream-ports-ak22.md): every key PlayerSettingsDataStore
  * declares is either local-only (shouldExcludePreferenceFromProfileSettingsSync) or listed here as
  * synced. A new key fails this test until it is classified: per-device keys (hardware, network,
  * audio chain, migration flags, diagnostics) go in ProfileSettingsSyncService's local list;

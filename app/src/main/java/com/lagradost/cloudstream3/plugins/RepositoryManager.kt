@@ -21,7 +21,7 @@ data class Repository(
 /**
  * CloudStream-compatible repository registry.
  *
- * Nuvio KE owns repository discovery/download UI, but CloudStream extensions expect the
+ * Nuvio AK owns repository discovery/download UI, but CloudStream extensions expect the
  * native RepositoryManager ABI to exist and persist RepositoryData under the
  * standard CloudStream key. This class intentionally implements only that ABI;
  * it does not maintain a second plugin catalog or provider pipeline.
@@ -29,7 +29,7 @@ data class Repository(
 object RepositoryManager {
     const val REPOSITORIES_KEY = "REPOSITORIES_KEY"
 
-    /** Nuvio KE does not ship CloudStream prebuilt repositories. */
+    /** Nuvio AK does not ship CloudStream prebuilt repositories. */
     val PREBUILT_REPOSITORIES: Array<RepositoryData> by lazy { emptyArray() }
 
     private val repoLock = Mutex()
@@ -39,7 +39,7 @@ object RepositoryManager {
 
     /**
      * Compatibility API used by CloudStream extensions that inspect a repository before adding it.
-     * Repository discovery/installation remains owned by Nuvio KE's CloudStream repository runtime.
+     * Repository discovery/installation remains owned by Nuvio AK's CloudStream repository runtime.
      */
     suspend fun parseRepository(url: String): Repository? = runCatching {
         val normalizedUrl = url.trim()

@@ -13,10 +13,10 @@ import java.time.ZoneId
 class UpdatePanelTest {
 
     private fun release(code: Int = 1392, publishedAt: String? = "2026-11-03T23:30:00Z") = KnownRelease(
-        versionName = "0.9.0-ke51",
+        versionName = "0.9.0-ak51",
         versionCode = code,
         abi = "armeabi-v7a",
-        downloadUrl = "https://github.com/Arshad-Kamal/Nuvio-KE/releases/download/v/a.apk",
+        downloadUrl = "https://github.com/Arshad-Kamal/Nuvio-AK/releases/download/v/a.apk",
         sizeBytes = 41_000_000L,
         sha256 = "ab".repeat(32),
         notes = "",

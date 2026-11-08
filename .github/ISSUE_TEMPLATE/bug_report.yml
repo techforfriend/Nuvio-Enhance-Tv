@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Nuvio KE doesn't work the way it should (one bug per issue).
+description: Something in Nuvio AK doesn't work the way it should (one bug per issue).
 title: "[Bug]: "
 labels:
   - bug
@@ -26,7 +26,7 @@ body:
     attributes:
       label: App version
       description: Settings › About shows it.
-      placeholder: "0.9.0-ke52 (1393)"
+      placeholder: "0.9.0-ak52 (1393)"
     validations:
       required: true
 

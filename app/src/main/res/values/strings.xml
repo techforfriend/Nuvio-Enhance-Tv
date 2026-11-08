@@ -377,7 +377,7 @@
     <string name="about_version_credits">Version and credits</string>
     <string name="about_edition" translatable="false">KAMAL EDITION</string>
     <string name="about_fork_credit">Overhauled and reimagined by Arshad Kamal.</string>
-    <string name="about_upstream_credit">Built on Nuvio TV by Tapframe and the Nuvio contributors, by way of ysosrs123\'s NuvioTV-Fork. Free and open source under the GPL-3.0; the original lives at github.com/NuvioMedia/NuvioTV. This edition\'s source: github.com/Arshad-Kamal/Nuvio-KE.</string>
+    <string name="about_upstream_credit">Built on Nuvio TV by Tapframe and the Nuvio contributors, by way of ysosrs123\'s NuvioTV-Fork. Free and open source under the GPL-3.0; the original lives at github.com/NuvioMedia/NuvioTV. This edition\'s source: github.com/Arshad-Kamal/Nuvio-AK.</string>
     <string name="about_version_build">Version %1$s (%2$d)</string>
     <!-- TMDB API terms s3 notice (Spec 52 D3): the exact wording, so never translated. -->
     <string name="about_tmdb_notice" translatable="false">This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.</string>
@@ -397,7 +397,7 @@
     <string name="update_available">Update available</string>
     <string name="update_new_badge">NEW</string>
     <!-- The release name shown in the update row and panel (Spec 49 R6 names it so). -->
-    <string name="update_release_name" translatable="false">Nuvio KE %1$s</string>
+    <string name="update_release_name" translatable="false">Nuvio AK %1$s</string>
     <string name="update_release_build">%1$s (%2$d)</string>
     <string name="update_released_on">released %1$s</string>
     <string name="update_you_have">You have %1$s</string>
@@ -409,7 +409,7 @@
     <string name="update_panel_abi">%1$s, for this TV</string>
     <string name="update_whats_new">What\'s new</string>
     <string name="update_full_notes">Full notes: %1$s/releases</string>
-    <string name="update_install_note">Android asks you to confirm the install. The first time, it asks you to let Nuvio KE install apps: turn that on, then press Back.</string>
+    <string name="update_install_note">Android asks you to confirm the install. The first time, it asks you to let Nuvio AK install apps: turn that on, then press Back.</string>
     <string name="update_download_install">Download and install</string>
     <string name="update_not_now">Not now</string>
     <string name="update_downloading">Downloading</string>
@@ -901,14 +901,14 @@
     <string name="tmdb_api_key_title">TMDB API key</string>
     <string name="tmdb_api_key_subtitle_none">Your own free key from themoviedb.org; the rows below need it</string>
     <string name="tmdb_api_key_subtitle_saved">Your own key from themoviedb.org. OK to replace or remove it</string>
-    <string name="tmdb_api_key_subtitle_built_in">Built into this copy of Nuvio KE. OK to use your own instead</string>
+    <string name="tmdb_api_key_subtitle_built_in">Built into this copy of Nuvio AK. OK to use your own instead</string>
     <string name="tmdb_api_key_not_set">Not set</string>
     <string name="tmdb_api_key_saved_value">Saved · ends %1$s</string>
     <string name="tmdb_api_key_placeholder">Type or paste your API key</string>
     <!-- %1$s is tmdb_api_key_note_path, drawn bold. -->
-    <string name="tmdb_api_key_note">Nuvio KE doesn\'t come with a TMDB key. Get your own, free, at %1$s and copy the API Key (32 letters and numbers), not the longer Read Access Token.</string>
+    <string name="tmdb_api_key_note">Nuvio AK doesn\'t come with a TMDB key. Get your own, free, at %1$s and copy the API Key (32 letters and numbers), not the longer Read Access Token.</string>
     <!-- A build with a key built in (household); %1$s is tmdb_api_key_note_path, drawn bold. -->
-    <string name="tmdb_api_key_note_built_in">This copy of Nuvio KE has a TMDB key built in. To use your own, get one free at %1$s and copy the API Key (32 letters and numbers), not the longer Read Access Token.</string>
+    <string name="tmdb_api_key_note_built_in">This copy of Nuvio AK has a TMDB key built in. To use your own, get one free at %1$s and copy the API Key (32 letters and numbers), not the longer Read Access Token.</string>
     <string name="tmdb_api_key_note_path">themoviedb.org › Settings › API</string>
     <string name="tmdb_api_key_check">Check and save</string>
     <string name="tmdb_api_key_checking">Checking…</string>
@@ -920,7 +920,7 @@
     <string name="tmdb_api_key_phone_title">Scan, then paste it there</string>
     <!-- Person, studio and collection pages with no TMDB key (Spec 52 T1). -->
     <string name="tmdb_key_needed_title">This page needs a TMDB key</string>
-    <string name="tmdb_key_needed_body">Cast and studio pages come from TMDB, and this copy of Nuvio KE has no key yet. Add your own free key in Settings › Integrations, then come back.</string>
+    <string name="tmdb_key_needed_body">Cast and studio pages come from TMDB, and this copy of Nuvio AK has no key yet. Add your own free key in Settings › Integrations, then come back.</string>
     <string name="tmdb_key_needed_add">Add a TMDB key</string>
 
     <string name="tmdb_language_dialog_title">TMDB Language</string>

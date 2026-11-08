@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Build the source archive attached to every Nuvio KE release (GPL-3.0 s6, LGPL-2.1 s6).
+"""Build the source archive attached to every Nuvio AK release (GPL-3.0 s6, LGPL-2.1 s6).
 
 It fetches the exact source of each GPL / LGPL binary the APK carries, and the build scripts that link them, at the
 refs THIRD_PARTY_NOTICES.md names (app/src/main/assets/licenses/); keep the two lists in step. Release tarballs are
 used where the project publishes one; a repo with git submodules is fetched with git (submodules included, since
 GitHub / GitLab archive tarballs drop them) and any archive tarball that still holds a `.gitmodules` fails the run.
-Output: builds/release/NuvioKE-<version>-gpl-sources.tar (one tarball per component, plus SOURCES.txt with each
+Output: builds/release/NuvioAK-<version>-gpl-sources.tar (one tarball per component, plus SOURCES.txt with each
 URL, its commit for git fetches, and the SHA-256 of the tarball). Needs git. python3 scripts/gpl-source-archive.py <versionName>
 """
 import hashlib
@@ -48,7 +48,7 @@ COMPONENTS = [
     ("libass-cmake-d3f00a43", GIT, "https://github.com/peerless2012/libass-cmake.git",
      "d3f00a43ca66e42a2c34de964b1a7dbbfa9dbc8b"),
 ]
-HEADER = """Nuvio KE {v}: corresponding source for the GPL / LGPL components the APK carries (THIRD_PARTY_NOTICES.md).
+HEADER = """Nuvio AK {v}: corresponding source for the GPL / LGPL components the APK carries (THIRD_PARTY_NOTICES.md).
 Build recipes for the parts this repository builds itself are in the repository at this release's tag:
 - nextlib-mediainfo AAR: .github/workflows/build-nextlib-mediainfo.yml + .github/nextlib/nextlib-mediainfo-static.patch
 - FFmpeg 7.0.2 decoder AAR: .github/workflows/build-ffmpeg-decoder.yml + the ffmpeg-decoder-downmix module (JNI glue)
@@ -58,7 +58,7 @@ Build recipes for the parts this repository builds itself are in the repository 
 def fetch(url):
     for attempt in range(3):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "nuvio-ke-release"})
+            req = urllib.request.Request(url, headers={"User-Agent": "nuvio-ak-release"})
             with urllib.request.urlopen(req, timeout=300) as r:
                 return r.read()
         except Exception as e:  # transient network errors: retry, then fail the whole archive
@@ -103,7 +103,7 @@ def main():
         sys.exit(__doc__)
     out_dir = Path(__file__).resolve().parent.parent / "builds" / "release"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"NuvioKE-{sys.argv[1]}-gpl-sources.tar"
+    out = out_dir / f"NuvioAK-{sys.argv[1]}-gpl-sources.tar"
     part = out.with_suffix(".tar.part")  # renamed only when every component is in
     mtime = int(time.time())
     lines = [HEADER.format(v=sys.argv[1])]

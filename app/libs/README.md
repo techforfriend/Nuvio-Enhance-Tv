@@ -67,7 +67,7 @@ Rebuild: build FFmpeg with the workflow's configure step (the 2026-10-06 port us
 `FFMPEG_SOURCE_DIR=<ffmpeg src> FFMPEG_BUILD_DIR=<root with <abi>/lib*.a> ./gradlew
 :ffmpeg-decoder-downmix:assembleRelease`, then replace ONLY the four `jni/<abi>/libffmpegJNI.so`
 entries of this AAR with the module AAR's (`zip -X`); never replace the whole AAR (drops the modified renderer).
-The ke22 upstream port spliced in the multi-frame output-growth fix this way; AAR SHA-256
+The ak22 upstream port spliced in the multi-frame output-growth fix this way; AAR SHA-256
 `64ae858046b7611cbfd17912cb672463f28603ab738cb973ca0621ba86a0c2a7`.
 
 ## Fork modification: lib-decoder-ffmpeg-release.aar (2026-08)

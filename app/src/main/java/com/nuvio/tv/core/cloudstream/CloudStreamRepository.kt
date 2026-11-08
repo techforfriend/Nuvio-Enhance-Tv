@@ -994,7 +994,7 @@ object CloudStreamRepository {
         val request = Request.Builder()
             .url(url)
             .header("Accept", "application/json, text/plain, */*")
-            .header("User-Agent", "NuvioKE-TV")
+            .header("User-Agent", "NuvioAK-TV")
             .get()
             .build()
         return kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1011,7 +1011,7 @@ object CloudStreamRepository {
     private suspend fun httpGetBytes(url: String, headers: Map<String, String> = emptyMap()): ByteArray {
         val builder = Request.Builder().url(url).get()
         headers.forEach { (name, value) -> builder.header(name, value) }
-        builder.header("User-Agent", "NuvioKE-TV")
+        builder.header("User-Agent", "NuvioAK-TV")
         return kotlinx.coroutines.withContext(Dispatchers.IO) {
             httpClient.newCall(builder.build()).execute().use { response ->
                 require(response.isSuccessful) {

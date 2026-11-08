@@ -1,0 +1,46 @@
+name: Build TV APK (Release)
+
+# Manually triggered. Builds the :app module's fullRelease variant (minify +
+# shrinkResources, R8) and uploads both ABI-split APKs (armeabi-v7a +
+# arm64-v8a) — the APKs for phone installs.
+#
+# Signing: no release keystore exists on CI, so this signs with the debug key
+# (CI_USE_DEBUG_SIGNING=true). The APKs install fine, but they cannot update an
+# install signed with a release key, and a future release-key build installs
+# as a separate app unless the old one is uninstalled first. To sign with a
+# real release key, add the NUVIO_RELEASE_STORE_FILE / NUVIO_RELEASE_KEY_ALIAS /
+# NUVIO_RELEASE_KEY_PASSWORD / NUVIO_RELEASE_STORE_PASSWORD secrets (Spec 49 R1)
+# and drop CI_USE_DEBUG_SIGNING from the build step.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build TV APK (fullRelease)
+        env:
+          CI_USE_DEBUG_SIGNING: "true"
+        # --stacktrace: the debug workflow's packageFullDebug once failed with
+        # an empty exception message (OOM, fixed by the 4 GB daemon heap);
+        # keep the flag for the first release builds, where R8 runs for the
+        # first time on this port.
+        run: ./gradlew :app:assembleFullRelease --no-daemon --stacktrace
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuvio-enhanced-tv-release-apk
+          path: app/build/outputs/apk/full/release/*.apk
+          if-no-files-found: error

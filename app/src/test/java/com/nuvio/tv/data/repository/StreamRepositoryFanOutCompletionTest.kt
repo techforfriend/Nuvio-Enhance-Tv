@@ -147,7 +147,7 @@ class StreamRepositoryFanOutCompletionTest {
             baseUrl = "https://aio.example",
             type = "movie",
             videoId = "tt1341338",
-            addonName = "Nuvio KE Streams"
+            addonName = "Nuvio AK Streams"
         )
 
         assertEquals(listOf("Late"), (result as NetworkResult.Success).data.streams.map { it.name })
@@ -181,7 +181,7 @@ class StreamRepositoryFanOutCompletionTest {
             baseUrl = "https://aio.example",
             type = "movie",
             videoId = "tt1341338",
-            addonName = "Nuvio KE Streams"
+            addonName = "Nuvio AK Streams"
         )
 
         val answer = (result as NetworkResult.Success).data
@@ -212,7 +212,7 @@ class StreamRepositoryFanOutCompletionTest {
             baseUrl = "https://aio.example",
             type = "movie",
             videoId = "tt1341338",
-            addonName = "Nuvio KE Streams"
+            addonName = "Nuvio AK Streams"
         )
 
         assertEquals(listOf("Knaben", "ComeTorz"), (result as NetworkResult.Success).data.missingUpstreams)

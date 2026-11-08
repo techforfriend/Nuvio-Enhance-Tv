@@ -8,7 +8,7 @@ name: Build TV APK
 # NUVIO_RELEASE_STORE_FILE / NUVIO_RELEASE_KEY_ALIAS / NUVIO_RELEASE_KEY_PASSWORD /
 # NUVIO_RELEASE_STORE_PASSWORD secrets (Spec 49 R1) and a release build without
 # them fails at signing instead of signing with a guessable password.
-# The debug APK installs side-by-side as com.nuvio.tv.ke and is unsigned by
+# The debug APK installs side-by-side as com.nuvio.tv.ak and is unsigned by
 # the release key, so it cannot update an existing release install.
 
 on:
@@ -38,6 +38,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: nuvio-ke-tv-apk
+          name: nuvio-ak-tv-apk
           path: app/build/outputs/apk/full/debug/*.apk
           if-no-files-found: error

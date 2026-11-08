@@ -7,7 +7,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * The update the latest release offers this TV (Spec 52 P6): one APK for one ABI, named
- * `NuvioKE-<versionName>-<versionCode>-<abi>.apk` by the release step (Spec 49 R6), with the
+ * `NuvioAK-<versionName>-<versionCode>-<abi>.apk` by the release step (Spec 49 R6), with the
  * digest GitHub computed on upload. Stored as JSON (UpdateStore), so fields only ever get added.
  */
 @Serializable
@@ -25,8 +25,8 @@ data class KnownRelease(
     val publishedAt: String? = null
 )
 
-/** `NuvioKE-<versionName>-<versionCode>-<abi>.apk` for the two ABIs a release ships. */
-private val ASSET_NAME = Regex("""^NuvioKE-([A-Za-z0-9._-]+)-(\d+)-(arm64-v8a|armeabi-v7a)\.apk$""")
+/** `NuvioAK-<versionName>-<versionCode>-<abi>.apk` for the two ABIs a release ships. */
+private val ASSET_NAME = Regex("""^NuvioAK-([A-Za-z0-9._-]+)-(\d+)-(arm64-v8a|armeabi-v7a)\.apk$""")
 private val SHA256_DIGEST = Regex("""^sha256:([0-9a-fA-F]{64})$""")
 internal const val MAX_ASSET_BYTES = 200L * 1024 * 1024
 internal const val MAX_NOTES_CHARS = 8_000
@@ -93,10 +93,10 @@ fun autoCheckDue(nowMs: Long, lastAttemptMs: Long): Boolean =
 
 /**
  * Only a PUBLIC build checks (P6): the one made without a TMDB key, of the release build type
- * (IS_DEBUG_BUILD false), under the KE id. A private household build carries the key, so it is never
+ * (IS_DEBUG_BUILD false), under the AK id. A private household build carries the key, so it is never
  * offered a keyless public APK; debug and benchmark (`.debug`) builds never check. A release build
  * signed with the debug key (CI_USE_DEBUG_SIGNING) does check; Android refuses its update (another
  * signer).
  */
 fun updateCheckSupported(builtInTmdbKey: String, debugBuild: Boolean, applicationId: String): Boolean =
-    builtInTmdbKey.isBlank() && !debugBuild && applicationId == "com.nuvio.tv.ke"
+    builtInTmdbKey.isBlank() && !debugBuild && applicationId == "com.nuvio.tv.ak"

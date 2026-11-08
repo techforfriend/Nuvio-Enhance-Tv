@@ -2,7 +2,7 @@
 """Name and check a public build's APKs for a GitHub release.
 
 Run after `./gradlew assembleFullRelease -PnuvioPublic=true`. Reads the build's output-metadata.json and copies each
-ABI's APK to builds/release/NuvioKE-<versionName>-<versionCode>-<abi>.apk, the name the in-app update check parses
+ABI's APK to builds/release/NuvioAK-<versionName>-<versionCode>-<abi>.apk, the name the in-app update check parses
 (core/update/UpdateRelease.kt). Names are never typed by hand. Fails, writing nothing, when any APK entry contains
 the TMDB key from local.properties (a public APK ships without one) or the build is not a two-ABI release.
 stdlib only: python3 scripts/release-assets.py
@@ -48,7 +48,7 @@ def main():
         print(f"{apk.name}: no TMDB key in any entry")
     OUT.mkdir(parents=True, exist_ok=True)
     for abi, (apk, name, code) in sorted(apks.items()):
-        target = OUT / f"NuvioKE-{name}-{code}-{abi}.apk"
+        target = OUT / f"NuvioAK-{name}-{code}-{abi}.apk"
         shutil.copyfile(apk, target)
         print(f"wrote {target.relative_to(ROOT)}")
 

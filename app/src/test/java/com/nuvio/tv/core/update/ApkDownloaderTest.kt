@@ -37,11 +37,11 @@ class ApkDownloaderTest {
 
     private val server = MockWebServer().apply { start() }
     private val bytes = ByteArray(200_000) { (it * 31).toByte() }
-    private var archive: ApkIdentity? = ApkIdentity("com.nuvio.tv.ke", 1392)
+    private var archive: ApkIdentity? = ApkIdentity("com.nuvio.tv.ak", 1392)
 
     private val dir by lazy { File(tmp.root, UPDATES_DIR) }
     private val downloader by lazy {
-        ApkDownloader(OkHttpClient.Builder().retryOnConnectionFailure(false).build(), dir, "com.nuvio.tv.ke") { archive }
+        ApkDownloader(OkHttpClient.Builder().retryOnConnectionFailure(false).build(), dir, "com.nuvio.tv.ak") { archive }
     }
 
     @After
@@ -49,10 +49,10 @@ class ApkDownloaderTest {
 
     private fun release(sizeBytes: Long = bytes.size.toLong(), sha256: String = bytes.toByteString().sha256().hex()) =
         KnownRelease(
-            versionName = "0.9.0-ke51",
+            versionName = "0.9.0-ak51",
             versionCode = 1392,
             abi = "armeabi-v7a",
-            downloadUrl = server.url("/releases/download/v/NuvioKE-0.9.0-ke51-1392-armeabi-v7a.apk").toString(),
+            downloadUrl = server.url("/releases/download/v/NuvioAK-0.9.0-ak51-1392-armeabi-v7a.apk").toString(),
             sizeBytes = sizeBytes,
             sha256 = sha256,
             notes = ""
@@ -76,7 +76,7 @@ class ApkDownloaderTest {
             assertArrayEquals(bytes, apk.readBytes())
             assertEquals(listOf(apk.name), dir.list()!!.toList())
             assertEquals(bytes.size.toLong(), progress.get())
-            assertEquals("/releases/download/v/NuvioKE-0.9.0-ke51-1392-armeabi-v7a.apk", server.takeRequest().path)
+            assertEquals("/releases/download/v/NuvioAK-0.9.0-ak51-1392-armeabi-v7a.apk", server.takeRequest().path)
         }
 
     @Test
@@ -125,7 +125,7 @@ class ApkDownloaderTest {
     fun `the download client does not follow a redirect that changes the scheme`() = runBlocking<Unit> {
         server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "https://localhost:1/x.apk"))
         val redirectsOnSameScheme = ApkDownloader(
-            apkDownloadClient(OkHttpClient.Builder().retryOnConnectionFailure(false).build()), dir, "com.nuvio.tv.ke"
+            apkDownloadClient(OkHttpClient.Builder().retryOnConnectionFailure(false).build()), dir, "com.nuvio.tv.ak"
         ) { archive }
         assertEquals(DownloadResult.Failed, redirectsOnSameScheme.download(release()) {})
         assertEquals(1, server.requestCount)
@@ -134,7 +134,7 @@ class ApkDownloaderTest {
 
     @Test
     fun `an archive of another app, another version or none at all is rejected and deleted`() = runBlocking<Unit> {
-        for (identity in listOf(ApkIdentity("com.other.app", 1392), ApkIdentity("com.nuvio.tv.ke", 1391), null)) {
+        for (identity in listOf(ApkIdentity("com.other.app", 1392), ApkIdentity("com.nuvio.tv.ak", 1391), null)) {
             archive = identity
             serve()
             assertEquals(DownloadResult.Rejected, downloader.download(release()) {})

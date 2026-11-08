@@ -18,20 +18,20 @@ class UpdateReleaseTest {
         state: String? = "uploaded",
         size: Long? = 41_000_000L,
         digest: String? = this.digest,
-        url: String? = "https://github.com/Arshad-Kamal/Nuvio-KE/releases/download/v1/$name"
+        url: String? = "https://github.com/Arshad-Kamal/Nuvio-AK/releases/download/v1/$name"
     ) = GitHubAssetDto(name = name, state = state, size = size, digest = digest, browserDownloadUrl = url)
 
     private fun release(vararg assets: GitHubAssetDto, body: String? = "Fixes") =
-        GitHubReleaseDto(name = "Nuvio KE 0.9.0-ke51", body = body, publishedAt = "2026-11-03T10:00:00Z", assets = assets.toList())
+        GitHubReleaseDto(name = "Nuvio AK 0.9.0-ak51", body = body, publishedAt = "2026-11-03T10:00:00Z", assets = assets.toList())
 
-    private val v7a = "NuvioKE-0.9.0-ke51-1392-armeabi-v7a.apk"
-    private val v8a = "NuvioKE-0.9.0-ke51-1392-arm64-v8a.apk"
+    private val v7a = "NuvioAK-0.9.0-ak51-1392-armeabi-v7a.apk"
+    private val v8a = "NuvioAK-0.9.0-ak51-1392-arm64-v8a.apk"
 
     @Test
     fun `picks the first supported ABI's APK and reads name, code and digest`() {
         val offer = releaseOffer(release(asset(v8a), asset(v7a)), listOf("armeabi-v7a", "armeabi"))!!
         assertEquals("armeabi-v7a", offer.abi)
-        assertEquals("0.9.0-ke51", offer.versionName)
+        assertEquals("0.9.0-ak51", offer.versionName)
         assertEquals(1392, offer.versionCode)
         assertEquals("ab".repeat(32), offer.sha256)
         assertEquals(41_000_000L, offer.sizeBytes)
@@ -46,10 +46,10 @@ class UpdateReleaseTest {
     fun `an asset counts only when name, state, size, digest and URL all hold`() {
         fun offered(asset: GitHubAssetDto) = releaseOffer(release(asset), listOf("armeabi-v7a")) != null
         assertTrue(offered(asset(v7a)))
-        assertFalse(offered(asset("NuvioKE-0.9.0-ke51-armeabi-v7a.apk")))
-        assertFalse(offered(asset("NuvioKE-0.9.0-ke51-1392-universal.apk")))
-        assertFalse(offered(asset("Other-0.9.0-ke51-1392-armeabi-v7a.apk")))
-        assertFalse(offered(asset("NuvioKE-0.9.0-ke51-99999999999-armeabi-v7a.apk")))
+        assertFalse(offered(asset("NuvioAK-0.9.0-ak51-armeabi-v7a.apk")))
+        assertFalse(offered(asset("NuvioAK-0.9.0-ak51-1392-universal.apk")))
+        assertFalse(offered(asset("Other-0.9.0-ak51-1392-armeabi-v7a.apk")))
+        assertFalse(offered(asset("NuvioAK-0.9.0-ak51-99999999999-armeabi-v7a.apk")))
         assertFalse(offered(asset(v7a, state = "open")))
         assertFalse(offered(asset(v7a, size = 0L)))
         assertFalse(offered(asset(v7a, size = MAX_ASSET_BYTES + 1)))
@@ -63,7 +63,7 @@ class UpdateReleaseTest {
 
     @Test
     fun `of two APKs for one ABI the higher code wins, and notes are capped`() {
-        val older = asset("NuvioKE-0.9.0-ke50-1391-armeabi-v7a.apk")
+        val older = asset("NuvioAK-0.9.0-ak50-1391-armeabi-v7a.apk")
         val offer = releaseOffer(release(older, asset(v7a), body = "x".repeat(MAX_NOTES_CHARS + 10)), listOf("armeabi-v7a"))!!
         assertEquals(1392, offer.versionCode)
         assertEquals(MAX_NOTES_CHARS, offer.notes.length)
@@ -101,10 +101,10 @@ class UpdateReleaseTest {
     }
 
     @Test
-    fun `only a keyless release build under the KE id checks`() {
-        assertTrue(updateCheckSupported("", debugBuild = false, applicationId = "com.nuvio.tv.ke"))
-        assertFalse(updateCheckSupported("0123abcd", debugBuild = false, applicationId = "com.nuvio.tv.ke"))
-        assertFalse(updateCheckSupported("", debugBuild = true, applicationId = "com.nuvio.tv.ke"))
-        assertFalse(updateCheckSupported("", debugBuild = false, applicationId = "com.nuvio.tv.ke.debug"))
+    fun `only a keyless release build under the AK id checks`() {
+        assertTrue(updateCheckSupported("", debugBuild = false, applicationId = "com.nuvio.tv.ak"))
+        assertFalse(updateCheckSupported("0123abcd", debugBuild = false, applicationId = "com.nuvio.tv.ak"))
+        assertFalse(updateCheckSupported("", debugBuild = true, applicationId = "com.nuvio.tv.ak"))
+        assertFalse(updateCheckSupported("", debugBuild = false, applicationId = "com.nuvio.tv.ak.debug"))
     }
 }

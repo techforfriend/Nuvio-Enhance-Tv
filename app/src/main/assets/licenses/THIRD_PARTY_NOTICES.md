@@ -1,10 +1,10 @@
 # Third-party notices
 
-Nuvio KE (`com.nuvio.tv.ke`) is free software under the GNU General Public License v3.0 (`GPL-3.0.txt`). It is a
+Nuvio AK (`com.nuvio.tv.ak`) is free software under the GNU General Public License v3.0 (`GPL-3.0.txt`). It is a
 fork of NuvioTV (https://github.com/NuvioMedia/NuvioTV) by way of ysosrs123/NuvioTV-Fork. The components below are
 bundled in the app. Every licence text named here is in this folder (in the APK: `assets/licenses/`).
 
-Source code: the source of Nuvio KE is at https://github.com/Arshad-Kamal/Nuvio-KE, where the APKs are published:
+Source code: the source of Nuvio AK is at https://github.com/Arshad-Kamal/Nuvio-AK, where the APKs are published:
 the app, the `ffmpeg-decoder-downmix` module and the rebuilt FFmpeg audio renderer class. The modified Media3 source
 is in a separate repository, named in its entry below. The mpv player libraries (mpv-android-lib 0.1.12) are built
 from the upstream versions named in their entries, with the build scripts at

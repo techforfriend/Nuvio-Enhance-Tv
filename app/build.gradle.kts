@@ -99,14 +99,14 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        // KE = Kamal Edition: distinct applicationId so fork builds install side-by-side with the
-        // legacy com.nuvio.tv.test copy (old signing chain, family fallback) and the Play Store app.
-        applicationId = "com.nuvio.tv.ke"
+        // AK id: this fork installs as com.nuvio.tv.ak, side-by-side with the
+        // legacy com.nuvio.tv.test copy and the Play Store app.
+        applicationId = "com.nuvio.tv.ak"
         minSdk = 24
         targetSdk = 36
         versionCode = 1393
-        versionName = "0.9.0-ke52"
-        resValue("string", "app_name", "Nuvio KE")
+        versionName = "0.9.0-ak52"
+        resValue("string", "app_name", "Nuvio Enhanced")
 
         buildConfigField("String", "INTRODB_API_URL", "\"${localProperties.getProperty("INTRODB_API_URL", "")}\"")
         buildConfigField("String", "IMDB_RATINGS_API_BASE_URL", "\"${localProperties.getProperty("IMDB_RATINGS_API_BASE_URL", "")}\"")
@@ -116,7 +116,7 @@ android {
         // Update check feed (Spec 52 P6): the public repo's GitHub Releases; checked only by a build
         // without a TMDB key (core/update/UpdateRelease.kt updateCheckSupported).
         buildConfigField("String", "UPDATE_OWNER", buildConfigString(localProperties.getProperty("UPDATE_OWNER").takeUnless { it.isNullOrBlank() } ?: "Arshad-Kamal"))
-        buildConfigField("String", "UPDATE_REPO", buildConfigString(localProperties.getProperty("UPDATE_REPO").takeUnless { it.isNullOrBlank() } ?: "Nuvio-KE"))
+        buildConfigField("String", "UPDATE_REPO", buildConfigString(localProperties.getProperty("UPDATE_REPO").takeUnless { it.isNullOrBlank() } ?: "Nuvio-AK"))
         buildConfigField("String", "TV_LOGIN_WEB_BASE_URL", "\"${localProperties.getProperty("TV_LOGIN_WEB_BASE_URL", "https://nuvio.tv/tv-login")}\"")
         buildConfigField("boolean", "DOVI_NATIVE_ENABLED", enableDoviNative.toString())
         buildConfigField("boolean", "DOVI_EXTRACTOR_HOOK_READY", doviExtractorHookReady.toString())
@@ -216,8 +216,8 @@ android {
             )
             buildConfigField("boolean", "IS_DEBUG_BUILD", "true")
             applicationIdSuffix = ".debug"
-            // Wave U Shield windows install this next to the family's "Nuvio KE": distinct label.
-            resValue("string", "app_name", "Nuvio KE Test")
+            // Wave U Shield windows install this next to the family's "Nuvio AK": distinct label.
+            resValue("string", "app_name", "Nuvio AK Test")
             matchingFallbacks += "release"
         }
     }

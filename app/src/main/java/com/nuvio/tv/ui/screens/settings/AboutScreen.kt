@@ -265,7 +265,7 @@ internal val UpdateStatus.isFailure: Boolean
     get() = this == UpdateStatus.FAILED || this == UpdateStatus.FAILED_AFTER_OK
 
 /**
- * The first row's line for [status]: the known release ("Nuvio KE 0.9.0-ke51 (1392) · released 3 Nov ·
+ * The first row's line for [status]: the known release ("Nuvio AK 0.9.0-ak51 (1392) · released 3 Nov ·
  * 41 MB"), Checking…, or the last check (failed: with when the last one answered).
  */
 @Composable

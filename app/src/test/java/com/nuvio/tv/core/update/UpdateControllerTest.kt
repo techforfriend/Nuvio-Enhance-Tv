@@ -66,7 +66,7 @@ class UpdateControllerTest {
     private val updatesDir by lazy { File(tmp.root, UPDATES_DIR) }
     private val installed = mutableListOf<File>()
     @Volatile private var install: (File) -> Boolean = { file -> installed += file; true }
-    @Volatile private var archiveIdentity: ApkIdentity? = ApkIdentity("com.nuvio.tv.ke", 1392)
+    @Volatile private var archiveIdentity: ApkIdentity? = ApkIdentity("com.nuvio.tv.ak", 1392)
 
     /** The asset URL is https (the offer's rule); this client sends every request to the mock server. */
     private val toServer = OkHttpClient.Builder()
@@ -78,8 +78,8 @@ class UpdateControllerTest {
 
     private fun controller(supported: Boolean = true, installedCode: Int = 1391, over: UpdateStore = store) =
         UpdateController(
-            api, over, UpdateFeed(supported, "Arshad-Kamal", "Nuvio-KE", installedCode, listOf("armeabi-v7a")), scope, now::get,
-            ApkDownloader(toServer, updatesDir, "com.nuvio.tv.ke") { archiveIdentity },
+            api, over, UpdateFeed(supported, "Arshad-Kamal", "Nuvio-AK", installedCode, listOf("armeabi-v7a")), scope, now::get,
+            ApkDownloader(toServer, updatesDir, "com.nuvio.tv.ak") { archiveIdentity },
             { file -> install(file) }
         )
 
@@ -90,10 +90,10 @@ class UpdateControllerTest {
     }
 
     private fun releaseJson(code: Int = 1392, size: Long = 41_000_000, sha256: String = "ab".repeat(32)) = """
-        {"name":"Nuvio KE","body":"Notes","published_at":"2026-11-03T10:00:00Z","draft":false,
-         "assets":[{"name":"NuvioKE-0.9.0-ke51-$code-armeabi-v7a.apk","state":"uploaded","size":$size,
+        {"name":"Nuvio AK","body":"Notes","published_at":"2026-11-03T10:00:00Z","draft":false,
+         "assets":[{"name":"NuvioAK-0.9.0-ak51-$code-armeabi-v7a.apk","state":"uploaded","size":$size,
            "digest":"sha256:$sha256","content_type":"application/vnd.android.package-archive",
-           "browser_download_url":"https://github.com/Arshad-Kamal/Nuvio-KE/releases/download/v/NuvioKE-0.9.0-ke51-$code-armeabi-v7a.apk"}]}
+           "browser_download_url":"https://github.com/Arshad-Kamal/Nuvio-AK/releases/download/v/NuvioAK-0.9.0-ak51-$code-armeabi-v7a.apk"}]}
     """.trimIndent()
 
     private fun answer(code: Int, body: String = "{}") = server.enqueue(MockResponse().setResponseCode(code).setBody(body))
@@ -117,7 +117,7 @@ class UpdateControllerTest {
 
         assertEquals(1392, (controller.awaitCheck() as CheckOutcome.Answered).offer?.versionCode)
         val request = server.takeRequest()
-        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases/latest", request.path)
+        assertEquals("/repos/Arshad-Kamal/Nuvio-AK/releases/latest", request.path)
         assertEquals("application/vnd.github+json", request.getHeader("Accept"))
         assertEquals("2022-11-28", request.getHeader("X-GitHub-Api-Version"))
         assertEquals("no-cache", request.getHeader("Cache-Control"))
@@ -220,7 +220,7 @@ class UpdateControllerTest {
     fun `a stored release that does not decode reads as none, unknown fields are skipped`() = runBlocking<Unit> {
         val bad = UpdateStore(TestPreferencesDataStore(preferencesOf(UpdateStore.KNOWN_RELEASE to "{not json")))
         assertNull(bad.read().knownRelease)
-        val later = """{"versionName":"0.9.0-ke51","versionCode":1392,"abi":"armeabi-v7a","downloadUrl":"https://x/a.apk",
+        val later = """{"versionName":"0.9.0-ak51","versionCode":1392,"abi":"armeabi-v7a","downloadUrl":"https://x/a.apk",
             "sizeBytes":5,"sha256":"ab","notes":"","addedLater":true}"""
         val newer = UpdateStore(TestPreferencesDataStore(preferencesOf(UpdateStore.KNOWN_RELEASE to later)))
         assertEquals(1392, newer.read().knownRelease?.versionCode)
@@ -279,9 +279,9 @@ class UpdateControllerTest {
             val controller = controller()
             controller.downloadAndInstall()!!.join()
 
-            assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases/latest", server.takeRequest().path)
+            assertEquals("/repos/Arshad-Kamal/Nuvio-AK/releases/latest", server.takeRequest().path)
             assertEquals(
-                "/Arshad-Kamal/Nuvio-KE/releases/download/v/NuvioKE-0.9.0-ke51-1392-armeabi-v7a.apk",
+                "/Arshad-Kamal/Nuvio-AK/releases/download/v/NuvioAK-0.9.0-ak51-1392-armeabi-v7a.apk",
                 server.takeRequest().path
             )
             assertEquals(listOf("update-1392-armeabi-v7a.apk"), installed.map { it.name })
@@ -317,7 +317,7 @@ class UpdateControllerTest {
     fun `a file that does not match its digest, or is another build, fails and drops the known release`() =
         runBlocking<Unit> {
             for (digestMatches in listOf(false, true)) {
-                archiveIdentity = if (digestMatches) ApkIdentity("com.nuvio.tv.ke", 1391) else ApkIdentity("com.nuvio.tv.ke", 1392)
+                archiveIdentity = if (digestMatches) ApkIdentity("com.nuvio.tv.ak", 1391) else ApkIdentity("com.nuvio.tv.ak", 1392)
                 downloadable(sha256 = if (digestMatches) apkSha256 else "cd".repeat(32))
                 serveApk()
                 val controller = controller()

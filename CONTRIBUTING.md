@@ -1,6 +1,6 @@
 # Contributing
 
-Nuvio KE is a one-person fork. I build it for my own TV first, so the rules here are short and the scope is narrow.
+Nuvio AK is a one-person fork. I build it for my own TV first, so the rules here are short and the scope is narrow.
 
 ## Bug reports
 
@@ -12,7 +12,7 @@ A good bug report is the most useful thing you can send me. Use the bug report f
 - The steps that make it happen, what you expected, and what you got instead.
 - For a crash, a log. Running `adb logcat -d > nuvio-log.txt` right after the crash is enough.
 
-Before you file, check that the bug is actually in KE. If NuvioMedia's app does the same thing, it belongs on
+Before you file, check that the bug is actually in AK. If NuvioMedia's app does the same thing, it belongs on
 [their tracker](https://github.com/NuvioMedia/NuvioTV/issues). A stream that fails in every player is usually the
 addon or the source, not the app.
 
@@ -26,7 +26,7 @@ I take pull requests for two things:
 
 Anything bigger (a feature, a redesign, a refactor, a new dependency) needs an issue first, so we can agree on it
 before you put the time in. Open a blank issue and make the case. A pull request that arrives without one will
-probably get closed, even if the code is good. KE's screens all follow one design, and I keep the app small on
+probably get closed, even if the code is good. AK's screens all follow one design, and I keep the app small on
 purpose: the README lists a lot of what I took out.
 
 Keep each pull request to one change. Build it with JDK 21 (`./gradlew assembleFullDebug`) and run
