@@ -115,8 +115,8 @@ android {
         buildConfigField("String", "TMDB_API_KEY", "\"$builtInTmdbKey\"")
         // Update check feed (Spec 52 P6): the public repo's GitHub Releases; checked only by a build
         // without a TMDB key (core/update/UpdateRelease.kt updateCheckSupported).
-        buildConfigField("String", "UPDATE_OWNER", buildConfigString(localProperties.getProperty("UPDATE_OWNER").takeUnless { it.isNullOrBlank() } ?: "Arshad-Kamal"))
-        buildConfigField("String", "UPDATE_REPO", buildConfigString(localProperties.getProperty("UPDATE_REPO").takeUnless { it.isNullOrBlank() } ?: "Nuvio-AK"))
+        buildConfigField("String", "UPDATE_OWNER", buildConfigString(localProperties.getProperty("UPDATE_OWNER").takeUnless { it.isNullOrBlank() } ?: "techforfriend"))
+        buildConfigField("String", "UPDATE_REPO", buildConfigString(localProperties.getProperty("UPDATE_REPO").takeUnless { it.isNullOrBlank() } ?: "Nuvio-Enhance-Tv"))
         buildConfigField("String", "TV_LOGIN_WEB_BASE_URL", "\"${localProperties.getProperty("TV_LOGIN_WEB_BASE_URL", "https://nuvio.tv/tv-login")}\"")
         buildConfigField("boolean", "DOVI_NATIVE_ENABLED", enableDoviNative.toString())
         buildConfigField("boolean", "DOVI_EXTRACTOR_HOOK_READY", doviExtractorHookReady.toString())

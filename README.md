@@ -1,4 +1,4 @@
-# Nuvio enhanced plus tv
+# Nuvio Enhanced TV
 
 An unofficial Android TV fork of [NuvioMedia's Nuvio](https://github.com/NuvioMedia/NuvioTV): every screen redesigned,
 playback tuned for big 4K remuxes and lossless audio, and everything a Stremio addon already does (scrapers, debrid,
@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/de75164a-e5c4-408c-b980-94ef0a529095
 
 ## Install
 
-- **APK:** [Releases](https://github.com/Arshad-Kamal/Nuvio-AK/releases). Take `armeabi-v7a` (most TV boxes, the
+- **APK:** [Releases](https://github.com/techforfriend/Nuvio-Enhance-Tv/releases). Take `armeabi-v7a` (most TV boxes, the
   Shield included); if Android says it isn't compatible, take `arm64-v8a`. It installs next to the official app
   (`com.nuvio.tv.ak`), so you can keep both.
 - **Account:** sign-in and sync use your Nuvio account. On the same account, AK and the official app share addons,
@@ -27,6 +27,9 @@ https://github.com/user-attachments/assets/de75164a-e5c4-408c-b980-94ef0a529095
 
 ## What's different
 
+- **CloudStream plugins:** community repos and `.cs3` plugins from Settings › Integrations › CloudStream
+  extensions. Installed plugins add their catalogs to Home with a provider selector, and their streams play
+  through the normal stream screen. Dex plugins only — JavaScript plugins are not supported.
 - **Design:** full-screen artwork, a top bar instead of the sidebar, and each title's own colours tinting the focus
   glow. Settings get a category rail, and rows that can't apply right now are dimmed with the reason.
 - **Detail:** a "Ready" line with the best source's resolution, HDR and audio, and an About sheet with release dates,
@@ -47,8 +50,8 @@ https://github.com/user-attachments/assets/de75164a-e5c4-408c-b980-94ef0a529095
 
 ## What's gone
 
-- Plugins and scrapers, in-app debrid sign-in and the debrid library, Trakt, Simkl and MDBList. Their lists still
-  arrive as addon catalogs, but nothing scrobbles: watch history lives in the app and your Nuvio account.
+- In-app debrid sign-in and the debrid library, Trakt, Simkl and MDBList. Their lists still arrive as addon
+  catalogs, but nothing scrobbles: watch history lives in the app and your Nuvio account.
 - Layout presets, watch party, ambient mode, Jellyfin and Emby, automatic subtitle sync, post-play
   recommendations, Anime Skip, crash reporting, and the IAMF and MPEG-H decoders.
 - Bengali, Croatian and Serbian (Latin). AK has 34 translations; some are only partly done.
@@ -90,11 +93,12 @@ search 0.4 s.
 ## Credits and licence
 
 Built on [NuvioMedia/NuvioTV](https://github.com/NuvioMedia/NuvioTV) by Tapframe and the Nuvio contributors, through
-[ysosrs123/NuvioTV-Fork](https://github.com/ysosrs123/NuvioTV-Fork). Please support the official project.
+[ysosrs123/NuvioTV-Fork](https://github.com/ysosrs123/NuvioTV-Fork). The CloudStream plugin system is ported from
+[Nuvio Enhanced-2](https://github.com/techforfriend/Nuvio-enhanced-2). Please support the official project.
 
 GPL-3.0, like the original, with upstream copyright notices kept. Third-party components and their licences are in
 [THIRD_PARTY_NOTICES.md](app/src/main/assets/licenses/THIRD_PARTY_NOTICES.md), which also ships inside the APK. Each
 release attaches the source for the GPL and LGPL libraries the APK carries.
 
-Found a bug? Use the [bug report form](https://github.com/Arshad-Kamal/Nuvio-AK/issues/new/choose);
+Found a bug? Use the [bug report form](https://github.com/techforfriend/Nuvio-Enhance-Tv/issues/new/choose);
 [CONTRIBUTING.md](CONTRIBUTING.md) covers what to include and which pull requests I take.

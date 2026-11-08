@@ -377,7 +377,7 @@
     <string name="about_version_credits">Version and credits</string>
     <string name="about_edition" translatable="false">KAMAL EDITION</string>
     <string name="about_fork_credit">Overhauled and reimagined by Arshad Kamal.</string>
-    <string name="about_upstream_credit">Built on Nuvio TV by Tapframe and the Nuvio contributors, by way of ysosrs123\'s NuvioTV-Fork. Free and open source under the GPL-3.0; the original lives at github.com/NuvioMedia/NuvioTV. This edition\'s source: github.com/Arshad-Kamal/Nuvio-AK.</string>
+    <string name="about_upstream_credit">Built on Nuvio TV by Tapframe and the Nuvio contributors, by way of ysosrs123\'s NuvioTV-Fork. Free and open source under the GPL-3.0; the original lives at github.com/NuvioMedia/NuvioTV. This edition\'s source: github.com/techforfriend/Nuvio-Enhance-Tv.</string>
     <string name="about_version_build">Version %1$s (%2$d)</string>
     <!-- TMDB API terms s3 notice (Spec 52 D3): the exact wording, so never translated. -->
     <string name="about_tmdb_notice" translatable="false">This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.</string>
