@@ -94,7 +94,8 @@ class CloudStreamManagerViewModel @Inject constructor() : ViewModel() {
     }
 
     fun installPlugin(plugin: CloudStreamPluginItem) {
-        runPluginJob(plugin) { CloudStreamRepository.installPlugin(plugin.metadata.id.value) }
+        // A fresh install should be usable immediately; bulk install already enables.
+        runPluginJob(plugin, enableOnSuccess = true) { CloudStreamRepository.installPlugin(plugin.metadata.id.value) }
     }
 
     fun updatePlugin(plugin: CloudStreamPluginItem) {
@@ -111,6 +112,7 @@ class CloudStreamManagerViewModel @Inject constructor() : ViewModel() {
 
     private fun runPluginJob(
         plugin: CloudStreamPluginItem,
+        enableOnSuccess: Boolean = false,
         job: suspend () -> CloudStreamInstallResult,
     ) {
         val id = plugin.metadata.id.value
@@ -118,7 +120,11 @@ class CloudStreamManagerViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch {
             _busyPluginIds.value = _busyPluginIds.value + id
             when (val result = job()) {
-                is CloudStreamInstallResult.Success -> Unit
+                is CloudStreamInstallResult.Success -> if (enableOnSuccess) {
+                    // setPluginEnabled still gates on installed && verified &&
+                    // runnable, so an unverified or incompatible plugin stays disabled.
+                    CloudStreamRepository.setPluginEnabled(plugin.metadata.id.value, true)
+                }
                 is CloudStreamInstallResult.Error -> _transientMessage.value = result.message
             }
             _busyPluginIds.value = _busyPluginIds.value - id

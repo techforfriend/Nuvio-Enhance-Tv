@@ -15,7 +15,7 @@ object CloudStreamRepositoryParser {
         val dto = json.decodeFromString<CloudStreamRepositoryManifestDto>(payload)
         val manifestVersion = dto.manifestVersion ?: 1
         require(manifestVersion > 0) { "CloudStream manifestVersion must be positive" }
-        val pluginLists = dto.pluginLists
+        val pluginLists = dto.pluginLists.orEmpty()
             .asSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
@@ -102,15 +102,17 @@ object CloudStreamRepositoryParser {
 fun normalizeCloudStreamRepositoryUrl(rawUrl: String): String {
     var value = rawUrl.trim()
     require(value.isNotBlank()) { "CloudStream repository URL is required" }
+    // URI schemes are case-insensitive (RFC 3986 §3.1): strip them case-insensitively,
+    // otherwise e.g. "CloudStreamRepo://…" is not stripped and gets "https://" prepended.
     value = value
-        .removePrefix("cloudstreamrepo://")
-        .removePrefix("https://cs.repo/?")
-        .removePrefix("http://cs.repo/?")
+        .removePrefix("cloudstreamrepo://", ignoreCase = true)
+        .removePrefix("https://cs.repo/?", ignoreCase = true)
+        .removePrefix("http://cs.repo/?", ignoreCase = true)
         .trim()
-    if (!value.startsWith("http://") && !value.startsWith("https://")) {
+    if (!value.startsWith("http://", ignoreCase = true) && !value.startsWith("https://", ignoreCase = true)) {
         value = "https://$value"
     }
-    require(value.startsWith("https://") || value.startsWith("http://")) {
+    require(value.startsWith("https://", ignoreCase = true) || value.startsWith("http://", ignoreCase = true)) {
         "CloudStream repository URL must use HTTP or HTTPS"
     }
     value = value.substringBefore('#')

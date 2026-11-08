@@ -72,6 +72,12 @@ class CloudStreamHomeViewModel @Inject constructor(
     private val _pendingPlay = MutableStateFlow<CloudStreamHomePlayTarget?>(null)
     val pendingPlay: StateFlow<CloudStreamHomePlayTarget?> = _pendingPlay.asStateFlow()
 
+    // A card tap whose load() failed: the reason, shown once as a toast on Home.
+    // Without this a failed tap did nothing at all and looked like the card
+    // just ignored the press.
+    private val _tapError = MutableStateFlow<String?>(null)
+    val tapError: StateFlow<String?> = _tapError.asStateFlow()
+
     private var lastRunnableIds: List<String> = emptyList()
     private var loadJob: kotlinx.coroutines.Job? = null
 
@@ -153,8 +159,14 @@ class CloudStreamHomeViewModel @Inject constructor(
     /** A Home CS3 card was clicked: resolve it to a play target or an episode pick. */
     fun onCardClick(item: CloudStreamSearchItem) {
         viewModelScope.launch {
-            val loaded = CloudStreamRepository.load(item.providerId, item.data).getOrNull()
-                ?: return@launch
+            val result = CloudStreamRepository.load(item.providerId, item.data)
+            val loaded = result.getOrNull()
+            if (loaded == null) {
+                val reason = result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                    ?: "could not be opened"
+                _tapError.value = "${item.name}: $reason"
+                return@launch
+            }
             val contentType = item.type.tvTypeString
             val episodes = loaded.episodes
             if (contentType == "series" && episodes.isNotEmpty()) {
@@ -182,6 +194,10 @@ class CloudStreamHomeViewModel @Inject constructor(
 
     fun consumePendingPlay() {
         _pendingPlay.value = null
+    }
+
+    fun consumeTapError() {
+        _tapError.value = null
     }
 
     private fun playTarget(

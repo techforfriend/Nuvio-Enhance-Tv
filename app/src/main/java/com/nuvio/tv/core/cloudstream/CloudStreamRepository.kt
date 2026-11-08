@@ -352,17 +352,14 @@ object CloudStreamRepository {
             }
             val plugins = current.plugins.map { plugin ->
                 if (plugin.metadata.repositoryManifestUrl != normalizedUrl) return@map plugin
-                if (!enabled) {
-                    if (plugin.enabled) {
-                        changed = true
-                        affectedUnloadPluginIds += plugin.metadata.id.value
-                    }
-                    plugin.copy(enabled = false)
-                } else {
-                    val canEnable = plugin.isInstalled && plugin.verified && plugin.compatibility.isRunnable && plugin.metadata.status.canInstall
-                    if (plugin.enabled != canEnable) changed = true
-                    plugin.copy(enabled = canEnable)
+                // Keep the user's per-plugin choice: disabling a repo only unloads its
+                // plugins (below); re-enabling must not resurrect plugins the user
+                // deliberately disabled. runnablePlugins() already excludes plugins
+                // whose repo is disabled, so this flag is purely the user's choice.
+                if (!enabled && plugin.enabled) {
+                    affectedUnloadPluginIds += plugin.metadata.id.value
                 }
+                plugin
             }
             current.copy(
                 repositories = repositories,
@@ -838,7 +835,6 @@ object CloudStreamRepository {
                 enabled = repository.enabled,
             )
         }
-        val disabledRepoUrls = stored.repositories.filterNot { it.enabled }.map { it.manifestUrl }.toSet()
         val plugins = stored.plugins.map { plugin ->
             val metadata = plugin.toMetadata()
             val legacyStorageKey = CloudStreamPluginId(plugin.repositoryManifestUrl, plugin.internalName).storageKey
@@ -849,13 +845,17 @@ object CloudStreamRepository {
                         CloudStreamStorage.migratePackage(legacyStorageKey, storageKey))
                 )
             val compatibility = resolveCompatibility(metadata)
-            val isRepoEnabled = plugin.repositoryManifestUrl !in disabledRepoUrls
             CloudStreamPluginItem(
                 metadata = metadata,
                 compatibility = compatibility,
                 installedVersion = plugin.installedVersion.takeIf { packageExists },
                 installedAtEpochMs = plugin.installedAtEpochMs.takeIf { packageExists } ?: 0L,
-                enabled = plugin.enabled && isRepoEnabled && packageExists && plugin.verified && compatibility.isRunnable && metadata.status.canInstall,
+                // Keep the stored per-plugin choice: do NOT fold the repo's enabled
+                // state in here — runnablePlugins() already excludes plugins whose
+                // repo is disabled, and folding it would wipe a deliberately-disabled
+                // plugin (or a deliberately-enabled one of a disabled repo) on every
+                // restart, the first persist afterwards making the loss permanent.
+                enabled = plugin.enabled && packageExists && plugin.verified && compatibility.isRunnable && metadata.status.canInstall,
                 verified = plugin.verified && packageExists,
             )
         }

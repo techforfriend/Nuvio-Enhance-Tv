@@ -17,7 +17,7 @@ data class CloudStreamRepositoryManifestDto(
     val description: String? = null,
     val iconUrl: String? = null,
     val manifestVersion: Int? = null,
-    val pluginLists: List<String> = emptyList(),
+    val pluginLists: List<String>? = null,
 )
 
 @Serializable

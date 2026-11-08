@@ -40,6 +40,7 @@ import com.nuvio.tv.ui.screens.settings.SettingsPickerOption
 import com.nuvio.tv.ui.screens.settings.SettingsPickerPanel
 import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.components.errorStateText
+import com.nuvio.tv.ui.components.marquee.LocalMarqueeToast
 import com.nuvio.tv.ui.components.posteroptions.PosterOptionsHost
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.res.stringResource
@@ -391,6 +392,16 @@ fun HomeScreen(
         val target = cs3PendingPlay ?: return@LaunchedEffect
         onNavigateToCloudStreamStream(target)
         cloudStreamHomeViewModel.consumePendingPlay()
+    }
+
+    // A card tap whose load() failed: show the reason once as a toast, so the
+    // tap doesn't look ignored. Same LocalMarqueeToast the manager screen uses.
+    val cs3TapError by cloudStreamHomeViewModel.tapError.collectAsStateWithLifecycle()
+    val toast = LocalMarqueeToast.current
+    LaunchedEffect(cs3TapError) {
+        val message = cs3TapError ?: return@LaunchedEffect
+        toast?.show(message)
+        cloudStreamHomeViewModel.consumeTapError()
     }
 }
 

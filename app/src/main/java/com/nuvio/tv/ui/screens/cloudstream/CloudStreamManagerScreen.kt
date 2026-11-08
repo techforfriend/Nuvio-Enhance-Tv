@@ -44,6 +44,7 @@ import com.nuvio.tv.ui.components.marquee.MarqueeConfirmPanel
 import com.nuvio.tv.ui.screens.collection.CollectionFieldPill
 import com.nuvio.tv.ui.screens.collection.CollectionRowAction
 import com.nuvio.tv.ui.screens.collection.CollectionsHeaderButton
+import com.nuvio.tv.ui.screens.collection.ServePendingFocus
 import com.nuvio.tv.ui.screens.collection.rememberCollectionFocusTargets
 import com.nuvio.tv.ui.screens.home.MarqueeBreadcrumb
 import com.nuvio.tv.ui.theme.NuvioPrimitives
@@ -88,6 +89,10 @@ fun CloudStreamManagerScreen(
             focusTargets.pending = FIELD_TARGET
         }
     }
+
+    // Serve the pending first-focus request above; without this call the URL field
+    // is never focused on entry (pending is set but nobody serves it).
+    focusTargets.ServePendingFocus(content = uiState.repositories, fallback = FIELD_TARGET)
 
     LaunchedEffect(transientMessage) {
         val message = transientMessage ?: return@LaunchedEffect
@@ -363,8 +368,8 @@ private fun CloudStreamPluginRow(
             plugin.installedVersion ?: 0,
             plugin.metadata.version
         )
-        !plugin.isRunnable -> plugin.compatibility.reason
         !plugin.enabled -> stringResource(R.string.cs3_disabled)
+        !plugin.isRunnable -> plugin.compatibility.reason
         else -> stringResource(R.string.cs3_installed_version, plugin.metadata.version)
     }
     val details = listOfNotNull(
