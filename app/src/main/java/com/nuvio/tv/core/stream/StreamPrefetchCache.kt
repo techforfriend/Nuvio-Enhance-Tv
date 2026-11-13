@@ -266,7 +266,7 @@ object StreamPrefetchCache {
             lateinit var job: Deferred<List<AddonStreams>>
             val rankReturned = AtomicBoolean(false)
             job = scope.async(start = CoroutineStart.LAZY) {
-                val (result, capHit) = collectFinal(repository, type, videoId, season, episode, capMs)
+                val (result, capHit) = collectFinal(repository, type, videoId, season, episode, capMs, title)
                 val rankT0 = SystemClock.elapsedRealtime()
                 // Fork (B2): rank even when the result is empty, as the dedup
                 // and superseded paths (launchRank) do too. rankAndPrewarm
@@ -318,7 +318,7 @@ object StreamPrefetchCache {
                         // has started a scrape since this one.
                         if (capHit && result.isEmpty() && republishOnDedup && rank != null) {
                             lateRankJob = launchRank(rank, "late-rank", source, key, logGroups = true) {
-                                collectFinal(repository, type, videoId, season, episode, capMs = null).streams
+                                collectFinal(repository, type, videoId, season, episode, capMs = null, title = title).streams
                             }
                         }
                     }
@@ -388,7 +388,9 @@ object StreamPrefetchCache {
         videoId: String,
         season: Int?,
         episode: Int?,
-        capMs: Long?
+        capMs: Long?,
+        /** The title, for sources that resolve by search instead of by id. */
+        title: String? = null
     ): CollectFinalResult {
         var last: List<AddonStreams> = emptyList()
         var capHit = false

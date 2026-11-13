@@ -401,7 +401,7 @@ class MetaDetailsViewModel @Inject constructor(
                         target.episode,
                         target.contentId,
                         "details_hero",
-                        meta.name
+                        _uiState.value.meta?.name
                     )
                 } else {
                     // Fork (B1): a null target must CLEAR the hero-key state.

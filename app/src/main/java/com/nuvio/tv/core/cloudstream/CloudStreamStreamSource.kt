@@ -50,7 +50,7 @@ class CloudStreamStreamSource @Inject constructor() {
         val requestedEpisode = episode ?: parts.getOrNull(2)?.toIntOrNull()
         val plugins = CloudStreamRepository.runnablePlugins()
         if (plugins.isEmpty()) return emptyList()
-        val cleanTitle = title?.trim().takeIf { it.isNotEmpty() }
+        val cleanTitle = title?.trim()?.takeIf { it.isNotEmpty() }
         // The request's type ("movie"/"series"/"channel"/"tv") as the search items
         // report it: "tv" requests are channels.
         val wantedType = when (type?.lowercase()) {
@@ -107,7 +107,7 @@ class CloudStreamStreamSource @Inject constructor() {
         title: String?,
         type: String?,
     ): CloudStreamLoadItem? {
-        val query = title?.trim().takeIf { it.isNotEmpty() } ?: return null
+        val query = title?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val results = CloudStreamRepository.search(query, providerId)
             .firstOrNull()?.getOrNull().orEmpty()
         val match = bestSearchMatch(results, query, type) ?: return null
