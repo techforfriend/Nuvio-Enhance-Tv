@@ -731,7 +731,8 @@ class StreamScreenViewModel @Inject constructor(
                     videoId = streamRequestId,
                     season = season,
                     episode = episode,
-                    forceRefresh = forceRefresh
+                    forceRefresh = forceRefresh,
+                    title = title
                 )
                     // Main review F2: each emission carries the FULL accumulated
                     // list and applySuccess reprocesses all of it (ordering,
@@ -850,7 +851,7 @@ class StreamScreenViewModel @Inject constructor(
                     sessionFillJob?.cancel()
                     sessionFillJob = viewModelScope.launch {
                         streamRepository.getStreamsFromAllAddons(
-                            contentType, streamRequestId, season, episode
+                            contentType, streamRequestId, season, episode, title = title
                         ).collect { fillResult ->
                             if (fillResult is NetworkResult.Success) {
                                 applySuccess(fillResult.data, isAllLoaded = false)

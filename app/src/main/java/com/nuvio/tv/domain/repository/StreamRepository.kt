@@ -11,6 +11,8 @@ interface StreamRepository {
      * @param videoId The video ID (for movies: IMDB ID, for series: IMDB_ID:season:episode)
      * @param season Optional season number for TV shows (part of the search-session key)
      * @param episode Optional episode number for TV shows (part of the search-session key)
+     * @param title The title, for sources that resolve by search instead of by id
+     * (CloudStream providers without IMDb sync); null skips the search fallback.
      * @return Flow of AddonStreams grouped by addon
      */
     fun getStreamsFromAllAddons(
@@ -18,6 +20,7 @@ interface StreamRepository {
         videoId: String,
         season: Int? = null,
         episode: Int? = null,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        title: String? = null
     ): Flow<NetworkResult<List<AddonStreams>>>
 }

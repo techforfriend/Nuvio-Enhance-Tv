@@ -127,7 +127,8 @@ class StreamRepositoryImpl @Inject constructor(
         videoId: String,
         season: Int?,
         episode: Int?,
-        forceRefresh: Boolean
+        forceRefresh: Boolean,
+        title: String?
     ): Flow<NetworkResult<List<AddonStreams>>> = flow {
         val sourceConfiguration = captureSourceConfiguration()
         val requestKey = StreamSearchRequestKey(
@@ -149,7 +150,8 @@ class StreamRepositoryImpl @Inject constructor(
                     videoId = videoId,
                     addons = sourceConfiguration.addons,
                     season = season,
-                    episode = episode
+                    episode = episode,
+                    title = title
                 )
             }
         )
@@ -176,7 +178,8 @@ class StreamRepositoryImpl @Inject constructor(
         videoId: String,
         addons: List<Addon>,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        title: String? = null
     ): Flow<NetworkResult<List<AddonStreams>>> = flow {
         emit(NetworkResult.Loading)
         // P0 instrument: whole-scrape wall time. Grep anchor: SCRAPE_TOTAL.
@@ -364,7 +367,9 @@ class StreamRepositoryImpl @Inject constructor(
                         var cs3StreamCount = 0
                         try {
                             withTimeout(ADDON_STREAM_FETCH_TIMEOUT_MS) {
-                                val groups = cloudStreamStreamSource.fetchStreams(videoId, season, episode)
+                                val groups = cloudStreamStreamSource.fetchStreams(
+                                    videoId, season, episode, title, type
+                                )
                                 if (groups.isNotEmpty()) {
                                     cs3Outcome = "ok"
                                     cs3StreamCount = groups.sumOf { it.streams.size }

@@ -43,7 +43,8 @@ class StreamPrefetchCacheTest {
             videoId: String,
             season: Int?,
             episode: Int?,
-            forceRefresh: Boolean
+            forceRefresh: Boolean,
+            title: String?
         ): Flow<NetworkResult<List<AddonStreams>>> =
             respond(videoId, calls.getOrPut(videoId) { AtomicInteger() }.getAndIncrement())
     }

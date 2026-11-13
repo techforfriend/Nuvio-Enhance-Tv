@@ -371,6 +371,7 @@ internal fun PlayerRuntimeController.maybePrefetchNextEpisodeForBinge(
         videoId = nextVideo.id,
         season = nextVideo.season,
         episode = nextVideo.episode,
+        title = nextVideo.title,
         source = "binge_lookahead",
         background = true,
         rank = { groups ->

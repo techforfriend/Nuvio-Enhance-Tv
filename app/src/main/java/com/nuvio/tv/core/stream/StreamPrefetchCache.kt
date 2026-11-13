@@ -152,6 +152,8 @@ object StreamPrefetchCache {
         videoId: String,
         season: Int?,
         episode: Int?,
+        /** The title, for sources that resolve by search instead of by id. */
+        title: String? = null,
         /** Which producer started this prefetch, for log attribution. */
         source: String,
         /**
@@ -397,7 +399,7 @@ object StreamPrefetchCache {
         // cache's own scope and continues to completion, so the full pool stays
         // re-collectable from the session (that is what a capHit hit does).
         val collectBlock: suspend () -> Unit = {
-            repository.getStreamsFromAllAddons(type, videoId, season, episode).collect { result ->
+            repository.getStreamsFromAllAddons(type, videoId, season, episode, title = title).collect { result ->
                 if (result is NetworkResult.Success) last = result.data
             }
         }
@@ -468,7 +470,9 @@ object StreamPrefetchCache {
         videoId: String,
         season: Int?,
         episode: Int?,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        /** The title, for sources that resolve by search instead of by id. */
+        title: String? = null
     ): Flow<NetworkResult<List<AddonStreams>>> {
         // 0.8.5 source-refresh: a user refresh must bypass BOTH caches -- this
         // prefetch layer (hit/join below) AND the repository session cache
@@ -476,7 +480,7 @@ object StreamPrefetchCache {
         // means a refresh always reaches a live scrape rather than replaying a
         // warmed or in-flight prefetch.
         if (forceRefresh) {
-            return repository.getStreamsFromAllAddons(type, videoId, season, episode, forceRefresh = true)
+            return repository.getStreamsFromAllAddons(type, videoId, season, episode, forceRefresh = true, title = title)
         }
         val key = keyOf(type, videoId, season, episode)
         var hit: List<AddonStreams>? = null
@@ -515,12 +519,12 @@ object StreamPrefetchCache {
                     emit(NetworkResult.Success(joined))
                 } else {
                     Log.i(TAG, "PREFETCH join empty; falling back to live scrape")
-                    emitAll(repository.getStreamsFromAllAddons(type, videoId, season, episode))
+                    emitAll(repository.getStreamsFromAllAddons(type, videoId, season, episode, title = title))
                 }
             }
         }
 
         Log.i(TAG, "PREFETCH miss key=$key")
-        return repository.getStreamsFromAllAddons(type, videoId, season, episode)
+        return repository.getStreamsFromAllAddons(type, videoId, season, episode, title = title)
     }
 }

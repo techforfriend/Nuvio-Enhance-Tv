@@ -250,7 +250,9 @@ internal fun PlayerRuntimeController.loadSourceStreams(forceRefresh: Boolean) {
             videoId = vid,
             season = seasonArg,
             episode = episodeArg,
-            forceRefresh = forceRefresh
+            forceRefresh = forceRefresh,
+            title = state.contentName?.takeIf { it.isNotBlank() }
+                ?: state.title.takeIf { it.isNotBlank() }
         ).collect { result ->
             when (result) {
                 is NetworkResult.Success -> {
@@ -1049,7 +1051,8 @@ internal fun PlayerRuntimeController.loadStreamsForEpisode(video: Video, forceRe
             videoId = video.id,
             season = video.season,
             episode = video.episode,
-            forceRefresh = forceRefresh
+            forceRefresh = forceRefresh,
+            title = video.title.takeIf { it.isNotBlank() }
         ).collect { result ->
             when (result) {
                 is NetworkResult.Success -> {
@@ -1683,7 +1686,8 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
             type = type,
             videoId = target.id,
             season = target.season,
-            episode = target.episode
+            episode = target.episode,
+            title = target.title.takeIf { it.isNotBlank() }
         ).collect { result ->
             when (result) {
                 is NetworkResult.Success -> {

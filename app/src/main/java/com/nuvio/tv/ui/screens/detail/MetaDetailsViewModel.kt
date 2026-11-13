@@ -230,7 +230,7 @@ class MetaDetailsViewModel @Inject constructor(
                 StreamPrefetchTarget(rawMeta.apiType, rawMeta.playRequestVideoId(), null, null, rawMeta.id)
             }
             target?.let {
-                onStreamPrefetchTarget(it.type, it.videoId, it.season, it.episode, it.contentId, "details_hero_early")
+                onStreamPrefetchTarget(it.type, it.videoId, it.season, it.episode, it.contentId, "details_hero_early", rawMeta.name)
             }
         }
     }
@@ -241,7 +241,9 @@ class MetaDetailsViewModel @Inject constructor(
         season: Int?,
         episode: Int?,
         contentId: String?,
-        source: String
+        source: String,
+        /** The title, for sources that resolve by search instead of by id. */
+        title: String? = null
     ): Boolean {
         if (type.isBlank() || videoId.isBlank()) return false
         // Hero targets (the Play button's) vs a focused episode (focus is not intent).
@@ -287,6 +289,7 @@ class MetaDetailsViewModel @Inject constructor(
                 videoId = videoId,
                 season = season,
                 episode = episode,
+                title = title,
                 source = source,
                 capMs = capMs,
                 republishOnDedup = isHero,
@@ -360,7 +363,8 @@ class MetaDetailsViewModel @Inject constructor(
                     target.season,
                     target.episode,
                     target.contentId,
-                    "episode_focus"
+                    "episode_focus",
+                    _uiState.value.meta?.name
                 )
                 ) episodeFocusPrefetchCount++
             }
@@ -396,7 +400,8 @@ class MetaDetailsViewModel @Inject constructor(
                         target.season,
                         target.episode,
                         target.contentId,
-                        "details_hero"
+                        "details_hero",
+                        meta.name
                     )
                 } else {
                     // Fork (B1): a null target must CLEAR the hero-key state.
@@ -2268,7 +2273,7 @@ class MetaDetailsViewModel @Inject constructor(
         heroLinkRefresh.value++
         val (target, source) = heroPrefetchSkippedWhileAway ?: return
         heroPrefetchSkippedWhileAway = null
-        onStreamPrefetchTarget(target.type, target.videoId, target.season, target.episode, target.contentId, source)
+        onStreamPrefetchTarget(target.type, target.videoId, target.season, target.episode, target.contentId, source, _uiState.value.meta?.name)
     }
 
     private fun handleLifecyclePause() {
