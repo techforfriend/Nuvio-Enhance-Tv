@@ -8,11 +8,12 @@ import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Locale
 import kotlinx.serialization.json.JsonObject
 
-// Response / lifecycle plumbing shared by AddonConfigServer and StreamBadgeConfigServer.
+// Response / lifecycle plumbing shared by the phone-page servers.
 
 private const val JSON_MIME = "application/json; charset=utf-8"
 
@@ -56,8 +57,41 @@ internal inline fun IHTTPSession.withJsonBody(
     return handle(parsed)
 }
 
-/** A fresh 128-bit token for a phone page's path (PhotoUploadServer, TmdbKeyServer), hex. */
+/** A fresh 128-bit token for a phone page's path (every phone-page server), hex. */
 internal fun newSessionToken(): String = ByteArray(16).also(SecureRandom()::nextBytes).toHexString()
+
+/**
+ * The path after `<prefix><token>/` ("" for the page, also without the last slash); null for any
+ * other path or token. The token compare is constant-time.
+ */
+internal fun pathAfterToken(uri: String, prefix: String, token: String): String? {
+    if (!uri.startsWith(prefix)) return null
+    val rest = uri.substring(prefix.length)
+    val presented = rest.substringBefore('/')
+    if (!MessageDigest.isEqual(presented.toByteArray(), token.toByteArray())) return null
+    return rest.substringAfter('/', missingDelimiterValue = "")
+}
+
+/**
+ * Headers for every answer of a server whose token rides in the path: no copy of it in a cache or a
+ * Referer (the config pages load Google Fonts). A POST closes its connection: on keep-alive
+ * NanoHTTPD 2.3.1 parses a body left unread (an early answer) as the next request (smoke-tested in
+ * Spec 44d, PhotoUploadServer review m4).
+ */
+internal fun Response.withTokenPathHeaders(method: NanoHTTPD.Method): Response = apply {
+    addHeader("Cache-Control", "no-store")
+    addHeader("Referrer-Policy", "no-referrer")
+    if (method == NanoHTTPD.Method.POST) addHeader("Connection", "close")
+}
+
+/**
+ * The 404 for a path under no live token (a page left open from an earlier session). A POST's body
+ * is drained first, so the phone's browser reads the answer instead of a reset.
+ */
+internal fun IHTTPSession.notFoundOutsideSession(): Response {
+    if (method == NanoHTTPD.Method.POST) drainDeclaredBody(MAX_POST_BODY_BYTES)
+    return notFoundResponse()
+}
 
 /**
  * Starts the server built by [create] on the first free port in

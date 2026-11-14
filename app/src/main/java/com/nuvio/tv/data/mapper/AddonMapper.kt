@@ -27,7 +27,7 @@ fun AddonManifestDto.toDomain(baseUrl: String): Addon {
         logo = logo,
         background = background,
         baseUrl = baseUrl,
-        catalogs = catalogs.map { it.toDomain() },
+        catalogs = catalogs.map { it.toDomain(addonName = name) },
         types = manifestTypes.map { ContentType.fromString(it) },
         rawTypes = manifestTypes,
         resources = parseResources(resources, manifestTypes),
@@ -40,13 +40,17 @@ fun AddonManifestDto.toDomain(baseUrl: String): Addon {
     )
 }
 
-fun CatalogDescriptorDto.toDomain(): CatalogDescriptor {
+/**
+ * A catalog without a `name` (Stremio's YouTube and Public Domain Movies addons) is labelled with
+ * its addon's name, as Stremio does (stremio-core-web `name.unwrap_or(&addon.manifest.name)`).
+ */
+fun CatalogDescriptorDto.toDomain(addonName: String): CatalogDescriptor {
     val manifestType = type.trim()
     return CatalogDescriptor(
         type = ContentType.fromString(manifestType),
         rawType = manifestType,
         id = id,
-        name = name,
+        name = name ?: addonName,
         extra = parseCatalogExtras(extra),
         pageSize = pageSize,
         showInHome = showInHome == true,

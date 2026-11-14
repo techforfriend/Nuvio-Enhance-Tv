@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.nuvio.tv.core.network.IPv4FirstDns
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -21,9 +24,28 @@ private val subtitleAutoSyncHttpClient: OkHttpClient by lazy {
         .readTimeout(15_000, TimeUnit.MILLISECONDS)
         .callTimeout(25_000, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
+        .addNetworkInterceptor(subtitleRedirectCredentialInterceptor())
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
+}
+
+/**
+ * Network interceptor: OkHttp itself drops only Authorization on a cross-host redirect; a hop
+ * that leaves the first request's site loses Cookie/Proxy-Authorization too (Spec 68 X1).
+ */
+internal fun subtitleRedirectCredentialInterceptor(
+    registrableDomain: (String) -> String? = ::pslRegistrableDomain
+): Interceptor = Interceptor { chain ->
+    val request = chain.request()
+    val firstUrl = chain.call().request().url.toString()
+    if (shouldSendStreamCredentials(request.url.toString(), firstUrl, registrableDomain)) {
+        chain.proceed(request)
+    } else {
+        chain.proceed(request.newBuilder().apply {
+            SUBTITLE_CREDENTIAL_HEADERS.forEach { removeHeader(it) }
+        }.build())
+    }
 }
 
 private const val SUBTITLE_DOWNLOAD_MAX_ATTEMPTS = 3
@@ -227,46 +249,99 @@ internal suspend fun PlayerRuntimeController.downloadSubtitleBody(
     }
 
 /** Hop-by-hop / transport headers that must never be replayed on a subtitle request. */
-private val SUBTITLE_HOP_BY_HOP_HEADERS = setOf("range", "host", "connection", "transfer-encoding")
+internal val SUBTITLE_HOP_BY_HOP_HEADERS = setOf("range", "host", "connection", "transfer-encoding")
+
+/** Stream credential headers, sent to a subtitle host only when [shouldSendStreamCredentials]. */
+internal val SUBTITLE_CREDENTIAL_HEADERS = setOf("authorization", "cookie", "proxy-authorization")
 
 /**
- * True when both hosts are non-blank and share the same 2-part registrable root — same host or
- * sibling subdomain (cdn.example.com vs example.com). Naive for multi-part TLDs (a.co.uk vs
- * b.co.uk counts as same); upstream 0.9.0 heuristic, kept.
+ * Registrable domain (public suffix + one label) of [host] from OkHttp's bundled public suffix
+ * list; null for IP literals and bare public suffixes. On Android the list is read from OkHttp's
+ * asset on first use (call off the main thread); a load failure throws IllegalStateException.
  */
-internal fun isSameOrSubdomain(host1: String?, host2: String?): Boolean {
+internal fun pslRegistrableDomain(host: String): String? =
+    HttpUrl.Builder().scheme("https").host(host).build().topPrivateDomain()
+
+/**
+ * True when both hosts are non-blank and are the same host or share one registrable domain by
+ * the public suffix list (cdn.example.com vs example.com: same; a.co.uk vs b.co.uk: foreign).
+ * Hosts must be canonical ([HttpUrl.host]: lowercase ASCII/punycode), so the identical-host check
+ * is exact. IP literals match only exactly. Fails closed: an invalid host or a PSL load failure
+ * counts as foreign.
+ */
+internal fun sharesRegistrableDomain(
+    host1: String?,
+    host2: String?,
+    registrableDomain: (String) -> String? = ::pslRegistrableDomain
+): Boolean {
     if (host1.isNullOrBlank() || host2.isNullOrBlank()) return false
-    if (host1.equals(host2, ignoreCase = true)) return true
-    val parts1 = host1.lowercase().split('.')
-    val parts2 = host2.lowercase().split('.')
-    if (parts1.size >= 2 && parts2.size >= 2) {
-        val root1 = parts1.takeLast(2).joinToString(".")
-        val root2 = parts2.takeLast(2).joinToString(".")
-        if (root1 == root2) return true
-    }
-    return false
+    if (host1 == host2) return true
+    val domain1 = registrableDomainOrNull(host1, registrableDomain) ?: return false
+    val domain2 = registrableDomainOrNull(host2, registrableDomain) ?: return false
+    return domain1 == domain2
 }
 
 /**
+ * The one credential decision for subtitle fetches (Spec 68 X1): the stream's Authorization/
+ * Cookie/Proxy-Authorization may go to [subtitleUrl] only when both are http(s) URLs on one
+ * registrable domain and the subtitle does not downgrade an https stream to http. Both URLs go
+ * through OkHttp's parser, the one the request itself uses, so a host that only looks equal
+ * (Unicode case folding) cannot pass.
+ */
+internal fun shouldSendStreamCredentials(
+    subtitleUrl: String?,
+    streamUrl: String?,
+    registrableDomain: (String) -> String? = ::pslRegistrableDomain
+): Boolean {
+    val subtitle = subtitleUrl?.toHttpUrlOrNull() ?: return false
+    val stream = streamUrl?.toHttpUrlOrNull() ?: return false
+    if (stream.isHttps && !subtitle.isHttps) return false
+    return sharesRegistrableDomain(subtitle.host, stream.host, registrableDomain)
+}
+
+/**
+ * The URL mpv may fetch itself after the OkHttp download failed, or null. mpv sends the stream's
+ * global http-header-fields, so this needs [shouldSendStreamCredentials], and it returns OkHttp's
+ * canonical form of the URL it judged: mpv/ffmpeg split a raw authority differently
+ * (`https://host\@evil/` is host to OkHttp, evil to ffmpeg).
+ */
+internal fun mpvSubtitleFallbackUrl(
+    subtitleUrl: String,
+    streamUrl: String?,
+    registrableDomain: (String) -> String? = ::pslRegistrableDomain
+): String? {
+    if (!shouldSendStreamCredentials(subtitleUrl, streamUrl, registrableDomain)) return null
+    return subtitleUrl.toHttpUrlOrNull()?.toString()
+}
+
+private fun registrableDomainOrNull(host: String, registrableDomain: (String) -> String?): String? =
+    try {
+        registrableDomain(host)
+    } catch (e: IllegalArgumentException) {
+        null // not a valid host
+    } catch (e: IllegalStateException) {
+        null // public suffix list failed to load
+    }
+
+/**
  * Headers to send with a subtitle download, in application order:
- * 1. stream headers, hop-by-hop always dropped; when the subtitle host is foreign to the
- *    stream host, Authorization/Cookie/Proxy-Authorization are dropped too (foreign auth
- *    rejection) while Referer/Origin/metadata survive (CDN 403 fix);
+ * 1. stream headers, hop-by-hop always dropped; unless [sendCredentials]
+ *    ([shouldSendStreamCredentials]), Authorization/Cookie/Proxy-Authorization are dropped too
+ *    (foreign auth rejection) while Referer/Origin/metadata survive (CDN 403 fix);
  * 2. explicit per-subtitle headers on top (addon-specified, override stream values);
  * 3. [defaultUserAgent]/[defaultAccept] only when no case-insensitive match is present.
  */
 internal fun buildSubtitleRequestHeaders(
     streamHeaders: Map<String, String>,
-    subtitleHost: String?,
-    streamHost: String?,
+    sendCredentials: Boolean,
     explicitHeaders: Map<String, String>?,
     defaultUserAgent: String,
     defaultAccept: String
 ): Map<String, String> {
-    val excluded = if (isSameOrSubdomain(subtitleHost, streamHost)) {
+    val excluded = if (sendCredentials) {
         SUBTITLE_HOP_BY_HOP_HEADERS
     } else {
-        SUBTITLE_HOP_BY_HOP_HEADERS + setOf("authorization", "cookie", "proxy-authorization")
+        SUBTITLE_HOP_BY_HOP_HEADERS + SUBTITLE_CREDENTIAL_HEADERS
     }
     val headers = LinkedHashMap<String, String>()
     streamHeaders
@@ -294,9 +369,6 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
     languageHint: String? = null,
     customHeaders: Map<String, String>? = null
 ): String {
-    val subtitleHost = runCatching { android.net.Uri.parse(url).host }.getOrNull()
-    val streamHost = runCatching { android.net.Uri.parse(currentStreamUrl).host }.getOrNull()
-
     // Stream UA rides along when present (even cross-domain); the browser UA is only a
     // fallback when the stream carries none.
     val streamUa = currentHeaders.entries.firstOrNull {
@@ -309,8 +381,7 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
 
     val requestHeaders = buildSubtitleRequestHeaders(
         streamHeaders = currentHeaders,
-        subtitleHost = subtitleHost,
-        streamHost = streamHost,
+        sendCredentials = shouldSendStreamCredentials(url, currentStreamUrl),
         explicitHeaders = customHeaders,
         defaultUserAgent = defaultUa,
         defaultAccept = "text/plain, text/vtt, application/x-subrip, */*"

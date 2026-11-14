@@ -30,18 +30,20 @@ data class RecentChannel(val key: String, val atMs: Long)
 
 /**
  * One profile's Live TV state (Spec 34 L8-D1): [favorites] in add order, [recents] newest first
- * (its head is the last-watched channel, Q1), [lastFilter] the id of the filter last selected.
+ * (its head is the last-watched channel, Q1), [lastFilter] the id of the filter last selected,
+ * [lastView] the id of the view last picked (Spec 67 D7 Q1: List, Guide or Compact).
  */
 data class LiveTvUserState(
     val favorites: List<String> = emptyList(),
     val recents: List<RecentChannel> = emptyList(),
-    val lastFilter: String? = null
+    val lastFilter: String? = null,
+    val lastView: String? = null
 ) {
     val recentKeys: List<String> get() = recents.map { it.key }
 }
 
 /**
- * Favorites, Recents and the last filter, per profile (Spec 34 L8-D1): a DataStore of its own
+ * Favorites, Recents, the last filter and the last view, per profile (Spec 34 L8-D1): a DataStore of its own
  * through [ProfileDataStoreFactory], so toggling a favorite never rewrites the channel cache
  * (D11) and profile deletion and sign-out sweep it with the other profile files. Bounded:
  * [MAX_FAVORITES] (oldest dropped) and [MAX_RECENTS]. Writes report failure (a full disk) instead
@@ -91,6 +93,8 @@ class LiveTvUserStore @Inject constructor(
 
     suspend fun setLastFilter(id: String): Boolean = write { prefs -> prefs[LAST_FILTER] = id }
 
+    suspend fun setLastView(id: String): Boolean = write { prefs -> prefs[LAST_VIEW] = id }
+
     private suspend fun write(
         profileId: Int = profileManager.activeProfileId.value,
         block: (MutablePreferences) -> Unit
@@ -111,13 +115,15 @@ class LiveTvUserStore @Inject constructor(
         private val FAVORITES = stringPreferencesKey("favorites")
         private val RECENTS = stringPreferencesKey("recents")
         private val LAST_FILTER = stringPreferencesKey("last_filter")
+        private val LAST_VIEW = stringPreferencesKey("last_view")
         private val ENABLED = booleanPreferencesKey("enabled")
         private val RECENTS_SERIALIZER = ListSerializer(RecentChannel.serializer())
 
         internal fun decode(prefs: Preferences): LiveTvUserState = LiveTvUserState(
             favorites = decodeFavorites(prefs[FAVORITES]),
             recents = decodeRecents(prefs[RECENTS]),
-            lastFilter = prefs[LAST_FILTER]
+            lastFilter = prefs[LAST_FILTER],
+            lastView = prefs[LAST_VIEW]
         )
 
         /** Junk or a missing value reads as empty; repeats and blanks dropped, the cap held. */

@@ -6,6 +6,8 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.stream.ContentIdentity
+import com.nuvio.tv.core.stream.FacetFilter
 import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.StreamTextSizeParser
 import com.nuvio.tv.core.stream.hiddenStreamKeys
@@ -124,8 +126,10 @@ internal fun PlayerRuntimeController.showEpisodesPanel() {
 }
 
 internal fun PlayerRuntimeController.showSourcesPanel() {
-    _uiState.update {
+    // Re-derived: the panel opens without the filter it was closed with (Spec 65 D18).
+    updateAndDeriveStreamLists {
         it.copy(
+            sourceFacetFilter = FacetFilter.NONE,
             showSourcesPanel = true,
             showControls = true,
             showAudioOverlay = false,
@@ -229,6 +233,7 @@ internal fun PlayerRuntimeController.loadSourceStreams(forceRefresh: Boolean) {
                 sourceAllStreams = emptyList(),
                 sourceMissingUpstreams = emptyList(),
                 sourceListSelection = StreamListSelection.All,
+                sourceFacetFilter = FacetFilter.NONE,
                 sourceAvailableAddons = emptyList(),
                 sourceChips = emptyList()
             )
@@ -527,6 +532,9 @@ private fun PlayerRuntimeController.resetPerStreamSwitchState(resetFailoverBudge
     // The one 416 reset: initializePlayer must not clear it, or the retry-from-start would re-arm
     // on the rebuild it triggers (Spec 21 P8).
     hasRetriedCurrentStreamAfter416 = false
+    // Spec 86 R1: a switch (user, failover or episode) is a new start, so a black start of a URL
+    // picked again gets its rebuild; the R1 rebuild itself does not pass through here.
+    blackStartRebuiltStreamUrls.clear()
     resetErrorRetryState(resetDeadSourceFailovers = resetFailoverBudget)
     trackSelection.newStream()
     lastSavedPosition = 0L
@@ -549,6 +557,7 @@ private fun PlayerRuntimeController.applySelectedStreamState(
     val playbackRequest = PlayerMediaSourceFactory.normalizePlaybackRequest(url, headers)
     currentStreamUrl = playbackRequest.url
     currentHeaders = playbackRequest.headers
+    forgetStreamEngineForNewStream()
     currentFilename = switchedStreamFilename(stream.behaviorHints?.filename, playbackRequest.url)
     currentStreamResponseHeaders = stream.behaviorHints?.proxyHeaders?.response.orEmpty()
     currentStreamMimeType = PlayerMediaSourceFactory.inferMimeType(
@@ -572,8 +581,12 @@ private fun PlayerRuntimeController.applyStreamMetadata(stream: Stream) {
     addonSubtitleFetchJob?.cancel()
     addonSubtitleFetchJob = null
     currentStreamBingeGroup = stream.behaviorHints?.bingeGroup
+    currentPlayingStream = stream
     currentVideoHash = stream.behaviorHints?.videoHash
-    currentVideoSize = StreamTextSizeParser.effectiveSizeBytes(stream)
+    val listedSize = StreamTextSizeParser.effectiveSizeBytes(stream)
+    currentVideoSize = listedSize
+    currentListedFilename = stream.behaviorHints?.filename
+    currentListedSize = listedSize
     currentStreamSubtitles = stream.subtitles
     currentStreamDescription = stream.description
     persistContentBingeGroup(stream.behaviorHints?.bingeGroup)
@@ -594,13 +607,17 @@ internal fun PlayerRuntimeController.persistContentBingeGroup(bingeGroup: String
     }
 }
 
+/**
+ * The playing stream as this title's last link. Written whatever "Reuse last link" says (Spec 86
+ * R12), as the Stream screen writes every press: the Last played markers read it at any age, and
+ * only the reuse itself (StreamScreenViewModel) checks the setting. So an in-player switch or a
+ * failover moves the marker off the source that failed.
+ */
 private fun PlayerRuntimeController.persistSelectedStreamForReuse(
     stream: Stream,
     url: String,
     headers: Map<String, String>
 ) {
-    if (!streamReuseLastLinkEnabled) return
-
     val key = streamCacheKey ?: return
     val streamName = (stream.name?.takeIf { it.isNotBlank() } ?: stream.addonName).takeIf { it.isNotBlank() }
         ?: title
@@ -621,9 +638,8 @@ private fun PlayerRuntimeController.persistSelectedStreamForReuse(
     }
 }
 
+/** [persistSelectedStreamForReuse] for a torrent: its info hash, file and trackers, no URL. */
 private fun PlayerRuntimeController.persistTorrentStreamForReuse(stream: Stream) {
-    if (!streamReuseLastLinkEnabled) return
-
     val key = streamCacheKey ?: return
     val infoHash = stream.getEffectiveInfoHash() ?: return
     val streamName = (stream.name?.takeIf { it.isNotBlank() } ?: stream.addonName).takeIf { it.isNotBlank() }
@@ -730,6 +746,9 @@ internal fun PlayerRuntimeController.switchToSourceStream(
         _uiState.update { it.copy(sourceStreamsError = context.getString(com.nuvio.tv.R.string.player_stream_error_invalid_url)) }
         return
     }
+    // Spec 75 D4: a start from the player's own list had no Stream-screen search of its own; cleared
+    // only once this switch really replaces the stream (the torrent switches clear it after their guard).
+    stepSourcesFoundMs = null
 
     // Stop any active torrent before switching to HTTP stream
     stopTorrentStream()
@@ -840,6 +859,7 @@ private fun PlayerRuntimeController.switchToTorrentSourceStream(
     resetFailoverBudget: Boolean
 ) {
     val infoHash = stream.getEffectiveInfoHash() ?: return
+    stepSourcesFoundMs = null // Spec 75 D4, as switchToSourceStream
     sourceStreamsScope?.cancel()
     sourceStreamsScope = null
     sourceStreamsJob = null
@@ -893,6 +913,7 @@ private fun PlayerRuntimeController.switchToTorrentEpisodeStream(
     isAutoPlay: Boolean
 ) {
     val infoHash = stream.getEffectiveInfoHash() ?: return
+    stepSourcesFoundMs = null // Spec 75 D4, as switchToSourceStream
     consecutiveAutoPlayCount = nextConsecutiveAutoPlayCount(
         currentCount = consecutiveAutoPlayCount,
         isAutoPlay = isAutoPlay
@@ -992,6 +1013,8 @@ internal fun PlayerRuntimeController.loadStreamsForEpisode(video: Video, forceRe
         // Re-derived: this Video may carry another runtime than the one the list was derived with.
         updateAndDeriveStreamLists {
             it.copy(
+                // The list opens without the filter it was left with (Spec 65 D18).
+                episodeFacetFilter = FacetFilter.NONE,
                 showEpisodeStreams = true,
                 isLoadingEpisodeStreams = false,
                 episodeStreamsForVideoId = video.id,
@@ -1016,6 +1039,7 @@ internal fun PlayerRuntimeController.loadStreamsForEpisode(video: Video, forceRe
         // The list's target and its runtime (the limit's, Spec 51 M3) change in one update.
         updateAndDeriveStreamLists {
             val loading = it.copy(
+                episodeFacetFilter = FacetFilter.NONE,
                 showEpisodeStreams = true,
                 isLoadingEpisodeStreams = true,
                 episodeStreamsError = null,
@@ -1132,6 +1156,7 @@ internal fun PlayerRuntimeController.switchToEpisodeStream(
         _uiState.update { it.copy(episodeStreamsError = context.getString(com.nuvio.tv.R.string.player_stream_error_invalid_url)) }
         return
     }
+    stepSourcesFoundMs = null // Spec 75 D4, as switchToSourceStream
 
     consecutiveAutoPlayCount = nextConsecutiveAutoPlayCount(
         currentCount = consecutiveAutoPlayCount,
@@ -1145,6 +1170,20 @@ internal fun PlayerRuntimeController.switchToEpisodeStream(
     // Pause current playback immediately so the old stream doesn't continue
     // playing audio/video in the background while the new episode is being prepared.
     _exoPlayer?.stop()
+    if (isUsingMpvEngine()) {
+        // Spec 85: mpv's half of the stop. The old core lives until initializeMpvPlayer releases it,
+        // past the new start's prelude (AFR probe, saved-progress load): its progress job would tick
+        // the new stream's first-frame and placeholder latches, and its watchdog or a late failure
+        // would be charged to the new URL. A stopped core reports nothing and ignores Play. An older
+        // episode's init still in its prelude is cancelled now, not when the new init starts, so it
+        // cannot load a fresh core in between. Exo's stop does the rest through its listener.
+        cancelPlayerInit()
+        stopProgressUpdates()
+        stopWatchProgressSaving()
+        cancelStartupWatchdog()
+        mpvView?.stopPlayback()
+        _uiState.update { it.copy(isPlaying = false) }
+    }
 
     val newHeaders = PlayerMediaSourceFactory.sanitizeHeaders(
         stream.behaviorHints?.proxyHeaders?.request
@@ -1238,6 +1277,9 @@ private fun PlayerRuntimeController.applyEpisodeSwitchState(
         ?: _uiState.value.episodes.firstOrNull { it.id == _uiState.value.episodeStreamsForVideoId }
 
     trackSelection.newContent()
+    // Spec 86 R5: the rows the failover left belong to the old episode's list; a season-pack torrent row
+    // with no file index keeps its limitKey across episodes, so it must not stay dead for this one.
+    deadSourceRowKeys.clear()
     // Spec 57 D4: "Start from beginning" was for the episode it was chosen on.
     startFromBeginningPending = false
     // A position carried from the old episode must not become this one's start
@@ -1498,6 +1540,30 @@ internal fun PlayerRuntimeController.playPreviousEpisode() {
     }
 }
 
+/**
+ * How an episode press auto-selects in MANUAL mode: whether it selects at all ([autoSelect], then
+ * as FIRST_STREAM over every source), and whether only a match may play ([matchOnly]: the
+ * preferred source, the playing source or its binge group; a miss shows the panel).
+ */
+internal data class ManualEpisodeSelect(val autoSelect: Boolean, val matchOnly: Boolean)
+
+/**
+ * [ManualEpisodeSelect] under [settings]; neither outside MANUAL mode. A show's preferred source
+ * (Spec 65 P6, D20) changes one case only: with neither next-episode setting on, the press now
+ * selects, and plays only a match of it. Where a setting already selected, nothing changes.
+ */
+internal fun manualEpisodeSelect(settings: PlayerSettings, hasPreferred: Boolean): ManualEpisodeSelect {
+    if (settings.streamAutoPlayMode != StreamAutoPlayMode.MANUAL) return ManualEpisodeSelect(autoSelect = false, matchOnly = false)
+    val nextEpisode = settings.streamAutoPlayNextEpisodeEnabled
+    val preferBinge = settings.streamAutoPlayPreferBingeGroupForNextEpisode
+    val preferredOnly = hasPreferred && !nextEpisode && !preferBinge
+    return ManualEpisodeSelect(
+        autoSelect = nextEpisode || preferBinge || preferredOnly,
+        matchOnly = preferredOnly ||
+            (preferBinge && (!nextEpisode || !settings.streamAutoPlayNextEpisodeFallbackEnabled))
+    )
+}
+
 /** What [pickEpisodeStream] settled on: a stream to switch to, or the episode's sources panel. */
 internal sealed interface EpisodeStreamPick {
     data class Picked(val stream: Stream) : EpisodeStreamPick
@@ -1508,7 +1574,9 @@ internal sealed interface EpisodeStreamPick {
  * The scrape + auto-select behind an episode press (Next, and Spec 45 Previous): the stream the
  * auto-play rules pick for [target] within the timeout, else the sources panel (manual mode, nothing
  * matched, forceRefresh after an addon error). Reads [target] through the prefetch cache, so Next's
- * binge lookahead still lands; [pressElapsedMs] stamps the TTFF_STAGE [settleTag] line.
+ * binge lookahead still lands; [pressElapsedMs] stamps the TTFF_STAGE [settleTag] line. A preferred
+ * source for the show (Spec 65 P6, D20) is tried first in every mode; in manual mode with neither
+ * next-episode setting on it is the only thing that plays, else the panel.
  */
 private suspend fun PlayerRuntimeController.pickEpisodeStream(
     target: Video,
@@ -1517,17 +1585,11 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
     settleTag: String
 ): EpisodeStreamPick = coroutineScope {
     val playerSettings = playerSettingsDataStore.playerSettings.first()
-    val shouldAutoSelectInManualMode =
-        playerSettings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL &&
-            (
-                playerSettings.streamAutoPlayNextEpisodeEnabled ||
-                    playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode
-                )
-    val bingeGroupOnlyManualMode =
-        shouldAutoSelectInManualMode &&
-            (!playerSettings.streamAutoPlayNextEpisodeEnabled ||
-                !playerSettings.streamAutoPlayNextEpisodeFallbackEnabled) &&
-            playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode
+    // Spec 65 P6: once per press, under the id the binge cache and the lookahead use.
+    val preferred = contentId?.let { preferredSourceDataStore.get(it) }
+    val manual = manualEpisodeSelect(playerSettings, hasPreferred = preferred != null)
+    val shouldAutoSelectInManualMode = manual.autoSelect
+    val bingeGroupOnlyManualMode = manual.matchOnly
     if (playerSettings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL && !shouldAutoSelectInManualMode) {
         return@coroutineScope EpisodeStreamPick.Picker(forceRefresh = true)
     }
@@ -1580,6 +1642,26 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
 
     // Read once: the whole selection runs under one P2P consent state.
     val allowTorrents = p2pEnabled
+    // Spec 65 S3: the episode being picked, for the identity guard (same rule as the Stream screen).
+    val identity = ContentIdentity.of(
+        type = type,
+        title = contentName ?: title,
+        year = year,
+        season = target.season,
+        episode = target.episode,
+        videoId = target.id
+    )
+    // Spec 65 P5: the failure store once per press, as on the Stream screen.
+    val failures = failedReleases.snapshot()
+    // Spec 65 P8: what this device decodes in software, as on the Stream screen.
+    val softwareOnly = DecodeCapability.softwareOnly()
+    // Spec 65 P7 (D9): the source that was playing, under the Prefer binge group setting; it
+    // replaces the plain binge-group match and counts as it.
+    val continuation = if (playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode) {
+        ContinuationTarget.of(currentPlayingStream)
+    } else {
+        null
+    }
     fun candidateStreams(data: List<AddonStreams>): List<Stream> =
         StreamAutoPlaySelector.orderAddonStreams(data, installedAddonOrder)
             .flatMap { it.streams }
@@ -1587,13 +1669,8 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
 
     fun trySelectStreamInner(data: List<AddonStreams>): Stream? {
         val allStreams = candidateStreams(data)
-        // preferBingeGroupInSelection was passed explicitly here as the
-        // SETTING, while AutoPlaySelection derives it from
-        // preferredBingeGroup != null. Those disagree in exactly one
-        // case -- setting on, no binge group known -- and that
-        // disagreement is inert: selectAutoPlayStream gates the binge
-        // branch on targetBingeGroup.isNotEmpty(), false either way.
-        // Asserted in StreamAutoPlaySelectorTest.
+        // With the setting on, [continuation] is set and replaces the selector's binge-group
+        // branch (Spec 65 P7), so preferredBingeGroup is inert here; with it off both are null.
         return AutoPlaySelection.select(
             streams = allStreams,
             inputs = AutoPlaySelection.Inputs(
@@ -1607,18 +1684,23 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
                 } else {
                     null
                 },
-                hiddenKeys = hiddenKeysOf(allStreams)
+                failures = failures,
+                hiddenKeys = hiddenKeysOf(allStreams),
+                identity = identity,
+                continuation = continuation,
+                preferred = preferred,
+                softwareOnly = softwareOnly
             ),
             bingeGroupOnly = bingeGroupOnlyManualMode
         )
     }
 
     fun tryBingeGroupOnlyInner(data: List<AddonStreams>): Stream? {
-        if (currentStreamBingeGroup == null || !playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode) return null
+        // The early check: the preferred source (Spec 65 P6), then, with the setting on, the
+        // continuation's steps (the playing group, else the same parsed release from the same
+        // addon: D9-D11). Nothing to check with neither.
+        if (continuation == null && preferred == null) return null
         val allStreams = candidateStreams(data)
-        // The guard above returns early when currentStreamBingeGroup is
-        // null, so the derived preferBingeGroupInSelection is true here
-        // exactly as the explicit argument was.
         return AutoPlaySelection.select(
             streams = allStreams,
             inputs = AutoPlaySelection.Inputs(
@@ -1627,8 +1709,14 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
                 source = effectiveSource,
                 installedAddonNames = installedAddonOrder.toSet(),
                 selectedAddons = effectiveSelectedAddons,
-                preferredBingeGroup = currentStreamBingeGroup,
-                hiddenKeys = hiddenKeysOf(allStreams)
+                // Inert beside a continuation; null with the setting off (a preferred-only check).
+                preferredBingeGroup = currentStreamBingeGroup.takeIf { continuation != null },
+                failures = failures,
+                hiddenKeys = hiddenKeysOf(allStreams),
+                identity = identity,
+                continuation = continuation,
+                preferred = preferred,
+                softwareOnly = softwareOnly
             ),
             bingeGroupOnly = true
         )
@@ -1695,8 +1783,7 @@ private suspend fun PlayerRuntimeController.pickEpisodeStream(
                     if (!autoSelectTriggered) {
                         val candidate = when {
                             timeoutElapsed -> trySelectStream(result.data)
-                            playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode ->
-                                tryBingeGroupOnly(result.data)
+                            continuation != null || preferred != null -> tryBingeGroupOnly(result.data)
                             else -> null
                         }
                         if (candidate != null) recordSelection(candidate)

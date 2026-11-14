@@ -6,7 +6,6 @@ import com.nuvio.tv.data.local.MyPhotoKind
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
@@ -90,20 +89,12 @@ class PhotoUploadServer internal constructor(
         if (current is Slot.Waiting && current.photo.id == id) slot.compareAndSet(current, Slot.Free)
     }
 
-    override fun serve(session: IHTTPSession): Response {
-        val response = route(session)
-        // The token rides in the path: no copy in a cache or a Referer.
-        response.addHeader("Cache-Control", "no-store")
-        response.addHeader("Referrer-Policy", "no-referrer")
-        // m4, smoke-tested on NanoHTTPD 2.3.1: on keep-alive it parses a body left unread (an early
-        // answer) as the next request. One upload per connection.
-        if (session.method == Method.POST) response.addHeader("Connection", "close")
-        return response
-    }
+    override fun serve(session: IHTTPSession): Response =
+        route(session).withTokenPathHeaders(session.method)
 
     private fun route(session: IHTTPSession): Response {
         session.rejectUntrustedRequest()?.let { return it }
-        val path = pathAfterToken(session.uri)
+        val path = pathAfterToken(session.uri, PATH_PREFIX, token)
             // A POST from a page whose card has closed or reopened: drained, so its browser reads "expired".
             ?: return if (session.method == Method.POST) session.earlyAnswer(Response.Status.NOT_FOUND, NOT_FOUND) else notFoundResponse()
         return when {
@@ -111,15 +102,6 @@ class PhotoUploadServer internal constructor(
             session.method == Method.POST && path == "photo" -> receive(session)
             else -> notFoundResponse()
         }
-    }
-
-    /** The path after `/u/<token>/` ("" for the page, also without the last slash); null for another token. */
-    private fun pathAfterToken(uri: String): String? {
-        if (!uri.startsWith(PATH_PREFIX)) return null
-        val rest = uri.substring(PATH_PREFIX.length)
-        val presented = rest.substringBefore('/')
-        if (!MessageDigest.isEqual(presented.toByteArray(), token.toByteArray())) return null
-        return rest.substringAfter('/', missingDelimiterValue = "")
     }
 
     private fun page(): Response =

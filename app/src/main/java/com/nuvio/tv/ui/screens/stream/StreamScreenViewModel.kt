@@ -12,6 +12,8 @@ import com.nuvio.tv.R
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.torrent.TorrentSettings
 import com.nuvio.tv.core.player.AutoPlaySelection
+import com.nuvio.tv.core.player.DecodeCapability
+import com.nuvio.tv.core.stream.ContentIdentity
 import com.nuvio.tv.core.player.PrefetchedSelectionGate
 import com.nuvio.tv.core.player.SelectionOutcome
 import com.nuvio.tv.core.player.SelectionSnapshot
@@ -20,6 +22,10 @@ import com.nuvio.tv.core.player.StreamAutoPlaySelector
 import com.nuvio.tv.core.network.NetworkTransportReader
 import com.nuvio.tv.core.stream.StreamLimitInputs
 import com.nuvio.tv.core.stream.HiddenStream
+import com.nuvio.tv.core.stream.FacetFilter
+import com.nuvio.tv.core.stream.PreferredSource
+import com.nuvio.tv.core.stream.StreamPin
+import com.nuvio.tv.core.stream.StreamFacetMemo
 import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.StreamListView
 import com.nuvio.tv.core.stream.StreamTextSizeParser
@@ -36,12 +42,13 @@ import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.local.StreamBadgeSettingsDataStore
 import com.nuvio.tv.data.local.StreamLinkCacheDataStore
 import com.nuvio.tv.data.local.BingeGroupCacheDataStore
+import com.nuvio.tv.data.local.SavedStreamFiltersDataStore
+import com.nuvio.tv.data.repository.awaitInstalledAddons
 import com.nuvio.tv.data.repository.streamRequestType
 import com.nuvio.tv.domain.model.AddonStreams
 import com.nuvio.tv.domain.model.Meta
 import com.nuvio.tv.domain.model.Stream
 import com.nuvio.tv.domain.model.Video
-import com.nuvio.tv.domain.model.enabledAddons
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.MetaRepository
 import com.nuvio.tv.domain.repository.StreamRepository
@@ -84,7 +91,10 @@ class StreamScreenViewModel @Inject constructor(
     private val streamBadgePresentation: StreamBadgePresentation,
     streamBadgeSettingsDataStore: StreamBadgeSettingsDataStore,
     private val bingeGroupCacheDataStore: BingeGroupCacheDataStore,
-    private val rejectedStreamUrls: com.nuvio.tv.core.stream.RejectedStreamUrls,
+    private val savedStreamFiltersDataStore: SavedStreamFiltersDataStore,
+    private val preferredSourceDataStore: com.nuvio.tv.data.local.PreferredSourceDataStore,
+    savedFiltersServerStarter: SavedFiltersServerStarter,
+    private val failedReleases: com.nuvio.tv.core.stream.FailedReleases,
     private val torrentSettings: TorrentSettings,
     private val externalPlaybackTracker: com.nuvio.tv.core.player.ExternalPlaybackTracker,
     layoutPreferenceDataStore: LayoutPreferenceDataStore,
@@ -93,6 +103,11 @@ class StreamScreenViewModel @Inject constructor(
 
     private var autoPlayHandledForSession = false
     private var ttffSourcesReadyMarked = false
+    // Spec 75: when this load started and how long until every addon answered (Finding sources).
+    private var streamsLoadStartedAtMs = 0L
+    private var sourcesFoundMs: Long? = null
+    // Spec 75: how long until the latest list arrived, for a pick made before the search ended.
+    private var sourcesArrivedMs: Long? = null
     private var directAutoPlayModeInitializedForSession = false
     private var directAutoPlayFlowEnabledForSession = false
     private var streamLoadJob: Job? = null
@@ -160,6 +175,33 @@ class StreamScreenViewModel @Inject constructor(
     )
     val uiState: StateFlow<StreamScreenUiState> = _uiState.asStateFlow()
     val streamBadgeSettings = streamBadgeSettingsDataStore.settings
+
+    /** The profile's saved filters and Sources-row pins (Spec 65 P2). */
+    val savedStreamFilters = savedStreamFiltersDataStore.state
+
+    fun saveStreamFilter(filter: FacetFilter, name: String) {
+        viewModelScope.launch { savedStreamFiltersDataStore.save(filter, name) }
+    }
+
+    fun toggleStreamPin(pin: StreamPin) {
+        viewModelScope.launch { savedStreamFiltersDataStore.togglePin(pin) }
+    }
+
+    /** The filters sheet's phone page (Spec 65 S9): rename, reorder and delete saved filters from a phone. */
+    private val savedFiltersPhonePage = SavedFiltersPhonePage(
+        scope = viewModelScope,
+        start = savedFiltersServerStarter::start,
+        saved = { savedStreamFiltersDataStore.state.first() },
+        store = savedStreamFiltersDataStore::applyEdits,
+        summary = savedFiltersServerStarter::summary
+    )
+
+    /** The phone dialog to show; null while none is open. */
+    internal val savedFiltersPhone = savedFiltersPhonePage.state
+
+    fun openSavedFiltersPhonePage() = savedFiltersPhonePage.open()
+
+    fun closeSavedFiltersPhonePage() = savedFiltersPhonePage.close()
 
     /** The IMDb mark beside the meta line follows the overall ratings setting (as Home and Detail). */
     val showImdbRatings = layoutPreferenceDataStore.homeImdbRatingsVisibility
@@ -255,11 +297,35 @@ class StreamScreenViewModel @Inject constructor(
         updateUiStateIfChanged { it.withListView(hiddenVerdictsFor(it.allStreams, it.runtime)) }
     }
 
+    /**
+     * Whether a row here can be preferred for its show (Spec 65 P6, D16): an episode of a show the
+     * preference can be kept under. Films get no row menu.
+     */
+    val canPreferSource: Boolean = contentId != null && season != null && episode != null
+
+    /**
+     * Prefers [stream]'s source for this show, or stops preferring one (null). The viewer is
+     * choosing in the open list, so auto-play is over for this visit: a Refresh after it must not
+     * start the newly preferred source under them.
+     */
+    fun preferSource(stream: Stream?) {
+        val id = contentId?.takeIf { canPreferSource } ?: return
+        autoPlayHandledForSession = true
+        viewModelScope.launch { preferredSourceDataStore.set(id, stream?.let(PreferredSource::of)) }
+    }
+
     init {
         viewModelScope.launch {
             playerSettingsDataStore.streamLimitInputs.collect { inputs ->
                 limitInputs = inputs
                 rederiveList()
+            }
+        }
+        if (contentId != null) {
+            viewModelScope.launch {
+                preferredSourceDataStore.observe(contentId).collect { preferred ->
+                    updateUiStateIfChanged { it.copy(preferredSource = preferred).withListView(it.listView.hiddenVerdicts) }
+                }
             }
         }
         viewModelScope.launch {
@@ -297,6 +363,10 @@ class StreamScreenViewModel @Inject constructor(
     fun onEvent(event: StreamScreenEvent) {
         when (event) {
             is StreamScreenEvent.OnListSelected -> selectList(event.selection)
+            is StreamScreenEvent.OnFilterChanged -> updateUiStateIfChanged { state ->
+                if (state.facetFilter == event.filter) state
+                else state.copy(facetFilter = event.filter).withListView(state.listView.hiddenVerdicts)
+            }
             StreamScreenEvent.OnAutoPlayConsumed -> {
                 if (autoPlayHandledForSession &&
                     _uiState.value.autoPlayStream == null &&
@@ -327,6 +397,7 @@ class StreamScreenViewModel @Inject constructor(
                         isLoading = true,
                         error = null,
                         listSelection = StreamListSelection.All,
+                        facetFilter = FacetFilter.NONE,
                         listView = StreamListView(hiddenVerdicts = it.listView.hiddenVerdicts)
                     )
                 }
@@ -336,6 +407,7 @@ class StreamScreenViewModel @Inject constructor(
             StreamScreenEvent.OnResume -> {
                 hostInForeground.value = true
                 refreshLastPlayed()
+                refreshFailureMarks()
                 // Reattach to the repository-owned session if playback stopped
                 // this screen's collector (or its capped-session fill, see
                 // cancelStreamsLoad) before every source finished.
@@ -367,6 +439,9 @@ class StreamScreenViewModel @Inject constructor(
 
     private fun loadStreams(forceRefresh: Boolean = false) {
         TtffTrace.begin("streams_load_start")
+        streamsLoadStartedAtMs = SystemClock.elapsedRealtime()
+        sourcesFoundMs = null
+        sourcesArrivedMs = null
         lastLoadForcedRefresh = forceRefresh
         ttffSourcesReadyMarked = false
         streamLoadScope?.cancel()
@@ -397,6 +472,9 @@ class StreamScreenViewModel @Inject constructor(
                 if (limitInputs == null) limitInputs = read
             }
             android.util.Log.i(TAG, "LOAD_SPLIT playerSettings=${SystemClock.elapsedRealtime() - loadSplitT0}ms")
+            // Spec 65 P6: the show's preferred source, once per load like every other auto-play input;
+            // read by content id alone, as the prefetch reads it, so both rank under the same one.
+            val preferredSource = contentId?.let { preferredSourceDataStore.get(it) }
             if (manualSelection) {
                 directAutoPlayModeInitializedForSession = true
                 directAutoPlayFlowEnabledForSession = false
@@ -418,6 +496,8 @@ class StreamScreenViewModel @Inject constructor(
                         directAutoPlayFlowEnabledForSession = true
                     }
                 }
+                // A preferred source plays in MANUAL mode like the binge match (Spec 65 D20).
+                if (preferredSource != null) directAutoPlayFlowEnabledForSession = true
                 directAutoPlayModeInitializedForSession = true
             }
 
@@ -512,7 +592,8 @@ class StreamScreenViewModel @Inject constructor(
             }
 
             val addonsSplitT0 = SystemClock.elapsedRealtime()
-            val installedAddons = addonRepository.getInstalledAddons().first().enabledAddons()
+            // Not first(): a cold launch straight into Stream reads the empty StateFlow seed (Spec 84 A7).
+            val installedAddons = awaitInstalledAddons(addonRepository.getInstalledAddons())
             android.util.Log.i(
                 TAG,
                 "LOAD_SPLIT installedAddons=${SystemClock.elapsedRealtime() - addonsSplitT0}ms " +
@@ -527,16 +608,30 @@ class StreamScreenViewModel @Inject constructor(
             // with the prefetch ranking (PrefetchSelectionSupplier), which must
             // predict the same winner. Every field but the hidden set is a snapshot:
             // playerSettings from one .first(), installedAddonOrder from one
-            // getInstalledAddons().first(), persistedBingeGroup from one cache read.
+            // awaitInstalledAddons read, persistedBingeGroup from one cache read.
             // [hiddenKeys] is the limit's set over the candidates being ranked, under
             // the runtime known at that select (Spec 51 D8: nothing waits for one).
-            val rejectedUrls = rejectedStreamUrls.snapshot()
+            val failures = failedReleases.snapshot()
+            // Spec 65 P8: what this device decodes in software, as the prefetch read it.
+            val softwareOnly = DecodeCapability.softwareOnly()
+            // Spec 65 S3: what this screen was asked to play, for the identity guard and film floors.
+            val identity = ContentIdentity.of(
+                type = contentType,
+                title = contentName ?: title,
+                year = year,
+                season = season,
+                episode = episode,
+                videoId = videoId
+            )
             fun inputsFor(hiddenKeys: Set<String>) = AutoPlaySelection.Inputs.fromSettings(
                 settings = playerSettings,
                 installedAddonOrder = installedAddonOrder,
                 preferredBingeGroup = persistedBingeGroup,
-                rejectedUrls = rejectedUrls,
-                hiddenKeys = hiddenKeys
+                failures = failures,
+                hiddenKeys = hiddenKeys,
+                identity = identity,
+                preferred = preferredSource,
+                softwareOnly = softwareOnly
             )
 
             fun applySuccess(addonStreamGroups: List<AddonStreams>, isAllLoaded: Boolean) {
@@ -689,6 +784,7 @@ class StreamScreenViewModel @Inject constructor(
                         "Using embedded video streams for videoId=$videoId count=${embeddedAddonStreams.streams.size}"
                     )
                     applySuccess(listOf(embeddedAddonStreams), isAllLoaded = true)
+                    markSourcesFound()
                     updateSourceChipsForEmbedded(embeddedAddonStreams.addonName)
                     if (directAutoPlayFlowEnabledForSession && !resolvedAutoPlayTarget) {
                         directAutoPlayFlowEnabledForSession = false
@@ -747,6 +843,7 @@ class StreamScreenViewModel @Inject constructor(
                     when (result) {
                         is NetworkResult.Success -> {
                             lastSuccessData = result.data
+                            sourcesArrivedMs = SystemClock.elapsedRealtime() - streamsLoadStartedAtMs
                             applySuccess(result.data, isAllLoaded = false)
 
                             if (autoSelectTriggered || resolvedAutoPlayTarget || autoPlayHandledForSession) {
@@ -770,9 +867,9 @@ class StreamScreenViewModel @Inject constructor(
                                         )
                                     }
                                 }
-                            } else if (directFlowActive && persistedBingeGroup != null) {
-                                // Before timeout: eagerly check binge group only
-                                // (no fallback to FIRST_STREAM/REGEX yet). If a
+                            } else if (directFlowActive && (persistedBingeGroup != null || preferredSource != null)) {
+                                // Before timeout: eagerly check the preferred source and the
+                                // binge group only (no fallback to FIRST_STREAM/REGEX yet). If a
                                 // match is found we can start playback immediately
                                 // without waiting for the full timeout.
                                 val orderedStreams = StreamAutoPlaySelector.orderAddonStreams(
@@ -827,6 +924,7 @@ class StreamScreenViewModel @Inject constructor(
                     }
                 }
                 // All addons finished — run auto-select if not yet triggered
+                markSourcesFound()
                 if (!autoSelectTriggered) {
                     autoSelectTriggered = true
                     lastSuccessData?.let { applySuccess(it, isAllLoaded = true) }
@@ -1207,14 +1305,25 @@ class StreamScreenViewModel @Inject constructor(
     }
 
     /**
+     * Spec 75: the Finding sources step ends when the load's collect completes (every addon answered
+     * or gave up), never at an auto-play timeout pass, which also runs while addons are still out.
+     */
+    private fun markSourcesFound() {
+        if (sourcesFoundMs == null && streamsLoadStartedAtMs > 0L) {
+            sourcesFoundMs = SystemClock.elapsedRealtime() - streamsLoadStartedAtMs
+        }
+    }
+
+    /**
      * Press-time entry point: builds the playback info for the selected stream.
      * Nothing is resolved (addon streams arrive playable); the TTFF marks keep
-     * their historical names so traces stay comparable.
+     * their historical names so traces stay comparable. The source search is
+     * cancelled only for a stream that opens something ([StreamPlaybackInfo.hasTarget]):
+     * pressing an addon's info row leaves it running (Spec 84 A4).
      */
     fun playbackInfoFor(stream: Stream): StreamPlaybackInfo {
         TtffTrace.mark("resolve_start")
         TtffTrace.mark("resolve_skip_direct")
-        cancelStreamsLoad()
         val playbackInfo = StreamPlaybackInfo(
             url = stream.getStreamUrl(),
             title = _uiState.value.title,
@@ -1251,8 +1360,12 @@ class StreamScreenViewModel @Inject constructor(
             sources = stream.sources,
             contentLanguage = contentLanguage,
             subtitles = stream.subtitles,
-            launchStartedAtMs = TtffTrace.t0ElapsedMsOrNull()
+            launchStartedAtMs = TtffTrace.t0ElapsedMsOrNull(),
+            // A pick before every addon answered: the search up to the latest list it arrived with
+            // (not the time spent browsing it); none when no list arrived from this load.
+            sourcesFoundMs = sourcesFoundMs ?: sourcesArrivedMs
         )
+        if (playbackInfo.hasTarget) cancelStreamsLoad()
 
         val url = playbackInfo.url
         if (!url.isNullOrBlank() && !playbackInfo.isExternal) {
@@ -1279,6 +1392,17 @@ class StreamScreenViewModel @Inject constructor(
     }
 
     /**
+     * Spec 75 S6: re-reads the failure store's marks (on every resume: entry, and each return, so a
+     * source the player just gave up on is marked); the first read loads the store from disk.
+     */
+    private fun refreshFailureMarks() {
+        viewModelScope.launch {
+            val recent = withContext(Dispatchers.IO) { failedReleases.recent() }
+            _uiState.update { it.copy(recentFailures = recent) }
+        }
+    }
+
+    /**
      * P10 "Last played", read on every resume: entry, and Back from a player, whose own saves
      * (torrents, source switches) the cache holds too. Any age counts: the marker is not the
      * reuse window.
@@ -1293,6 +1417,7 @@ class StreamScreenViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        savedFiltersPhonePage.close()
         streamLoadScope?.cancel()
         streamLoadScope = null
         streamLoadJob = null
@@ -1366,8 +1491,13 @@ data class StreamPlaybackInfo(
     val subtitles: List<com.nuvio.tv.domain.model.Subtitle> = emptyList(),
     // TTFF T.1: SystemClock.elapsedRealtime() at the press that started this
     // launch (title press for auto-select, stream selection for manual).
-    val launchStartedAtMs: Long? = null
-)
+    val launchStartedAtMs: Long? = null,
+    /** Spec 75: how long finding sources took (the Finding sources step); null for a reused cached link. */
+    val sourcesFoundMs: Long? = null
+) {
+    /** Whether a press opens anything: a url (player or browser), or a torrent with its info hash. */
+    val hasTarget: Boolean get() = url != null || (isTorrent && infoHash != null)
+}
 
 /**
  * [chips] as the source chips, re-derived (Spec 51 m3): a picked addon whose chip left the row
@@ -1379,9 +1509,19 @@ private fun StreamScreenUiState.withSourceChips(chips: List<SourceChipItem>): St
     copy(sourceChips = chips, listSelection = listSelection.keptIn(sourceChipAddonNames(availableAddons, chips)))
         .withListView(listView.hiddenVerdicts)
 
-/** [allStreams] derived under [listSelection], [hidden] and the chip row (Spec 51 P4). */
+/** [allStreams] derived under [listSelection], [facetFilter], [hidden] and the addon list (Spec 51 P4). */
 private fun StreamScreenUiState.withListView(hidden: Map<String, HiddenStream>): StreamScreenUiState =
-    copy(listView = deriveStreamList(allStreams, listSelection, hidden, sourceChipAddonNames(availableAddons, sourceChips)))
+    copy(
+        listView = deriveStreamList(
+            all = allStreams,
+            selection = listSelection,
+            hidden = hidden,
+            chipAddons = sourceChipAddonNames(availableAddons, sourceChips),
+            filter = facetFilter,
+            facetsOf = StreamFacetMemo::valuesOf,
+            preferred = preferredSource
+        )
+    )
 
 /**
  * A Stream list's runtime from its meta: the episode's for an episode, else the title's. The

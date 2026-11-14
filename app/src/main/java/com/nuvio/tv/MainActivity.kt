@@ -1,9 +1,12 @@
 package com.nuvio.tv
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.view.KeyEvent
 import android.widget.Toast
@@ -24,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
@@ -31,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -55,9 +60,14 @@ import com.nuvio.tv.ui.components.rememberAmbientAccentProvider
 import java.net.URI
 import com.nuvio.tv.core.deeplink.DeepLinkHandler
 import com.nuvio.tv.core.deeplink.DeepLinkParser
+import com.nuvio.tv.core.profile.IdleProfileReturn
+import com.nuvio.tv.core.profile.activeProfilePinState
+import com.nuvio.tv.core.profile.profileReturnHasTarget
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.core.sync.ProfileSyncService
 import com.nuvio.tv.core.sync.StartupSyncService
+import com.nuvio.tv.core.tip.tipEntryShown
+import com.nuvio.tv.core.util.StartupLatencyTrace
 import com.nuvio.tv.data.local.AppOnboardingDataStore
 import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
@@ -87,6 +97,7 @@ import com.nuvio.tv.ui.screens.settings.SettingsAccess
 import com.nuvio.tv.ui.screens.settings.SettingsEntry
 import com.nuvio.tv.ui.screens.settings.openSettingsAt
 import com.nuvio.tv.ui.screens.welcome.DeviceWelcomeHost
+import com.nuvio.tv.ui.screens.welcome.WhatsNewHost
 import com.nuvio.tv.ui.theme.NuvioTheme
 import com.nuvio.tv.ui.util.LocalFastHorizontalNavigationEnabled
 import com.nuvio.tv.ui.util.LocalRecompositionHighlighterEnabled
@@ -97,7 +108,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import android.os.SystemClock
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.nuvio.tv.core.profile.relockDue
+import kotlinx.coroutines.flow.catch
+import java.io.IOException
 import kotlinx.coroutines.launch
 
 private data class MainUiPrefs(
@@ -177,6 +199,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var updateController: com.nuvio.tv.core.update.UpdateController
 
+    @Inject
+    lateinit var tipLinks: com.nuvio.tv.core.tip.TipLinkRepository
+
+    @Inject
+    lateinit var packScanner: com.nuvio.tv.livetv.source.PackScanner
+
     private val pendingDeepLinkUrl = MutableStateFlow<String?>(null)
 
     /** Continue Watching launcher extras awaiting navigation; set from onCreate AND onNewIntent (G4-1). */
@@ -194,6 +222,25 @@ class MainActivity : ComponentActivity() {
 
     /** True after a screensaver wake until the waking press's ACTION_UP has been swallowed. */
     private var swallowKeysUntilUp = false
+
+    /** Spec 62 H3: the idle / wake return to Who's watching (main thread only). */
+    private val idleProfileReturn = IdleProfileReturn()
+    /** A screen-off broadcast since the last ON_START: a backup for ReturnToPickerOnWake's ON_STOP check. */
+    private var screenOffSinceStart = false
+
+    // Registered for the activity's whole life: standby stops the activity before the broadcast.
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                // Only while stopped: a screen-off while on screen is caught by the ON_STOP check,
+                // and one delivered late (after a quick off/on's ON_START) must not mark the next start.
+                Intent.ACTION_SCREEN_OFF ->
+                    if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) screenOffSinceStart = true
+                Intent.ACTION_DREAMING_STARTED -> idleProfileReturn.onDreamingStarted()
+                Intent.ACTION_DREAMING_STOPPED -> idleProfileReturn.onDreamingStopped()
+            }
+        }
+    }
 
     @OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
     override fun attachBaseContext(newBase: Context) {
@@ -215,8 +262,10 @@ class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalFoundationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        StartupLatencyTrace.beginColdStart()
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        StartupLatencyTrace.markOnce("activity_create")
         window?.setBackgroundDrawable(null)
 
         // Wire the Activity-level launcher to the tracker
@@ -224,6 +273,8 @@ class MainActivity : ComponentActivity() {
 
         // Spec 52 P7: a public build checks its releases at most once a day at app start.
         updateController.autoCheckIfDue()
+        // Spec 81 T1: the tip link (stored answer, then tip.json at most once a day).
+        tipLinks.refreshIfDue()
 
         // OLED screensaver: 1 Hz idle ticker while STARTED. collectLatest restarts the
         // loop (and the idle clock) whenever the enable/timeout settings change, and the
@@ -248,6 +299,45 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Spec 73 D15 (Q2): while a channel pack scan runs (not paused), the system screensaver stays off. It put
+        // Nuvio in the background, where the system killed the scan's process (S3c, Shield).
+        lifecycleScope.launch {
+            packScanner.state
+                // Not while paused: what plays (or sits paused) owns the screen then.
+                .map { it is com.nuvio.tv.livetv.source.PackScanner.State.Running && !it.paused }
+                .distinctUntilChanged()
+                .collect { running ->
+                    val keepOn = android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    if (running) window.addFlags(keepOn) else window.clearFlags(keepOn)
+                }
+        }
+
+        // Spec 62 H3: standby and system-screensaver detection, then the idle check while on
+        // screen (each pass returns the wait to the next one).
+        ContextCompat.registerReceiver(
+            this,
+            screenStateReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_DREAMING_STARTED)
+                addAction(Intent.ACTION_DREAMING_STOPPED)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    delay(
+                        idleProfileReturn.checkIdle(
+                            enabled = profileManager.returnToPickerEnabled.value == true,
+                            externalPlayback = externalPlaybackTracker.isTracking,
+                            screensaverShowing = screensaverController.overlayVisible.value
+                        )
+                    )
+                }
+            }
+        }
+
         window?.decorView?.post {
             val snapshot = com.nuvio.tv.core.player.DisplayCapabilities.detect(this)
             com.nuvio.tv.core.player.DisplayCapabilities.logSummary(snapshot)
@@ -266,6 +356,29 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var hasSelectedProfileThisSession by rememberSaveable { mutableStateOf(false) }
+            // The PIN map for the two ON_START returns below, null until loaded or on a read error.
+            val returnPinFlow = remember(profileLockStateDataStore) {
+                profileLockStateDataStore.pinEnabled
+                    .map<Map<Int, Boolean>, Map<Int, Boolean>?> { it }
+                    .catch { if (it is IOException) emit(null) else throw it }
+            }
+            val returnPinEnabled = returnPinFlow.collectAsState(initial = null)
+            ReturnToPickerAfterTimeAway(profileManager, returnPinEnabled, profileLockStateDataStore, externalPlaybackTracker) {
+                hasSelectedProfileThisSession = false
+            }
+            // Spec 62 H3 (D13): Who's watching is showing because of a return (a wake, 30 min away,
+            // or idle). Set only when there is someone to switch to; the picker gate reads it with
+            // hasSelectedProfileThisSession, and picking a profile (or the gate finding no one) clears it.
+            var profileReturnPending by rememberSaveable { mutableStateOf(false) }
+            ReturnToPickerOnWake(
+                profileManager = profileManager,
+                pinEnabled = returnPinEnabled,
+                idleProfileReturn = idleProfileReturn,
+                externalPlayback = externalPlaybackTracker,
+                takeScreenOffSinceStart = { screenOffSinceStart.also { screenOffSinceStart = false } }
+            ) {
+                profileReturnPending = true
+            }
             var onboardingCompletedThisSession by remember { mutableStateOf(false) }
             var onboardingProfileSyncInProgress by remember { mutableStateOf(false) }
             val hasSeenAuthQrFlow = remember(appOnboardingDataStore) {
@@ -297,6 +410,7 @@ class MainActivity : ComponentActivity() {
 
             val activeProfileId by profileManager.activeProfileId.collectAsState()
             val profiles by profileManager.profiles.collectAsState()
+            val storedProfiles by profileManager.storedProfiles.collectAsState()
             val hasEverSelectedProfile by profileManager.hasEverSelectedProfile.collectAsState()
             val rememberLastProfileEnabled by profileManager.rememberLastProfileEnabled.collectAsState()
             val activeProfile = remember(activeProfileId, profiles) {
@@ -320,7 +434,7 @@ class MainActivity : ComponentActivity() {
             // unknown, and the gate cannot check (or auto-enter) the wrong profile.
             val storedActiveProfileId by profileManager.storedActiveProfileId.collectAsState()
             val activeProfileHasPin: Boolean? = remember(storedActiveProfileId, profilePinStates) {
-                storedActiveProfileId?.let { id -> profilePinStates?.let { it[id] == true } }
+                activeProfilePinState(storedActiveProfileId, profilePinStates)
             }
 
             LaunchedEffect(hasEverSelectedProfile, activeProfileHasPin, rememberLastProfileEnabled) {
@@ -401,6 +515,13 @@ class MainActivity : ComponentActivity() {
             val mainUiPrefs by mainUiPrefsFlow.collectAsState(initial = MainUiPrefs())
             val discoverLocation = mainUiPrefs.discoverLocation
 
+            // Spec 69 M1: when each blank-screen gate below has its data, so a cold start's wait
+            // is attributed to the gate that held it.
+            StartupMarkWhen(hasSeenAuthQrOnFirstLaunch != null, "gate_onboarding_flag")
+            StartupMarkWhen(authState !is AuthState.Loading, "gate_auth_resolved")
+            StartupMarkWhen(activeProfileHasPin != null, "gate_profile_lock")
+            StartupMarkWhen(mainUiPrefs.loaded, "gate_ui_prefs")
+
             val uiScalePercent by com.nuvio.tv.data.local.UiScalePreference.flow(applicationContext).collectAsState(initial = 100)
             NuvioTheme(
                 appTheme = mainUiPrefs.theme,
@@ -437,6 +558,22 @@ class MainActivity : ComponentActivity() {
                         dimPercent = screensaverDimPercent
                     )
 
+                    // Spec 62 H3 (D13): a return decided while resumed (the idle timeout with no
+                    // screensaver, or the key press dismissing it with a return owed). No launch
+                    // can be in flight while resumed, so it applies at once.
+                    val profileReturnRequested by idleProfileReturn.requested.collectAsState()
+                    LaunchedEffect(profileReturnRequested) {
+                        if (!profileReturnRequested) return@LaunchedEffect
+                        idleProfileReturn.consume()
+                        // Re-checked: playback may have started between the raise and this frame.
+                        if (!idleProfileReturn.inPlayback &&
+                            profileReturnHasTarget(storedProfiles?.size, activeProfileHasPin)
+                        ) {
+                            profileReturnPending = true
+                        }
+                    }
+
+                    // Must start unloaded: ReturnToPickerAfterTimeAway's restored-process invariant.
                     if (hasSeenAuthQrOnFirstLaunch == null) {
                         Box(
                             modifier = Modifier
@@ -460,6 +597,7 @@ class MainActivity : ComponentActivity() {
                         authState !is AuthState.FullAccount &&
                         !onboardingCompletedThisSession
                     ) {
+                        StartupFrameMark("first_frame_qr_signin")
                         AuthQrSignInScreen(
                             onBackPress = { finish() },
                             onContinue = {
@@ -501,8 +639,10 @@ class MainActivity : ComponentActivity() {
                         return@Surface
                     }
 
-                    if (!hasSelectedProfileThisSession && activeProfileHasPin == null) {
-                        // Lock map or active profile still loading: show neither the picker nor the app yet.
+                    val needsProfilePick = !hasSelectedProfileThisSession || profileReturnPending
+                    if (needsProfilePick && (activeProfileHasPin == null || (profileReturnPending && storedProfiles == null))) {
+                        // Lock map or active profile (or, for a return, the profile list) still loading:
+                        // show neither the picker nor the app yet.
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -511,13 +651,22 @@ class MainActivity : ComponentActivity() {
                         return@Surface
                     }
 
-                    val shouldShowProfileSelection =
-                        !hasSelectedProfileThisSession && (profiles.size > 1 || activeProfileHasPin == true)
+                    // At startup the placeholder list (one profile) counts until the stored one loads.
+                    val shouldShowProfileSelection = needsProfilePick &&
+                        profileReturnHasTarget(storedProfiles?.size ?: profiles.size, activeProfileHasPin)
+                    if (profileReturnPending && !shouldShowProfileSelection) {
+                        // No one to switch to after all (the PIN state or profile list was still
+                        // loading when it was set): drop it, so a profile or PIN added later never
+                        // pops the picker. Reached only once both have loaded (the gate above).
+                        SideEffect { profileReturnPending = false }
+                    }
 
                     if (shouldShowProfileSelection) {
+                        StartupFrameMark("first_frame_profile_picker")
                         ProfileSelectionScreen(
                             onProfileSelected = {
                                 hasSelectedProfileThisSession = true
+                                profileReturnPending = false
                                 if (authManager.authState.value is AuthState.FullAccount) {
                                     startupSyncService.requestSyncNow()
                                 }
@@ -560,8 +709,31 @@ class MainActivity : ComponentActivity() {
                     val actualRoute = navBackStackEntry?.destination?.route
                     val currentRoute = optimisticRoute ?: actualRoute
 
+                    // Spec 62 H3: never return over playback; the idle time starts again when it
+                    // ends. Collected in an effect, so a playback change does not recompose here.
+                    LaunchedEffect(navController) {
+                        try {
+                            combine(
+                                snapshotFlow {
+                                    (optimisticRoute ?: navBackStackEntry?.destination?.route) == Screen.Player.route
+                                },
+                                screensaverController.playbackActive
+                            ) { playerRoute, playing -> playerRoute || playing }
+                                .distinctUntilChanged()
+                                .collect { idleProfileReturn.setInPlayback(it) }
+                        } finally {
+                            idleProfileReturn.setInPlayback(false)
+                        }
+                    }
+
                     LaunchedEffect(actualRoute) {
                         optimisticRoute = null
+                    }
+                    // actualRoute settles a frame after the NavHost first composes Home, so this
+                    // mark reads up to two frames after Home first drew; a launcher or deep-link
+                    // start that lands past Home logs it only on the way back.
+                    if (actualRoute == Screen.Home.route) {
+                        StartupFrameMark("first_frame_home")
                     }
 
                     // Auto-play next episode for EXTERNAL players: the tracker resolves the
@@ -775,6 +947,7 @@ class MainActivity : ComponentActivity() {
 
                     // Spec 52 T2: the top bar's Update pill.
                     val showUpdatePill by updateController.notice.collectAsState()
+                    val pulseUpdatePill by updateController.pulseRelease.collectAsState()
 
                     Box(modifier = Modifier.fillMaxSize()) {
                         CompositionLocalProvider(LocalMarqueeToast provides toast) {
@@ -793,7 +966,9 @@ class MainActivity : ComponentActivity() {
                                     finishAffinity()
                                     finishAndRemoveTask()
                                 },
-                                showUpdate = showUpdatePill
+                                showUpdate = showUpdatePill,
+                                pulseUpdate = pulseUpdatePill,
+                                onUpdatePulsed = updateController::pillPulsed
                             )
                         }
 
@@ -814,18 +989,43 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
-                        // Spec 33 D8: the first-launch welcome card, after every gate above; it
-                        // waits on Home (a launcher or deep-link start lands elsewhere first).
-                        DeviceWelcomeHost(
-                            onHome = currentRoute == Screen.Home.route,
-                            onReview = if (Screen.Settings.route in blockedTopBarRoutes) null else {
-                                {
+                        // The cards' ways into Settings (tab-style from Home); null while Settings
+                        // is locked for this profile, which hides those buttons.
+                        val settingsLocked = Screen.Settings.route in blockedTopBarRoutes
+                        val openSettingsFromCard: ((SettingsEntry, Int?) -> Unit)? =
+                            if (settingsLocked) null else {
+                                { entry, release ->
                                     optimisticRoute = Screen.Settings.route
-                                    navController.openSettingsAt(SettingsEntry.NETWORK) {
+                                    navController.openSettingsAt(entry, release) {
                                         navigateToTopBarRoute(navController, Screen.Settings.route)
                                     }
                                 }
                             }
+                        // Spec 81 D4: the cards' Tip, hidden with no link and on a locked profile.
+                        val tipLink by tipLinks.link.collectAsState()
+                        val cardTipLink = tipLink.takeIf { tipEntryShown(it, settingsLocked) }
+                        // Spec 33 D8: the first-launch welcome card, after every gate above; it
+                        // waits on Home (a launcher or deep-link start lands elsewhere first).
+                        // Spec 80 D15: its Changelog opens About › Changelog with the list open.
+                        DeviceWelcomeHost(
+                            onHome = currentRoute == Screen.Home.route,
+                            onReview = openSettingsFromCard?.let { open -> { open(SettingsEntry.NETWORK, null) } },
+                            onChangelog = openSettingsFromCard?.let { open -> { open(SettingsEntry.CHANGELOG, null) } },
+                            tipLink = cardTipLink
+                        )
+                        // Spec 80 D1: the What's new card, once after an update, after Welcome (it
+                        // waits for that card to settle) and on Home like it.
+                        WhatsNewHost(
+                            onHome = currentRoute == Screen.Home.route,
+                            onWatchVideo = { url, title ->
+                                navController.navigate(
+                                    Screen.Player.createRoute(streamUrl = url, title = title, releaseVideo = true)
+                                )
+                            },
+                            onReadNotes = openSettingsFromCard?.let { open ->
+                                { versionCode -> open(SettingsEntry.CHANGELOG, versionCode) }
+                            },
+                            tipLink = cardTipLink
                         )
                         MarqueeToastHost(state = toast, modifier = Modifier.align(Alignment.BottomCenter))
                     }
@@ -924,12 +1124,15 @@ class MainActivity : ComponentActivity() {
     // can always be dismissed. Compose back-dispatch ordering kept putting the destination screen's
     // handler above the loader's, so Back never reached it.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        idleProfileReturn.onUse()
         // OLED screensaver: while the dim overlay is visible, the first key press wakes
         // it and the whole press (down, repeats, and the matching up) is swallowed so
         // waking never also navigates. Stray key-ups after wake are swallowed too, so
         // ACTION_UP handlers below never see an up without its down.
         if (screensaverController.overlayVisible.value) {
             if (event.action == KeyEvent.ACTION_DOWN) {
+                // Spec 62 H3 (D13): a return owed behind the screensaver is decided at this press.
+                idleProfileReturn.onScreensaverDismissed(profileManager.returnToPickerEnabled.value == true)
                 screensaverController.notifyWake()
                 swallowKeysUntilUp = true
             }
@@ -960,6 +1163,8 @@ class MainActivity : ComponentActivity() {
         // Activity, so idle detection is blind while one is focused. Pause screensaver
         // eligibility while this window lacks focus; refocus restarts the idle clock.
         screensaverController.setWindowFocused(hasFocus)
+        // Spec 62 H3: the idle check pauses likewise, except under the system screensaver.
+        idleProfileReturn.onWindowFocusChanged(hasFocus)
     }
 
     override fun onStart() {
@@ -988,7 +1193,134 @@ class MainActivity : ComponentActivity() {
         if (externalPlaybackTracker.activityLauncher === externalPlayerLauncher) {
             externalPlaybackTracker.activityLauncher = null
         }
+        unregisterReceiver(screenStateReceiver)
         super.onDestroy()
+    }
+}
+
+/**
+ * Spec 64 K3 (D15, D16): when the app comes back on screen after the Ask for PIN again time and the
+ * active profile has a PIN, [onRelock] sends it to Who's watching, which asks for it. ON_STOP stamps
+ * the since-boot clock (saveable, so a restored process is checked too: ON_START replays to the new
+ * observer), except while an external player is tracked (a film on screen never counts). ON_START
+ * decides synchronously from values collected beforehand ([relockDue]); unloaded or unreadable
+ * state fails closed (re-locks sooner). Composed at the top of setContent, above every gate, so no
+ * gate flip while stopped can drop the stamp. Invariant (review 6d2a2348): the main UI must never
+ * compose in the same pass as this effect's first run, or a restored process's Continue Watching /
+ * deep-link launch effect runs in the same apply as the replayed ON_START and is lost behind the
+ * PIN. Today the loading gates start unloaded (hasSeenAuthQrOnFirstLaunch null), so the first pass
+ * never reaches the main UI and those launches stay pending until a profile is picked.
+ */
+@Composable
+private fun ReturnToPickerAfterTimeAway(
+    profileManager: ProfileManager,
+    pinEnabled: State<Map<Int, Boolean>?>,
+    lockStateDataStore: ProfileLockStateDataStore,
+    externalPlayback: com.nuvio.tv.core.player.ExternalPlaybackTracker,
+    onRelock: () -> Unit
+) {
+    val minutesFlow = remember(lockStateDataStore) {
+        lockStateDataStore.relockAfterMinutes
+            .map<Int, Int?> { it }
+            .catch { if (it is IOException) emit(null) else throw it }
+    }
+    // The State objects themselves ([pinEnabled] too), read in the observer: rememberUpdatedState
+    // copies refresh only on recomposition, which is paused while the activity is stopped (a PIN
+    // added meanwhile).
+    val relockMinutes = minutesFlow.collectAsState(initial = null)
+    val latestOnRelock by rememberUpdatedState(onRelock)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var stoppedAtMs by rememberSaveable { mutableStateOf<Long?>(null) }
+    DisposableEffect(lifecycleOwner, profileManager, externalPlayback) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP ->
+                    stoppedAtMs = if (externalPlayback.isTracking) null else SystemClock.elapsedRealtime()
+                Lifecycle.Event.ON_START -> {
+                    val stoppedAt = stoppedAtMs
+                    stoppedAtMs = null
+                    val activeId = profileManager.storedActiveProfileId.value
+                    if (relockDue(stoppedAt, SystemClock.elapsedRealtime(), relockMinutes.value, pinEnabled.value, activeId)) {
+                        latestOnRelock()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+}
+
+/**
+ * Spec 62 H3 (D3, D8, D13): at ON_START, after a standby, 30 minutes away or with a return owed
+ * behind the screensaver, [onReturn] sends the app to Who's watching when there is someone to
+ * switch to. Decided synchronously in the observer, as [ReturnToPickerAfterTimeAway] does,
+ * so a launcher or deep-link launch arriving with the wake waits behind the picker instead of
+ * composing first. Standby is read at ON_STOP (the screen is no longer interactive) into saveable
+ * state, so a process that dies during standby still returns on wake (unless the setting has not
+ * loaded yet at that ON_START: unknown counts as off); [takeScreenOffSinceStart] (a screen-off
+ * broadcast while stopped, not saved) backs it up. Composed beside that relock, under the same
+ * invariant.
+ */
+@Composable
+private fun ReturnToPickerOnWake(
+    profileManager: ProfileManager,
+    pinEnabled: State<Map<Int, Boolean>?>,
+    idleProfileReturn: IdleProfileReturn,
+    externalPlayback: com.nuvio.tv.core.player.ExternalPlaybackTracker,
+    takeScreenOffSinceStart: () -> Boolean,
+    onReturn: () -> Unit
+) {
+    val context = LocalContext.current
+    val latestOnReturn by rememberUpdatedState(onReturn)
+    val latestTakeScreenOff by rememberUpdatedState(takeScreenOffSinceStart)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var sleptSinceStop by rememberSaveable { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner, profileManager, idleProfileReturn, externalPlayback) {
+        val power = context.getSystemService(PowerManager::class.java)
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP ->
+                    if (power?.isInteractive == false) sleptSinceStop = true
+                Lifecycle.Event.ON_START -> {
+                    val slept = sleptSinceStop or latestTakeScreenOff()
+                    sleptSinceStop = false
+                    if (idleProfileReturn.onAppStart(
+                            enabled = profileManager.returnToPickerEnabled.value == true,
+                            slept = slept,
+                            externalPlayback = externalPlayback.isTracking
+                        )
+                    ) {
+                        val activeHasPin = activeProfilePinState(profileManager.storedActiveProfileId.value, pinEnabled.value)
+                        if (profileReturnHasTarget(profileManager.storedProfiles.value?.size, activeHasPin)) latestOnReturn()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+}
+
+/** Spec 69 M1: logs [name] once per process, the first time [ready] holds in composition. */
+@Composable
+private fun StartupMarkWhen(ready: Boolean, name: String) {
+    if (ready) {
+        LaunchedEffect(Unit) { StartupLatencyTrace.markOnce(name) }
+    }
+}
+
+/**
+ * Spec 69 M1: logs [name] once per process when the frame that first composed the caller has
+ * been drawn (the next frame's callback, so at most one frame late).
+ */
+@Composable
+private fun StartupFrameMark(name: String) {
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        StartupLatencyTrace.markOnce(name)
     }
 }
 

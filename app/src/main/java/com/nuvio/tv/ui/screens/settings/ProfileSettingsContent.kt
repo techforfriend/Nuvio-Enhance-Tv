@@ -1,6 +1,10 @@
 package com.nuvio.tv.ui.screens.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -9,6 +13,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.tv.R
+import com.nuvio.tv.core.profile.PinRelock
 
 private const val ROW_MANAGE = "profiles_manage"
 private const val ROW_DPAD_COMBO = "profiles_dpad_combo"
@@ -16,8 +21,8 @@ private const val ROW_DPAD_REMOVE = "profiles_dpad_remove"
 
 /**
  * Spec 31, Profiles pane (sandbox u11-settings-marquee v6, stage `profiles`): Manage profiles,
- * Settings access, Remember last profile (moved in from Advanced, Q12), then the D-pad unlock
- * group. Without a button combination the unlock switch and Remove dim with the reason.
+ * Settings access, Remember last profile (moved in from Advanced, Q12), Ask for PIN again (Spec 64
+ * D15, sandbox spec-64-k3-pin-relock v3), then the D-pad unlock group. Without a button combination the unlock switch and Remove dim with the reason.
  */
 @Composable
 internal fun ProfileSettingsContent(
@@ -65,6 +70,32 @@ internal fun ProfileSettingsContent(
                 onCheckedChange = viewModel::setRememberLastProfile
             )
         }
+        // Spec 62 H3 (D8): stored on this TV like Remember last profile, so no "This TV" tag either.
+        item(key = "profiles_return_to_picker") {
+            SettingsSwitchRow(
+                title = stringResource(R.string.profiles_return_to_picker_title),
+                subtitle = stringResource(R.string.profiles_return_to_picker_subtitle),
+                checked = state.returnToPicker,
+                onCheckedChange = viewModel::setReturnToPicker
+            )
+        }
+        item(key = "profiles_relock") {
+            var pickerOpen by rememberSaveable { mutableStateOf(false) }
+            SettingsValueRow(
+                title = stringResource(R.string.pin_relock_title),
+                subtitle = stringResource(R.string.pin_relock_subtitle),
+                value = relockLabel(state.relockMinutes),
+                thisTv = true,
+                onClick = { pickerOpen = true }
+            )
+            if (pickerOpen) {
+                PinRelockPanel(
+                    minutes = state.relockMinutes,
+                    onSelect = viewModel::setRelockAfterMinutes,
+                    onDismiss = { pickerOpen = false }
+                )
+            }
+        }
         item(key = "profiles_dpad_section") { SettingsSectionLabel(text = dpadUnlockTitle) }
         item(key = "profiles_dpad_unlock") {
             SettingsSwitchRow(
@@ -107,4 +138,35 @@ internal fun ProfileSettingsContent(
             )
         }
     }
+}
+
+/** The row's value: Off, "After N min" or "After 1 hour". */
+@Composable
+private fun relockLabel(minutes: Int): String = when (minutes) {
+    PinRelock.OFF -> stringResource(R.string.pin_relock_off)
+    PinRelock.ONE_HOUR -> stringResource(R.string.pin_relock_after_hour)
+    else -> stringResource(R.string.pin_relock_after_minutes, minutes)
+}
+
+/** Ask for PIN again picker (sandbox spec-64-k3-pin-relock v3 stage 1b): the six choices, then the note. */
+@Composable
+private fun PinRelockPanel(minutes: Int, onSelect: (Int) -> Unit, onDismiss: () -> Unit) {
+    SettingsPickerPanel(
+        title = stringResource(R.string.pin_relock_title),
+        options = PinRelock.OPTIONS.map { value ->
+            SettingsPickerOption(
+                value = value,
+                title = relockLabel(value),
+                description = when (value) {
+                    PinRelock.OFF -> stringResource(R.string.pin_relock_off_sub)
+                    PinRelock.DEFAULT_MINUTES -> stringResource(R.string.pin_relock_default_sub)
+                    else -> null
+                }
+            )
+        },
+        selectedValue = minutes,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        footnote = stringResource(R.string.pin_relock_note)
+    )
 }

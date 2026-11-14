@@ -288,6 +288,14 @@ class AddonPreferences @Inject constructor(
     suspend fun getInstalledAddonUrls(profileId: Int): List<String> =
         getCurrentList(store(profileId).data.first())
 
+    /**
+     * Spec 68 P8: the list in [storeProfileId]'s own store, read straight from the factory with no
+     * usesPrimaryAddons mapping (that mapping resolves through `profiles.value`, whose initial value
+     * is a placeholder).
+     */
+    suspend fun getStoredAddonUrls(storeProfileId: Int): List<String> =
+        getCurrentList(factory.get(storeProfileId, FEATURE).data.first())
+
     /** Snapshot of [profileId]'s user-set addon names (profile 1's for a read-only profile). */
     suspend fun getUserSetNames(profileId: Int): Map<String, String> =
         store(profileId).data.first().userSetNameMap()

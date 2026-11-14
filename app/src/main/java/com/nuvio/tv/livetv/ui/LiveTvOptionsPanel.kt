@@ -26,6 +26,7 @@ import androidx.media3.common.MimeTypes
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.livetv.model.EpgRef
+import com.nuvio.tv.livetv.player.LiveDrm
 import com.nuvio.tv.livetv.player.LiveStreamPick
 import com.nuvio.tv.livetv.player.LiveTuneState
 import com.nuvio.tv.livetv.player.StreamHealth
@@ -187,11 +188,14 @@ private fun guideSummary(guide: LiveGuidePanel): String {
     }
 }
 
-/** "host · HLS · worked at 20:02" (D16): where the stream comes from, its type, and its last outcome. */
+/**
+ * "host · HLS · worked at 20:02" (D16): where the stream comes from, its type, and its last outcome;
+ * a licensed stream names its key system in place of the type (Spec 74 D6, "host · Widevine · ...").
+ */
 @Composable
 private fun streamSummary(pick: LiveStreamPick, health: Map<String, StreamHealthRecord>, timeFormat: DateFormat): String {
     val host = runCatching { URI(pick.stream.url.trim()).host }.getOrNull()?.removePrefix("www.")
-    val type = when (pick.mimeType) {
+    val type = LiveDrm.from(pick.stream.kodiProps)?.let { keySystemLabel(it.keySystem) } ?: when (pick.mimeType) {
         MimeTypes.APPLICATION_M3U8 -> "HLS"
         MimeTypes.APPLICATION_MPD -> "DASH"
         else -> null

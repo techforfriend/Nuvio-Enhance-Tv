@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.LocalLookSets
 import com.nuvio.tv.domain.model.LookAvatar
 import com.nuvio.tv.domain.model.ProfileBackgroundSelection
@@ -49,10 +50,14 @@ internal sealed interface EditorAvatarPick {
  *   again returns to the synced background.
  * - Live TV (Spec 34 D17): the profile's switch, [originalLiveTvEnabled] at open (on for a new
  *   profile); saved only when [liveTvChanged].
+ * - Rating limit (Spec 64 K2): the profile's cap, [originalRatingCap] at open (none for a new
+ *   profile; null = no limit); [ratingCapChanged] counts toward [hasChanges] (the save itself
+ *   writes it wherever it is editable, [ratingCapEditFor]).
  */
 internal class ProfileEditorDraft private constructor(
     val original: UserProfile?,
     val originalLiveTvEnabled: Boolean,
+    val originalRatingCap: ContentRatingCap?,
     private val openedLocalAvatar: ProfileLookPick?,
     private val openedLocalBackground: ProfileLookPick?
 ) {
@@ -83,6 +88,11 @@ internal class ProfileEditorDraft private constructor(
         private set
 
     val liveTvChanged: Boolean get() = liveTvEnabled != originalLiveTvEnabled
+
+    var ratingCap by mutableStateOf(originalRatingCap)
+        private set
+
+    val ratingCapChanged: Boolean get() = ratingCap != originalRatingCap
 
     /** The tile the grid's focus is on, or null (focus elsewhere). */
     var focusedTile by mutableStateOf<AvatarTile?>(null)
@@ -117,10 +127,11 @@ internal class ProfileEditorDraft private constructor(
     /**
      * Anything to lose on Back: on create a typed name or a picked avatar; on edit any field changed
      * (a stored blank background URL counts as none, as the draft starts it); a TV-only pick
-     * changed; the Live TV switch.
+     * changed; the Live TV switch; the rating limit.
      */
     val hasChanges: Boolean
         get() = liveTvChanged ||
+            ratingCapChanged ||
             localAvatar != openedLocalAvatar ||
             localBackground != openedLocalBackground ||
             if (original == null) {
@@ -201,6 +212,10 @@ internal class ProfileEditorDraft private constructor(
 
     fun updateLiveTv(enabled: Boolean) {
         liveTvEnabled = enabled
+    }
+
+    fun updateRatingCap(cap: ContentRatingCap?) {
+        ratingCap = cap
     }
 
     fun focusTile(tile: AvatarTile?) {
@@ -317,16 +332,19 @@ internal class ProfileEditorDraft private constructor(
         const val NAME_MAX = 20
         const val DEFAULT_COLOR = "#1E88E5"
 
-        fun create(): ProfileEditorDraft = ProfileEditorDraft(null, true, null, null)
+        fun create(): ProfileEditorDraft = ProfileEditorDraft(null, true, null, null, null)
 
         /** An edit of [profile]; its look entry's picks open selected only while they apply ([sets]). */
         fun edit(
             profile: UserProfile,
             liveTvEnabled: Boolean,
+            // No default: an edit opened on the wrong cap would show it, and a save would write it.
+            ratingCap: ContentRatingCap?,
             look: ProfileLookEntry?,
             // No default: without the current My photos a photo pick would open as Synced and the save would clear it.
             sets: LocalLookSets
-        ): ProfileEditorDraft =
-            ProfileEditorDraft(profile, liveTvEnabled, look.activeAvatar(profile, sets), look.activeBackground(profile, sets))
+        ): ProfileEditorDraft = ProfileEditorDraft(
+            profile, liveTvEnabled, ratingCap, look.activeAvatar(profile, sets), look.activeBackground(profile, sets)
+        )
     }
 }

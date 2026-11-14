@@ -3,6 +3,7 @@
 package com.nuvio.tv.livetv.ui
 
 import android.view.KeyEvent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -64,6 +65,7 @@ import com.nuvio.tv.livetv.player.LiveTuneState
 import com.nuvio.tv.ui.components.marquee.FACT_SEPARATOR
 import com.nuvio.tv.ui.components.marquee.MarqueeEyebrow
 import com.nuvio.tv.ui.components.marquee.MarqueeGlassTextButton
+import com.nuvio.tv.ui.components.marquee.MarqueePickerOption
 import com.nuvio.tv.ui.components.marquee.MarqueePrimaryButton
 import com.nuvio.tv.ui.components.marquee.marqueeSkeletonBar
 import com.nuvio.tv.ui.theme.NuvioPrimitives
@@ -88,9 +90,20 @@ import kotlin.math.abs
 @Composable
 fun LiveTvScreen(
     viewModel: LiveTvViewModel = hiltViewModel(),
-    onOpenSources: (addSource: Boolean) -> Unit = {}
+    onOpenSources: (addSource: Boolean, scan: Boolean) -> Unit = { _, _ -> },
+    openCountry: String? = null,
+    onCountryOpened: () -> Unit = {}
 ) {
     val ui by viewModel.uiState.collectAsState()
+    val packOffer by viewModel.packOffer.collectAsState()
+    // Spec 73 D3: the pack added from the empty state opens Sources on the scan's country list.
+    LaunchedEffect(viewModel) { viewModel.packAdded.collect { onOpenSources(false, true) } }
+    // Spec 73 S3b: back from a scan's "Open Live TV": the list filtered to its country (blank = All).
+    LaunchedEffect(openCountry) {
+        val country = openCountry ?: return@LaunchedEffect
+        viewModel.selectFilter(LiveTvFilter.Browse(country = country.ifEmpty { null }))
+        onCountryOpened()
+    }
     LifecycleStartEffect(viewModel) {
         viewModel.resumePreview()
         onStopOrDispose { viewModel.stopPreview() }
@@ -102,8 +115,14 @@ fun LiveTvScreen(
     ) {
         when {
             ui.loading -> LiveTvSkeleton()
-            !ui.hasChannelSources -> LiveTvEmpty(onAddBroadcasters = viewModel::addBroadcasters, onAddSourceUrl = { onOpenSources(true) })
-            else -> LiveTvContent(viewModel = viewModel, ui = ui, onOpenSources = { onOpenSources(false) })
+            !ui.hasChannelSources -> LiveTvEmpty(
+                offer = packOffer,
+                onShown = viewModel::loadPackSummary,
+                onAddPack = viewModel::addPack,
+                onAddBroadcasters = viewModel::addBroadcasters,
+                onAddSourceUrl = { onOpenSources(true, false) }
+            )
+            else -> LiveTvContent(viewModel = viewModel, ui = ui, onOpenSources = { onOpenSources(false, false) })
         }
     }
 }
@@ -117,6 +136,7 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
     val info by viewModel.info.collectAsState()
     val focusedKey by viewModel.focusedKey.collectAsState()
     val sourceNames by viewModel.sourceNames.collectAsState()
+    val schedule by viewModel.schedule.collectAsState()
     val context = LocalContext.current
     val timeFormat = remember(context) { android.text.format.DateFormat.getTimeFormat(context) }
     val listState = rememberLazyListState()
@@ -131,6 +151,17 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
     val retryRequester = remember { FocusRequester() }
     val rows = ui.rows
     val rowsEmpty = rows.isEmpty()
+    // The Guide and Compact views (Spec 67 G3c): the band over the grid in place of list + preview.
+    val guide = ui.guide
+    // Both live only while the grid shows: reopened from the View picker it starts afresh on List's row.
+    val gridShown = guide != null
+    // Seeded on List's row, a few rows down like the list (a state made once per showing: a grid back
+    // from full screen or an empty filter keeps its scroll).
+    val gridListState = remember(gridShown) {
+        LazyListState((rows.indexOfFirst { it.channel.key == viewModel.focusedKey.value } - live.focusRowsAbove).coerceAtLeast(0))
+    }
+    val guideCursor = remember(gridShown) { GuideCursor() }
+    val gridRequester = remember { FocusRequester() }
     var fullScreen by remember { mutableStateOf(false) }
     // The row whose hold-OK side panel is open (L7d) and its index then; null when closed.
     var panelRow by remember { mutableStateOf<LiveRow?>(null) }
@@ -144,11 +175,17 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
     val playingKey = tune.channel?.key.takeIf { tune !is LiveTuneState.Unavailable }
     val unavailableKey = (tune as? LiveTuneState.Unavailable)?.channel?.key
 
-    /** Focus [key]'s row (scrolled to sit at most `focusRowsAbove` down), else the selected pill. */
+    /**
+     * Focus [key]'s row (scrolled to sit at most `focusRowsAbove` down; in a grid view its grid row at
+     * the kept time), else the selected pill.
+     */
     val focusRowOrPill = { key: String? ->
         scope.launch {
             val index = rows.indexOfFirst { it.channel.key == key }
-            if (key != null && index >= 0) {
+            if (key != null && index >= 0 && guide != null) {
+                guideCursor.focus(key, rows, guide, ui.nowMs)
+                gridRequester.requestFocusAfterFrames()
+            } else if (key != null && index >= 0) {
                 listState.scrollToItem((index - live.focusRowsAbove).coerceAtLeast(0))
                 requesterFor(key).requestFocusAfterFrames()
             } else {
@@ -156,6 +193,23 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
             }
         }
     }
+
+    // The day schedule (Spec 67 G2, D5/D6): the screen owns which open shows ([ScheduleOpenState],
+    // like the options panel's panelRow), so closing removes the column in the same frame and the row
+    // refocus that follows is never cancelled by the column's containment. The VM only derives the
+    // data. Left or Back return to its channel's row (Q2); its channel or guide going away while
+    // shown closes it back to the row too (unless full screen, whose exit focuses the row).
+    val scheduleOpen = remember { ScheduleOpenState() }
+    val shownSchedule = scheduleOpen.shown(schedule)
+    val closeSchedule: (refocus: Boolean) -> Unit = { refocus ->
+        val key = scheduleOpen.close() ?: viewModel.focusedKey.value
+        viewModel.closeSchedule()
+        if (refocus) focusRowOrPill(key)
+    }
+    LaunchedEffect(shownSchedule != null, scheduleOpen.openId) {
+        if (scheduleOpen.lostData(shownSchedule != null)) closeSchedule(!fullScreen)
+    }
+    BackHandler(enabled = scheduleOpen.isOpen && !fullScreen) { closeSchedule(true) }
 
     // Initial focus (Q1), once: the last-focused channel's row, else the first row; the selected
     // pill when the filter lists nothing (Down enters the list once it has rows).
@@ -170,7 +224,11 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
     LaunchedEffect(ui.filter) {
         if (ui.filter == shownFilter) return@LaunchedEffect
         shownFilter = ui.filter
-        listState.scrollToItem(0)
+        // Requested, not awaited: a list never laid out (the view not shown) would hold the effect forever.
+        listState.requestScrollToItem(0)
+        gridListState.requestScrollToItem(0)
+        // The grid's cursor learns of every filter change here, empty filters included (G3c-Q1).
+        guide?.let { guideCursor.filterChanged(rows, it, ui.nowMs) }
         if (pendingEnter && viewModel.selectedFilter == ui.filter) {
             pendingEnter = false
             rows.firstOrNull()?.let { focusRowOrPill(it.channel.key) }
@@ -179,11 +237,19 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
 
     // One picture for preview and full screen (O1 (a)): this call site never moves, only its size
     // changes, so the PlayerView and its surface survive the switch.
+    // The schedule column shrinks it to its head (Spec 67 G2), the same view at another size.
     Box(
-        modifier = if (fullScreen) {
-            Modifier.fillMaxSize()
-        } else {
-            Modifier
+        modifier = when {
+            fullScreen -> Modifier.fillMaxSize()
+            guide != null -> Modifier
+                .padding(start = NuvioTheme.layout.tvSafeHorizontal, top = live.guideBandTop)
+                .size(live.guideBandPictureWidth, live.guideBandHeight)
+                .background(live.previewFill)
+            shownSchedule != null -> Modifier
+                .padding(start = live.previewStart, top = live.previewTop)
+                .size(live.scheduleHeadWidth, live.scheduleHeadHeight)
+                .background(live.previewFill)
+            else -> Modifier
                 .padding(start = live.previewStart, top = live.previewTop)
                 .size(live.previewWidth, live.previewHeight)
                 .background(live.previewFill)
@@ -219,11 +285,13 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
         pickers = ui.pickers,
         categoryLabels = ui.categoryLabels,
         counts = ui.counts,
+        view = ui.view,
         pillRequesters = pillRequesters,
         selectedPill = selectedPill,
         // Down from the bar lands on the pills only while the list is empty (TopBarScaffold).
         contentRequester = contentRequester.takeIf { rowsEmpty },
         onSelect = viewModel::selectFilter,
+        onSelectView = viewModel::selectView,
         onOpenSources = onOpenSources,
         onDown = {
             when {
@@ -233,7 +301,13 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
                     true
                 }
                 !rowsEmpty -> {
-                    focusRowOrPill(rows.first().channel.key)
+                    if (guide != null) {
+                        // The grid enters on its cursor's row (G3c-Q1); synced here so the first frame has one.
+                        guideCursor.sync(rows, guide, ui.nowMs, viewModel.focusedKey.value)
+                        focusRowOrPill(guideCursor.key ?: rows.first().channel.key)
+                    } else {
+                        focusRowOrPill(rows.first().channel.key)
+                    }
                     true
                 }
                 else -> false
@@ -246,7 +320,51 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
         )
     )
 
-    CompositionLocalProvider(LocalBringIntoViewSpec provides rememberLiveRowBringIntoViewSpec(listState)) {
+    if (guide != null && !rowsEmpty) {
+        val tuned = tune.channel
+        LiveTvGuideBand(
+            rows = rows,
+            guide = guide,
+            cursor = guideCursor,
+            tune = tune,
+            tunedName = tuned?.shownName,
+            tunedNumber = tuned?.key?.let(viewModel::number),
+            nowMs = ui.nowMs,
+            timeFormat = timeFormat,
+            modifier = Modifier.padding(
+                start = NuvioTheme.layout.tvSafeHorizontal,
+                end = NuvioTheme.layout.tvSafeHorizontal,
+                top = live.guideBandTop
+            )
+        )
+        LiveTvGuide(
+            rows = rows,
+            guide = guide,
+            compact = ui.view == LiveTvView.COMPACT,
+            nowMs = ui.nowMs,
+            cursor = guideCursor,
+            openKey = focusedKey,
+            listState = gridListState,
+            playingKey = playingKey,
+            sourceNames = sourceNames,
+            timeFormat = timeFormat,
+            gridRequester = gridRequester,
+            contentRequester = contentRequester,
+            onRowFocused = { viewModel.onRowFocused(it.channel) },
+            onFocusLeft = viewModel::cancelPendingPreview,
+            onUpFromTop = { scope.launch { selectedPill.requestFocusAfterFrames() } },
+            onWatch = { if (viewModel.tuneNow(it.channel)) fullScreen = true },
+            onOptions = { row ->
+                panelRow = row
+                panelIndex = rows.indexOfFirst { it.channel.key == row.channel.key }
+            },
+            modifier = Modifier
+                .padding(start = NuvioTheme.layout.tvSafeHorizontal, end = NuvioTheme.layout.tvSafeHorizontal, top = live.guideTop)
+                .fillMaxSize()
+        )
+    }
+
+    if (guide == null) CompositionLocalProvider(LocalBringIntoViewSpec provides rememberLiveRowBringIntoViewSpec(listState)) {
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -292,9 +410,24 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
                     },
                     modifier = Modifier
                         .focusRequester(requesterFor(rowKey))
-                        // Right from the channel that gave up reaches Retry (stage 6).
+                        // Right on a row with a guide opens its day schedule (Spec 67 D3 Q1); not on
+                        // the channel that gave up, whose Right reaches Retry (stage 6).
+                        .onPreviewKeyEvent { event ->
+                            val key = event.nativeKeyEvent
+                            if (key.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT || !row.hasSchedule || rowKey == unavailableKey) {
+                                return@onPreviewKeyEvent false
+                            }
+                            if (key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
+                                viewModel.openSchedule(row.channel)?.let { id -> scheduleOpen.opened(id, rowKey) }
+                            }
+                            true
+                        }
                         .focusProperties { if (rowKey == unavailableKey) right = retryRequester }
-                        .onFocusChanged { if (it.isFocused) viewModel.onRowFocused(row.channel) }
+                        .onFocusChanged {
+                            if (it.isFocused) viewModel.onRowFocused(row.channel)
+                            // Moved off before its schedule arrived: the pending open is dropped (D6).
+                            else if (scheduleOpen.pendingOn(rowKey, shownSchedule != null)) closeSchedule(false)
+                        }
                 )
             }
         }
@@ -306,13 +439,29 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
         LiveTvEmptyFilter(
             filter = ui.filter,
             categoryLabels = ui.categoryLabels,
+            // In a grid view under the band's picture, where the grid would start.
             modifier = Modifier
-                .padding(start = live.listStart, top = live.listTop)
+                .padding(start = live.listStart, top = if (guide != null) live.guideTop else live.listTop)
                 .width(live.listWidth)
         )
     }
 
-    LiveTvPreview(
+    shownSchedule?.let { open ->
+        LiveTvScheduleColumn(
+            schedule = open,
+            tune = tune,
+            number = viewModel.number(open.row.channel.key),
+            timeFormat = timeFormat,
+            onClose = { closeSchedule(true) },
+            // OK on the airing programme (Q3): its channel is already tuned (openSchedule).
+            onFullScreen = {
+                closeSchedule(false)
+                fullScreen = true
+            },
+            modifier = Modifier.padding(start = live.previewStart, top = live.previewTop)
+        )
+    }
+    if (shownSchedule == null && guide == null) LiveTvPreview(
         tune = tune,
         number = viewModel::number,
         timeFormat = timeFormat,
@@ -325,7 +474,7 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
         onNextChannel = { focusRowOrPill(viewModel.zap(+1)) },
         modifier = Modifier.padding(start = live.previewStart, top = live.previewTop)
     )
-    info?.let { row ->
+    info?.takeIf { shownSchedule == null && guide == null }?.let { row ->
         LiveTvInfo(
             row = row,
             nowMs = ui.nowMs,
@@ -366,7 +515,8 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
  * The pill row (`.lvpills`, Spec 38 stage 1): Favorites and Recents with their counts (select on
  * focus, D16, as Library's tabs), the Country, Category and Language pickers (OK opens one and
  * makes them the shown filter; while Favorites or Recents show they keep their values, dimmed),
- * then Sources at the row's end. Entering it lands on [selectedPill] (the Country picker for a
+ * then at the row's end the View picker ([view], value only, Spec 67 D7 Q1)
+ * and Sources. Entering it lands on [selectedPill] (the Country picker for a
  * Browse). [onDown] handles Down from any pill and says whether it consumed the key.
  */
 @Composable
@@ -376,10 +526,12 @@ private fun LiveTvPillRow(
     pickers: Pickers?,
     categoryLabels: Map<String, String>,
     counts: Map<LiveTvFilter, Int>,
+    view: LiveTvView,
     pillRequesters: MutableMap<LiveTvFilter, FocusRequester>,
     selectedPill: FocusRequester,
     contentRequester: FocusRequester?,
     onSelect: (LiveTvFilter) -> Unit,
+    onSelectView: (LiveTvView) -> Unit,
     onOpenSources: () -> Unit,
     onDown: () -> Boolean,
     modifier: Modifier = Modifier
@@ -468,6 +620,25 @@ private fun LiveTvPillRow(
             onSelect = { v -> onSelect(browse.copy(language = v.ifEmpty { null })) }
         )
         Spacer(modifier = Modifier.weight(1f))
+        val viewTitle = stringResource(R.string.live_tv_view)
+        LiveTvPicker(
+            label = viewTitle,
+            value = liveTvViewLabel(view),
+            eyebrow = viewTitle,
+            // Always a value, never a filter: glass like a picker holding one (sandbox `on view`).
+            active = true,
+            all = false,
+            options = {
+                LiveTvView.entries.map { v ->
+                    MarqueePickerOption(liveTvViewLabel(v), v.id, detail = liveTvViewDetail(v))
+                }
+            },
+            selectedValue = view.id,
+            onOpen = {},
+            onSelect = { id -> onSelectView(LiveTvView.fromId(id)) },
+            showLabel = false,
+            alignEnd = true
+        )
         LiveTvPill(
             label = stringResource(R.string.live_tv_sources),
             selected = false,
@@ -478,6 +649,19 @@ private fun LiveTvPillRow(
         )
     }
 }
+
+// The View picker's label and detail string ids, one when per view.
+private fun liveTvViewStrings(view: LiveTvView): Pair<Int, Int> = when (view) {
+    LiveTvView.LIST -> R.string.live_tv_view_list to R.string.live_tv_view_list_detail
+    LiveTvView.GUIDE -> R.string.live_tv_view_guide to R.string.live_tv_view_guide_detail
+    LiveTvView.COMPACT -> R.string.live_tv_view_compact to R.string.live_tv_view_compact_detail
+}
+
+@Composable
+private fun liveTvViewLabel(view: LiveTvView): String = stringResource(liveTvViewStrings(view).first)
+
+@Composable
+private fun liveTvViewDetail(view: LiveTvView): String = stringResource(liveTvViewStrings(view).second)
 
 /**
  * The list keeps the focused row at most `focusRowsAbove` rows down (D16; the sandbox's window):
@@ -518,15 +702,27 @@ private fun LiveTvBottomFade() {
 }
 
 /**
- * Stage 13 (Q7): no channel source yet. "Add broadcasters · 7 channels" is the focused primary
- * (one press to a working tab); "Add source URL" second.
+ * No channel source yet (Spec 73 D2, sandbox `spec-73-live-pack` stage 1; was Q7 stage 13): "Add
+ * channel pack" is the focused primary, then "Add broadcasters · 7 channels" (bundled: plays when
+ * GitHub cannot be reached) and "Add source URL". The pack's figures ([PackOffer.summary], read
+ * as the screen opens, [onShown]) fill the body and the facts line; without them the body names
+ * none and the facts line is not shown.
  */
 @Composable
-private fun LiveTvEmpty(onAddBroadcasters: () -> Unit, onAddSourceUrl: () -> Unit) {
+private fun LiveTvEmpty(
+    offer: PackOffer,
+    onShown: () -> Unit,
+    onAddPack: () -> Unit,
+    onAddBroadcasters: () -> Unit,
+    onAddSourceUrl: () -> Unit
+) {
     val marquee = NuvioTheme.marquee
     val live = marquee.liveTv
     val requester = LocalContentFocusRequester.current
+    val numbers = remember { NumberFormat.getIntegerInstance() }
+    val summary = offer.summary
     LaunchedEffect(requester) { requester.requestFocusAfterFrames() }
+    LaunchedEffect(Unit) { onShown() }
     Column(
         modifier = Modifier
             .padding(start = NuvioTheme.layout.tvSafeHorizontal, top = live.emptyTop)
@@ -540,7 +736,11 @@ private fun LiveTvEmpty(onAddBroadcasters: () -> Unit, onAddSourceUrl: () -> Uni
             color = NuvioPrimitives.white
         )
         Text(
-            text = stringResource(R.string.live_tv_empty_body),
+            text = if (summary != null) {
+                stringResource(R.string.live_tv_empty_body_pack, numbers.format(summary.channels), numbers.format(summary.countries))
+            } else {
+                stringResource(R.string.live_tv_empty_body_pack_unknown) // Spec 73 D11 (Q1): no figures
+            },
             style = NuvioTheme.textStyles.signInIntro,
             color = marquee.onImage2
         )
@@ -549,13 +749,30 @@ private fun LiveTvEmpty(onAddBroadcasters: () -> Unit, onAddSourceUrl: () -> Uni
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Spec 73 D11 (Q3): Adding… while it downloads.
             MarqueePrimaryButton(
-                label = stringResource(R.string.live_tv_add_broadcasters),
+                label = stringResource(if (offer.adding) R.string.live_tv_adding else R.string.live_tv_add_pack),
                 icon = null,
-                onClick = onAddBroadcasters,
+                onClick = onAddPack,
                 focusRequester = requester
             )
+            MarqueeGlassTextButton(label = stringResource(R.string.live_tv_add_broadcasters), onClick = onAddBroadcasters)
             MarqueeGlassTextButton(label = stringResource(R.string.live_tv_add_source_url), onClick = onAddSourceUrl)
+        }
+        if (summary != null) {
+            Text(
+                text = stringResource(
+                    R.string.live_tv_pack_facts,
+                    numbers.format(summary.channels),
+                    packSize(summary.bytes)
+                ),
+                style = NuvioTheme.textStyles.caption,
+                color = marquee.onImage2
+            )
+        }
+        // Spec 73 D11 (Q3): a failed add shows its reason under the buttons.
+        offer.error?.let { reason ->
+            Text(text = reason, style = NuvioTheme.textStyles.caption, color = NuvioPrimitives.errorOnImage)
         }
         Text(
             text = stringResource(R.string.live_tv_empty_note),

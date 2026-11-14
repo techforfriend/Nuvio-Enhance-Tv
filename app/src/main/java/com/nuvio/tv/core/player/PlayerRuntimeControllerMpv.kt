@@ -14,7 +14,11 @@ private const val MPV_RESUME_SEEK_TOLERANCE_MS = 1500L
 
 internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
     if (mpvView === view) return
+    val outgoing = mpvView
     mpvView = view
+    // Spec 85: a view that left the screen never renders again, so its core goes with it (an HTTP
+    // episode switch that lands on ExoPlayer only stopped it; the switch keeps the player, nt12).
+    outgoing?.let { runCatching { it.releasePlayer() } }
 
     if (view == null) return
     if (!isUsingMpvEngine()) return
@@ -22,13 +26,13 @@ internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
     if (mpvInitializationInProgress) return
 
     runCatching {
+        // Before setMedia, so a throw there fails over at this start's position.
+        val startPositionMs = _uiState.value.pendingSeekPosition ?: pendingResumeProgress?.position ?: 0L
+        mpvStartPositionMs = startPositionMs
         performPendingMpvHardRestartIfNeeded(view)
         view.applyHardwareDecodeMode(mpvHardwareDecodeModeSetting)
         view.setMedia(currentStreamUrl, currentHeaders)
-        applyMpvSessionSettingsAndStart(
-            view,
-            startPositionMs = _uiState.value.pendingSeekPosition ?: pendingResumeProgress?.position ?: 0L
-        )
+        applyMpvSessionSettingsAndStart(view, startPositionMs = startPositionMs)
         hasRenderedFirstFrame = false
         _uiState.update {
             it.copy(
@@ -43,25 +47,12 @@ internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
         startWatchProgressSaving()
         updateMpvAvailableTracks()
         scheduleHideControls()
+        // Last, so a throw above (handled below) never leaves it armed.
+        scheduleMpvStartupWatchdog(view)
     }.onFailure {
         val detailedError = it.message ?: context.getString(com.nuvio.tv.R.string.player_error_mpv_surface_failed)
-        if (
-            maybeAutoSwitchInternalPlayerOnStartupError(
-                detailedError = detailedError,
-                allowEngineFailover = true
-            )
-        ) {
-            return@onFailure
-        }
-        cancelNextEpisodeAutoPlayOnFatalError()
-        _uiState.update { state ->
-            state.copy(
-                error = detailedError,
-                showLoadingOverlay = false,
-                playbackEnded = false,
-                postPlayMode = null
-            )
-        }
+        // An engine fault: the Exo failover or the error box, never the next source.
+        handleMpvStartupFailure(engineFailure(detailedError), sourceFailover = false)
     }
 }
 
@@ -100,11 +91,17 @@ internal fun PlayerRuntimeController.initializeMpvPlayer(
             message = context.getString(com.nuvio.tv.R.string.player_loading_starting),
             showOverlay = true
         )
-        performPendingMpvHardRestartIfNeeded(view)
+        // Spec 85 F2: every mpv start loads on a fresh core, so the view's per-core state (load
+        // failure, playback started, a core stopPlayback ended) never carries over. The HTTP episode
+        // switch keeps the player (nt12, an Exo gain) and would otherwise reuse a live core. This
+        // release also serves a pending manual-switch hard restart.
+        pendingMpvHardRestartOnNextAttach = false
+        view.releasePlayer()
         view.applyHardwareDecodeMode(mpvHardwareDecodeModeSetting)
         val initialResumePosition = resolvePendingInitialResumePosition()
             .takeIf { it > 0L }
             ?: (_uiState.value.pendingSeekPosition?.coerceAtLeast(0L) ?: 0L)
+        mpvStartPositionMs = initialResumePosition
         view.setMedia(url, headers, initialResumePosition)
         Log.i(
             PlayerRuntimeController.TAG,
@@ -138,27 +135,17 @@ internal fun PlayerRuntimeController.initializeMpvPlayer(
         startWatchProgressSaving()
         updateMpvAvailableTracks()
         scheduleHideControls()
+        // Last, so a throw above (handled below) never leaves it armed.
+        scheduleMpvStartupWatchdog(view)
     }.onFailure { error ->
         Log.e(PlayerRuntimeController.TAG, "libmpv initialize failed: ${error.message}", error)
         val detailedError = error.message ?: context.getString(com.nuvio.tv.R.string.player_error_mpv_playback_failed)
-        if (
-            maybeAutoSwitchInternalPlayerOnStartupError(
-                detailedError = detailedError,
-                allowEngineFailover = allowEngineFailover
-            )
-        ) {
-            return@onFailure
-        }
-        cancelNextEpisodeAutoPlayOnFatalError()
-        _uiState.update {
-            it.copy(
-                error = detailedError,
-                showLoadingOverlay = false,
-                isBuffering = false,
-                playbackEnded = false,
-                postPlayMode = null
-            )
-        }
+        // An engine fault: the Exo failover or the error box, never the next source.
+        handleMpvStartupFailure(
+            engineFailure(detailedError),
+            sourceFailover = false,
+            allowEngineFailover = allowEngineFailover
+        )
     }
 }
 
@@ -178,7 +165,7 @@ private fun PlayerRuntimeController.applyMpvSessionSettingsAndStart(
         preferred = _uiState.value.subtitleStyle.preferredLanguage,
         secondary = _uiState.value.subtitleStyle.secondaryPreferredLanguage
     )
-    view.applySubtitleStyle(_uiState.value.subtitleStyle)
+    view.applySubtitleStyle(_uiState.value.effectiveSubtitleStyle)
     view.setSubtitleDelayMs(_uiState.value.subtitleDelayMs)
     view.applyBluetoothAudioRoute(currentAudioOutputRoute?.isBluetooth == true)
     view.setAudioDelayMs(_uiState.value.audioDelayMs)
@@ -229,6 +216,12 @@ internal fun PlayerRuntimeController.pauseForLifecycle() {
 internal fun PlayerRuntimeController.resumeForLifecycle() {
     isInBackground = false
 
+    // Spec 85 G9: a load failure mpv reported in the background, when the progress job was stopped.
+    if (isUsingMpvEngine() && !hasRenderedFirstFrame) {
+        val loadFailure = mpvView?.takeLoadFailure()
+        if (loadFailure != null && handleMpvLoadFailure(loadFailure)) return
+    }
+
     // If the codec crashed while in background, the player was released to free
     // resources. Rebuild it now with the saved position so the user comes back
     // to a clean, paused player ready to play.
@@ -240,13 +233,20 @@ internal fun PlayerRuntimeController.resumeForLifecycle() {
             _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
         }
         if (currentStreamUrl.isNotEmpty()) {
-            initializePlayer(currentStreamUrl, currentHeaders, startPaused = true)
+            initializePlayer(
+                currentStreamUrl,
+                currentHeaders,
+                overrideInternalPlayerEngine = currentStreamEngineForRestart(),
+                startPaused = true
+            )
         }
         return
     }
 
     val player = _exoPlayer
     if (player != null && !isUsingMpvEngine()) {
+        // Spec 85 G2: a track trigger the background held back (the hop rebuilds the player).
+        if (maybeHopToMpvHeldInBackground()) return
         // Restore automatic audio focus handling that was disabled in pauseForLifecycle().
         player.setAudioAttributes(player.audioAttributes, true)
 
@@ -288,6 +288,9 @@ internal fun PlayerRuntimeController.updateMpvAvailableTracks() {
 }
 
 private fun PlayerRuntimeController.applyMpvTrackSnapshot(snapshot: MpvTrackSnapshot) {
+    if (snapshot.audioTracks.isNotEmpty() || snapshot.subtitleTracks.isNotEmpty()) {
+        stepClock.tracksRead(android.os.SystemClock.elapsedRealtime())
+    }
     val audioTracks = snapshot.audioTracks
         .mapIndexed { index, track ->
             val codecSuffix = buildList {

@@ -379,8 +379,9 @@ internal fun PlayerRuntimeController.maybePrefetchNextEpisodeForBinge(
             // attempt. PlayerRuntimeControllerStreams tries
             // tryBingeGroupOnly opportunistically while the scrape is still
             // arriving, but when nothing matches it falls through on timeout
-            // to trySelectStream -- a full select carrying
-            // currentStreamBingeGroup as a PREFERENCE, not a requirement.
+            // to trySelectStream -- a full select carrying the playing
+            // source (Spec 65 P7 continuation, else currentStreamBingeGroup)
+            // as a PREFERENCE, not a requirement.
             //
             // nt10 replicated only the early attempt and stopped there. The
             // 27 Jul capture caught the consequence immediately: no stream in
@@ -389,20 +390,27 @@ internal fun PlayerRuntimeController.maybePrefetchNextEpisodeForBinge(
             // resolve and a 2,093 ms cold probe -- worse than the
             // quality-ranked guess it replaced. The press meanwhile settled
             // in 343 ms with selectCalls=2, which is the fall-through in the
-            // log. Cross-episode binge-group matches are the exception, not
-            // the rule, so the fall-through is the common path and the only
-            // one worth predicting.
+            // log. The fall-through is the common path (with the continuation
+            // its first step can hit, but that select is the same one), so
+            // the lookahead predicts it: one full select with the same inputs.
+            // A lookahead entry carries the continuation, so a Stream-screen
+            // open of that episode never reuses it (inputs-changed, live rank).
             val preferBinge = playerSettingsDataStore.playerSettings.first()
                 .streamAutoPlayPreferBingeGroupForNextEpisode
             val lookaheadBingeGroup = currentStreamBingeGroup?.takeIf { preferBinge }
+            // Spec 65 P7: the press keeps the playing source through ContinuationTarget; predict it
+            // the same way.
+            val lookaheadContinuation = if (preferBinge) ContinuationTarget.of(currentPlayingStream) else null
             prefetchSelectionSupplier.rankAndPrewarm(
                 groups = groups,
                 contentId = contentId,
                 // Spec 51 P5: the runtime and binge exemption the press uses for the same episode.
                 runtimeMinutes = nextVideo.runtime,
                 episode = true,
+                film = false,
                 bingeOverride = lookaheadBingeGroup,
-                exemptBingeGroup = limitExemptBingeGroup(awaitLimitInputs())
+                exemptBingeGroup = limitExemptBingeGroup(awaitLimitInputs()),
+                continuation = lookaheadContinuation
             )
         }
     )
@@ -417,7 +425,7 @@ internal fun PlayerRuntimeController.evaluatePostPlayOverlayVisibility(positionM
     // Short debrid/error clips must never arm next-episode auto-play (see #2819).
     val effectiveDurationEarly = durationMs.takeIf { it > 0L } ?: lastKnownDuration
     if (isShortPlaceholderDuration(effectiveDurationEarly)) return
-    if (!_uiState.value.error.isNullOrBlank()) return
+    if (_uiState.value.error != null) return
 
     val state = _uiState.value
     if (state.nextEpisode == null || nextEpisodeVideo == null) {
@@ -434,7 +442,7 @@ internal fun PlayerRuntimeController.evaluatePostPlayOverlayVisibility(positionM
     val shouldShow = PlayerNextEpisodeRules.shouldShowNextEpisodeCard(
         positionMs = positionMs,
         durationMs = effectiveDuration,
-        skipIntervals = skipIntervals,
+        skipIntervals = effectiveSkipIntervals(),
         thresholdMode = nextEpisodeThresholdModeSetting,
         thresholdPercent = nextEpisodeThresholdPercentSetting,
         thresholdMinutesBeforeEnd = nextEpisodeThresholdMinutesBeforeEndSetting
@@ -482,6 +490,7 @@ internal fun PlayerRuntimeController.showStreamSourceIndicator(stream: Stream) {
 }
 
 internal fun PlayerRuntimeController.updateActiveSkipInterval(positionMs: Long) {
+    val skipIntervals = effectiveSkipIntervals()
     if (skipIntervals.isEmpty()) {
         if (_uiState.value.activeSkipInterval != null) {
             _uiState.update { it.copy(activeSkipInterval = null, skipIntervalDismissed = false) }
@@ -494,7 +503,11 @@ internal fun PlayerRuntimeController.updateActiveSkipInterval(positionMs: Long) 
     // skip button to appear instead of auto-skipping.
     if (!playerSettingsInitialized) return
 
-    val active = findActiveSkipInterval(skipIntervals, positionMs)
+    // An interval open to the end of the file is over once it has been skipped to the end.
+    val durationMs = currentPlaybackDurationMs()
+    val active = findActiveSkipInterval(skipIntervals, positionMs)?.takeUnless {
+        it.endTime == SkipInterval.OPEN_END && durationMs > 0L && positionMs >= durationMs - 1_000L
+    }
     val currentActive = _uiState.value.activeSkipInterval
 
     if (active != null) {

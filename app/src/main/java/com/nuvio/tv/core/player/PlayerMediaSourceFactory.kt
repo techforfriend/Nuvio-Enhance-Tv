@@ -275,13 +275,32 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             httpDataSourceFactory
         }
 
+        // Media-reload sidecar subtitles share this factory: foreign-site ones open without the
+        // stream's credentials (Spec 68 X1). Stream-only sources keep the plain factory.
+        val scopedUpstreamFactory: DataSource.Factory = if (subtitleConfigurations.isNotEmpty()) {
+            SubtitleCredentialScopeDataSourceFactory(
+                upstream = progressiveUpstreamFactory,
+                credentialFree = {
+                    PlayerPlaybackNetworking.createHttpDataSourceFactory(
+                        sanitizedHeaders.filterKeys {
+                            it.lowercase() !in SUBTITLE_CREDENTIAL_HEADERS + SUBTITLE_HOP_BY_HOP_HEADERS
+                        }
+                    )
+                },
+                streamUrl = url,
+                subtitleUris = subtitleConfigurations.mapTo(HashSet()) { it.uri.toString() }
+            )
+        } else {
+            progressiveUpstreamFactory
+        }
+
         val extractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
         // CountingDataSourceFactory attaches PlaybackByteCounter to every DataSource
         // the player creates. media3's bandwidth meter only reports bytes when a
         // transfer ends, and a plain progressive load holds one transfer open for the
         // whole file, so the HUD has to count for itself. See PlaybackByteCounter.
         val defaultFactory = DefaultMediaSourceFactory(
-            CountingDataSourceFactory(LoggingDataSourceFactory(progressiveUpstreamFactory, "PMSF")),
+            CountingDataSourceFactory(LoggingDataSourceFactory(scopedUpstreamFactory, "PMSF")),
             extractorsFactory
         ).apply {
             setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
@@ -371,6 +390,12 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             }
         }
 
+        /**
+         * Request headers safe to send: blank names/values and Range dropped, and any header OkHttp's
+         * `Headers` builder would reject (it throws, failing the request): a name that is not an
+         * RFC 9110 token, a value outside visible ASCII + space. Headers can come from untrusted
+         * playlists (`#EXTHTTP`, Spec 74 S2a) and addons; dropping one beats failing the stream.
+         */
         fun sanitizeHeaders(headers: Map<String, String>?): Map<String, String> {
             val raw: Map<*, *> = headers ?: return emptyMap()
             if (raw.isEmpty()) return emptyMap()
@@ -381,7 +406,7 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
                 val value = (rawValue as? String)?.trim().orEmpty()
                 if (key.isEmpty() || value.isEmpty()) return@forEach
                 if (key.equals("Range", ignoreCase = true)) return@forEach
-                if (hasHeaderControlChars(key) || hasHeaderControlChars(value)) return@forEach
+                if (!isHeaderToken(key) || !isHeaderValueText(value)) return@forEach
                 sanitized[key] = value
             }
             return sanitized
@@ -462,16 +487,17 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         }
 
         /**
-         * Blu-ray (BDAV) transport stream by extension (.m2ts/.mts) of the filename or the URL
-         * path (query and fragment stripped from the URL only). Media3 1.8.0's TsExtractor sniffs 188-byte packets only, so these 192-byte-packet
-         * files never open in ExoPlayer, and it has no reader for their HDMV TrueHD, E-AC3, DTS-HD,
-         * PGS or VC-1 streams (format-capability G2, javap-verified).
+         * A file ExoPlayer cannot open, by extension of the filename or the URL path (query and
+         * fragment stripped from the URL only), so it starts on mpv. Blu-ray (BDAV) .m2ts/.mts:
+         * Media3 1.8.0's TsExtractor sniffs 188-byte packets only, so these 192-byte-packet files
+         * never open, and it has no reader for their HDMV TrueHD, E-AC3, DTS-HD, PGS or VC-1 streams
+         * (format-capability G2, javap-verified). WMV/ASF .wmv/.asf: no ASF extractor (Spec 85 G8).
          */
-        internal fun isBluRayTransportStream(url: String, filename: String?): Boolean =
-            fileExtension(filename) in BLU_RAY_TS_EXTENSIONS ||
-                fileExtension(url.substringBefore('#').substringBefore('?')) in BLU_RAY_TS_EXTENSIONS
+        internal fun startsOnMpvByName(url: String, filename: String?): Boolean =
+            fileExtension(filename) in MPV_START_EXTENSIONS ||
+                fileExtension(url.substringBefore('#').substringBefore('?')) in MPV_START_EXTENSIONS
 
-        private val BLU_RAY_TS_EXTENSIONS = setOf("m2ts", "mts")
+        private val MPV_START_EXTENSIONS = setOf("m2ts", "mts", "wmv", "asf")
 
         private fun fileExtension(path: String?): String? = path?.trim()?.lowercase(Locale.US)
             ?.substringAfterLast('/')
@@ -770,5 +796,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
     }
 }
 
-private fun hasHeaderControlChars(text: String): Boolean =
-    text.any { it.code < 0x20 || it.code == 0x7F }
+/** RFC 9110 `token`: the only header names that reach the wire unchanged. */
+private fun isHeaderToken(text: String): Boolean =
+    text.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it in HEADER_TOKEN_SYMBOLS }
+
+private const val HEADER_TOKEN_SYMBOLS = "!#$%&'*+-.^_`|~"
+
+/** Visible ASCII and space: what OkHttp accepts in a value (it also takes tab; the old rule dropped tabs, kept so). */
+private fun isHeaderValueText(text: String): Boolean = text.all { it.code in 0x20..0x7E }

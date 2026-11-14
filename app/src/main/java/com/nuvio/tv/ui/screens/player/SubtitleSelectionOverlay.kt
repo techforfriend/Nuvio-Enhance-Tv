@@ -102,6 +102,8 @@ internal fun SubtitleSelectionOverlay(
     addonSubtitles: List<Subtitle>,
     selectedAddonSubtitle: Subtitle?,
     subtitleStyle: SubtitleStyleSettings,
+    /** Spec 62 H2c: HDR output with the HDR style on; [subtitleStyle] then carries the HDR text colour. */
+    isEditingHdrStyle: Boolean,
     subtitleDelayMs: Int,
     installedSubtitleAddonOrder: List<String>,
     isLoadingAddons: Boolean,
@@ -245,6 +247,7 @@ internal fun SubtitleSelectionOverlay(
         if (editorOpen) {
             SubtitleStyleContent(
                 subtitleStyle = subtitleStyle,
+                isEditingHdrStyle = isEditingHdrStyle,
                 subtitleDelayMs = subtitleDelayMs,
                 delayFocusRequester = delayFocusRequester,
                 onEvent = onEvent,
@@ -315,11 +318,14 @@ internal fun SubtitleSelectionOverlay(
  * Style view (stage 7), one control per line: Delay (opens the delay strip), Font Size, Bold,
  * Text Color, Text Opacity, Text edge (outline colours on its line, the edge segments under it),
  * Bottom Offset, Reset Defaults. A control that does not apply dims and leaves focus (Reset dims to
- * PanelActionRow's own .45).
+ * PanelActionRow's own .45). [isEditingHdrStyle] (Spec 62 H2c, sandbox spec-62-h2-hdr-subtitles
+ * stage 5): Text Color and Text Opacity read "(HDR)" and set the HDR colour, and Brightness (HDR)
+ * follows Text Opacity; the rest stays shared.
  */
 @Composable
 private fun SubtitleStyleContent(
     subtitleStyle: SubtitleStyleSettings,
+    isEditingHdrStyle: Boolean,
     subtitleDelayMs: Int,
     delayFocusRequester: FocusRequester,
     onEvent: (PlayerEvent) -> Unit,
@@ -340,6 +346,8 @@ private fun SubtitleStyleContent(
     val sizePlus = remember { FocusRequester() }
     val opacityMinus = remember { FocusRequester() }
     val opacityPlus = remember { FocusRequester() }
+    val brightnessMinus = remember { FocusRequester() }
+    val brightnessPlus = remember { FocusRequester() }
     val offsetMinus = remember { FocusRequester() }
     val offsetPlus = remember { FocusRequester() }
 
@@ -395,16 +403,22 @@ private fun SubtitleStyleContent(
                 onClick = { onEvent(PlayerEvent.OnSetSubtitleBold(!subtitleStyle.bold)) }
             )
         }
-        PanelAdjustRow(label = stringResource(R.string.subtitle_style_text_color)) {
+        PanelAdjustRow(
+            label = stringResource(
+                if (isEditingHdrStyle) R.string.subtitle_style_text_color_hdr else R.string.subtitle_style_text_color
+            )
+        ) {
             PanelColorDots(
                 colors = OverlayTextColors,
                 selectedArgb = subtitleStyle.textColor,
                 enabled = sizeColorEnabled,
-                onSelect = { onEvent(PlayerEvent.OnSetSubtitleTextColor(it)) }
+                onSelect = { onEvent(PlayerEvent.OnSetSubtitleTextColor(it, hdr = isEditingHdrStyle)) }
             )
         }
         PanelStepperRow(
-            label = stringResource(R.string.subtitle_style_text_opacity),
+            label = stringResource(
+                if (isEditingHdrStyle) R.string.subtitle_style_text_opacity_hdr else R.string.subtitle_style_text_opacity
+            ),
             value = "$textOpacity%",
             enabled = sizeColorEnabled,
             canDecrease = true,
@@ -412,12 +426,47 @@ private fun SubtitleStyleContent(
             minusFocusRequester = opacityMinus,
             plusFocusRequester = opacityPlus,
             onDecrease = {
-                onEvent(PlayerEvent.OnSetSubtitleTextColor(stepTextOpacity(subtitleStyle.textColor, -SubtitleOpacityStepPercent)))
+                onEvent(
+                    PlayerEvent.OnSetSubtitleTextColor(
+                        stepTextOpacity(subtitleStyle.textColor, -SubtitleOpacityStepPercent),
+                        hdr = isEditingHdrStyle
+                    )
+                )
             },
             onIncrease = {
-                onEvent(PlayerEvent.OnSetSubtitleTextColor(stepTextOpacity(subtitleStyle.textColor, SubtitleOpacityStepPercent)))
+                onEvent(
+                    PlayerEvent.OnSetSubtitleTextColor(
+                        stepTextOpacity(subtitleStyle.textColor, SubtitleOpacityStepPercent),
+                        hdr = isEditingHdrStyle
+                    )
+                )
             }
         )
+        if (isEditingHdrStyle) {
+            val brightness = subtitleStyle.hdrBrightnessPercent
+            PanelStepperRow(
+                label = stringResource(R.string.subtitle_style_brightness_hdr),
+                value = "$brightness%",
+                enabled = sizeColorEnabled,
+                canDecrease = brightness > SubtitleStyleSettings.HDR_BRIGHTNESS_MIN,
+                canIncrease = brightness < SubtitleStyleSettings.HDR_BRIGHTNESS_MAX,
+                minusFocusRequester = brightnessMinus,
+                plusFocusRequester = brightnessPlus,
+                // A stepper at its limit leaves focus (PanelStepperRow): hand it to the other one first.
+                // No canIncrease/canDecrease guard (unlike AudioSelectionOverlay): the store snaps the
+                // value to 10 % steps in MIN..MAX, so the opposite stepper is always enabled here.
+                onDecrease = {
+                    val next = brightness - SubtitleStyleSettings.HDR_BRIGHTNESS_STEP
+                    if (next <= SubtitleStyleSettings.HDR_BRIGHTNESS_MIN) runCatching { brightnessPlus.requestFocus() }
+                    onEvent(PlayerEvent.OnSetSubtitleHdrBrightness(next))
+                },
+                onIncrease = {
+                    val next = brightness + SubtitleStyleSettings.HDR_BRIGHTNESS_STEP
+                    if (next >= SubtitleStyleSettings.HDR_BRIGHTNESS_MAX) runCatching { brightnessMinus.requestFocus() }
+                    onEvent(PlayerEvent.OnSetSubtitleHdrBrightness(next))
+                }
+            )
+        }
         PanelAdjustRow(
             label = stringResource(R.string.subtitle_edge_style),
             below = {
@@ -456,7 +505,7 @@ private fun SubtitleStyleContent(
         PanelActionRow(
             label = stringResource(R.string.subtitle_reset_defaults),
             enabled = styleEnabled,
-            onClick = { onEvent(PlayerEvent.OnResetSubtitleDefaults) },
+            onClick = { onEvent(PlayerEvent.OnResetSubtitleDefaults(hdr = isEditingHdrStyle)) },
             modifier = Modifier
                 .padding(top = NuvioTheme.marquee.playerPanel.actionTop)
                 .focusProperties { canFocus = styleEnabled }

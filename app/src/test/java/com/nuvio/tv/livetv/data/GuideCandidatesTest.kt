@@ -65,6 +65,22 @@ class GuideCandidatesTest {
     }
 
     @Test
+    fun `an id the matcher accepts by feed or loose form is exact`() {
+        // Without the id hit, "Two Gold" (contains "twog") and "BBC One X" (contains "bbcone") would lead.
+        val guide = source(
+            "g", null,
+            "BBC.Two.HD.uk" to listOf("BBC 2"),
+            "BBCOneLondon.uk" to listOf("London 1"),
+            "x" to listOf("Two Gold"),
+            "y" to listOf("BBC One X")
+        )
+        val two = GuideCandidates.rank(channel("Two Ⓖ", tvgId = "BBCTwo.uk"), listOf(guide), null, 50)
+        assertEquals("BBC.Two.HD.uk", ids(two).first())
+        val one = GuideCandidates.rank(channel("BBC One", tvgId = "BBCOne.uk@London"), listOf(guide), null, 50)
+        assertEquals("BBCOneLondon.uk", ids(one).first())
+    }
+
+    @Test
     fun `alt names count, and the id stem is a name`() {
         val guide = source("g", "in", "Star Jalsha HD.in" to emptyList())
         val out = GuideCandidates.rank(channel("Jalsha", altNames = listOf("Star Jalsha")), listOf(guide), null, 50)

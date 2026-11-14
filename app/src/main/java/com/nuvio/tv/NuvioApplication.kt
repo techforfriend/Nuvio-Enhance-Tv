@@ -6,6 +6,7 @@ import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.imageLoader
 
+import com.nuvio.tv.core.diagnostics.LastExitReason
 import com.nuvio.tv.core.runtime.LegacyFeatureDataCleanup
 import com.nuvio.tv.core.sync.StartupSyncService
 import dagger.hilt.android.HiltAndroidApp
@@ -36,7 +37,6 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
     companion object {
         private const val CACHE_TAG = "NuvioCache"
         private const val IMAGE_CACHE_DIR = "image_cache"
-        private const val HTTP_CACHE_DIR = "http_cache"
         private const val HTTP_CACHE_VALIDATED_DIR = "http_cache_validated"
 
         /** Long enough that the walk cannot contend with cold start. */
@@ -66,13 +66,18 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         LocaleCache.localeTag = tag ?: ""
 
         // Build 1 instrument: the only way to answer whether OkHttp's 50 MB
-        // http_cache holds anything, and the only way to see Coil's COMPUTED
+        // addon cache (ADDON_HTTP_CACHE_DIR) holds anything, and the only way to see Coil's COMPUTED
         // disk cap (a percent-based cap is otherwise invisible). Deliberately
         // delayed and on IO: walking thousands of cache entries must not land
         // on the cold-start path this instrument exists to help optimise.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             delay(CACHE_READOUT_DELAY_MS)
             logCacheSizes()
+        }
+
+        // Spec 70 R1: log why the previous process ended (crash / ANR / foreground memory kill).
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            LastExitReason.logLastExit(this@NuvioApplication)
         }
 
         // X15: sweep leftovers of cut features (plugin runtime files, stale debrid/MDBList
@@ -104,7 +109,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
             // quote inside a template is a syntax error, and hoisting removes
             // the whole class of hazard.
             val imageMiB = dirBytes(IMAGE_CACHE_DIR) / mib
-            val httpMiB = dirBytes(HTTP_CACHE_DIR) / mib
+            val httpMiB = dirBytes(com.nuvio.tv.core.di.ADDON_HTTP_CACHE_DIR) / mib
             val httpValidatedMiB = dirBytes(HTTP_CACHE_VALIDATED_DIR) / mib
             val diskSizeMiB = (disk?.size ?: -1L) / mib
             val diskMaxMiB = (disk?.maxSize ?: -1L) / mib

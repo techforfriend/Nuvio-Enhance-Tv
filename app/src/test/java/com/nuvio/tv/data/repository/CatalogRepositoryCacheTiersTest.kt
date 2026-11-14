@@ -3,6 +3,7 @@ package com.nuvio.tv.data.repository
 import android.content.Context
 import com.nuvio.tv.core.di.NetworkModule
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.profile.testRatingCap
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.dto.CatalogResponseDto
 import com.nuvio.tv.data.remote.dto.MetaPreviewDto
@@ -36,7 +37,14 @@ class CatalogRepositoryCacheTiersTest {
     private fun repository(api: AddonApi): CatalogRepositoryImpl {
         val context = mockk<Context>(relaxed = true)
         every { context.cacheDir } returns tmp.root
-        return CatalogRepositoryImpl(context = context, api = api, healthStore = mockk(relaxed = true), wireJson = wireJson)
+        return CatalogRepositoryImpl(
+            context = context,
+            api = api,
+            healthStore = mockk(relaxed = true),
+            wireJson = wireJson,
+            activeRatingCap = testRatingCap(),
+            ratingFilter = CatalogRatingFilter(mockk())
+        )
     }
 
     private suspend fun CatalogRepositoryImpl.rows(skip: Int = 0, extraArgs: Map<String, String> = emptyMap()) =

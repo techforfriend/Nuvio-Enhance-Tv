@@ -312,6 +312,52 @@ class StreamListViewTest {
         assertTrue(hidden(listOf(uhd), limit = fourK).isEmpty())
     }
 
+    // Spec 65 P6: the show's preferred source leads the shown rows of every view; never the hidden ones.
+    @Test
+    fun `the preferred source's matches lead each view that shows them`() {
+        val a1 = stream("Show.S01E03.2160p.WEB-FLUX", addon = "A")
+        val a2 = stream("Show.S01E03.1080p.WEB-NTb", addon = "A")
+        val b1 = stream("Show.S01E03.1080p.WEB-NTb", addon = "B", url = "https://host/b1.mkv")
+        val b2 = stream("Show.S01E03.1080p.BluRay-DON", addon = "B", url = "https://host/b2.mkv")
+        val all = listOf(a1, a2, b1, b2)
+        val preferB = PreferredSource(addonName = "B", resolution = ReleaseResolutionP1080)
+        fun view(selection: StreamListSelection, hidden: Map<String, HiddenStream> = emptyMap(), preferred: PreferredSource? = preferB) =
+            deriveStreamList(all, selection, hidden, chipAddons = listOf("A", "B"), preferred = preferred)
+
+        val allView = view(StreamListSelection.All)
+        assertEquals(listOf(b1, b2, a1, a2), allView.streams)
+        assertEquals(2, allView.preferredCount)
+        // An addon's view counts its own leading matches.
+        assertEquals(2, view(StreamListSelection.Addon("B")).preferredCount)
+        val addonA = view(StreamListSelection.Addon("A"))
+        assertEquals(listOf(a1, a2), addonA.streams)
+        assertEquals(0, addonA.preferredCount)
+        // No preference: the list as it came.
+        assertEquals(all, view(StreamListSelection.All, preferred = null).streams)
+        // A hidden match is not moved, marked or counted; the hidden view keeps its order.
+        val hideB1 = mapOf(b1.limitKey() to HiddenStream(resolution = ResolutionVerdict(ReleaseResolutionP1080, fromTv = false)))
+        val withHidden = view(StreamListSelection.All, hideB1)
+        assertEquals(listOf(b2, a1, a2), withHidden.streams)
+        assertEquals(1, withHidden.preferredCount)
+        val hiddenView = view(StreamListSelection.Hidden, hideB1)
+        assertEquals(listOf(b1), hiddenView.streams)
+        assertEquals(0, hiddenView.preferredCount)
+    }
+
+    // The filters sheet's values stay those of the whole view; the filter narrows before the preference orders.
+    @Test
+    fun `a filter narrows the rows the preferred source then leads`() {
+        val uhd = stream("Show.S01E03.2160p.WEB-FLUX")
+        val fhd = stream("Show.S01E03.1080p.WEB-NTb")
+        val all = listOf(uhd, fhd)
+        val prefer = PreferredSource(addonName = "A", resolution = ReleaseResolutionP1080)
+        val only4k = FacetFilter.NONE.toggled(FacetValue(FacetGroup.RESOLUTION, "P2160"))
+        val filtered = deriveStreamList(all, StreamListSelection.All, emptyMap(), listOf("A"), filter = only4k, preferred = prefer)
+        assertEquals(listOf(uhd), filtered.streams)
+        assertEquals(0, filtered.preferredCount)
+        assertEquals(all, filtered.facetBase)
+    }
+
     @Test
     fun `the chip and line verdicts read each reason from the hidden set`() {
         val bitrate = StreamLimitVerdict(70.0, figureMbps = 60, source = null)

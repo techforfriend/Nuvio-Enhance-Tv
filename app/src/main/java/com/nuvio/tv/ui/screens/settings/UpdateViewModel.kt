@@ -57,7 +57,11 @@ class UpdateViewModel @Inject constructor(
         controller.state.value.available?.let { _panelRelease.value = it }
     }
 
-    /** Not now, Back, leaving About, the activity's ON_STOP: the panel closes and a download stops. */
+    /**
+     * Not now, Back, ON_STOP while Settings shows, Settings leaving the screen other than for the
+     * release video: the panel closes and a download stops (Spec 80 D14; the changelog page and its
+     * video keep it, and the panel shows again on return).
+     */
     fun closePanel() {
         _panelRelease.value = null
         controller.cancelDownload()
@@ -68,8 +72,21 @@ class UpdateViewModel @Inject constructor(
         controller.downloadAndInstall()
     }
 
+    /** The Settings back-stack entry ended (e.g. popped from under the release video): nothing may run on unseen. */
+    override fun onCleared() {
+        controller.cancelDownload()
+    }
+
     /** Cancel while downloading: the download stops, the panel stays. */
     fun cancelDownload() = controller.cancelDownload()
+
+    /** Spec 80 D14: the panel on screen (or not); a verified file goes to the installer at once only then. */
+    fun setPanelShown(shown: Boolean) = controller.setPanelShown(shown)
+
+    /** "Ready: Install now" (Spec 80 D6). */
+    fun installReady() {
+        controller.installReady()
+    }
 }
 
 /**

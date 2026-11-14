@@ -14,6 +14,7 @@ import com.nuvio.tv.livetv.data.LiveTvUserStore
 import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.EpgOverride
 import com.nuvio.tv.livetv.model.EpgRef
+import com.nuvio.tv.livetv.parse.EpgSnapshot
 import com.nuvio.tv.livetv.player.LivePlayer
 import com.nuvio.tv.livetv.player.LiveTuneState
 import com.nuvio.tv.livetv.player.StreamHealth
@@ -27,6 +28,8 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,9 +45,11 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.time.ZoneId
 import javax.inject.Inject
 
 /** What the Live TV screen draws (D16), minus the tune state ([LivePlayer.state]). */
@@ -64,7 +69,11 @@ data class LiveTvUiState(
     val categoryLabels: Map<String, String> = emptyMap(),
     val rows: List<LiveRow> = emptyList(),
     /** The minute the rows were derived at (the info block's minutes left). */
-    val nowMs: Long = 0L
+    val nowMs: Long = 0L,
+    /** List or the guide grid (Spec 67 D7 Q1); switches together with [guide]. */
+    val view: LiveTvView = LiveTvView.LIST,
+    /** [rows] laid out for the grid; null in [LiveTvView.LIST] (no layout work there). */
+    val guide: GuideRows? = null
 )
 
 /**
@@ -93,8 +102,10 @@ data class LiveGuidePanel(
  * While a channel tunes or plays the OLED screensaver holds off (the VOD player's rule). The hold-OK
  * side panel (L7d) picks a channel's guide ([guidePanel], [chooseGuide]), steps its stream
  * ([nextStream]), hides it ([hideChannel]) and toggles its favorite ([toggleFavorite], L8).
- * The profile's favorites, recents and last filter live in [LiveTvUserStore] (L8-D1..D3); lost
- * channels (Favorites and Recents only) are never tuned (L8-D4). [derive] runs the row derivation.
+ * The profile's favorites, recents, last filter and last view live in [LiveTvUserStore] (L8-D1..D3); lost
+ * channels (Favorites and Recents only) are never tuned (L8-D4). Right on a row opens its day
+ * schedule ([schedule], Spec 67 G2); the profile's view ([selectView], G3) shows the rows as the
+ * list or the guide grid ([LiveTvUiState.guide]). [derive] runs the row derivation.
  */
 @HiltViewModel
 class LiveTvViewModel internal constructor(
@@ -133,6 +144,9 @@ class LiveTvViewModel internal constructor(
 
     // The pickers' values: the last Browse selected; Favorites and Recents leave it as it was (Spec 38 Q1).
     private val browse = MutableStateFlow(LiveTvFilter.initial)
+
+    // List or grid (Spec 67 D7 Q1); set from the saved one before the first rows show.
+    private val view = MutableStateFlow(LiveTvView.LIST)
 
     // The last row focused (the info block, focus on return); seeded with the last-watched channel (Q1).
     private val _focusedKey = MutableStateFlow<String?>(null)
@@ -220,12 +234,45 @@ class LiveTvViewModel internal constructor(
 
     private val guidesAtMinute = combine(guideRepository.guides, minute, ::Pair)
 
-    private data class Selection(val filter: LiveTvFilter?, val browse: LiveTvFilter.Browse, val pickers: Pickers?)
+    private data class Selection(
+        val filter: LiveTvFilter?,
+        val browse: LiveTvFilter.Browse,
+        val view: LiveTvView,
+        val pickers: Pickers?
+    )
 
     // The pickers' options derive with their browse in one step (never a frame of the old counts) and
     // apart from the minute ticker, which never changes them.
-    private val selection = combine(filter, browse, listed) { filter, browse, listed ->
-        Selection(filter, browse, listed?.let { (lineup, lists) -> LiveTvModel.pickers(lineup, browse, lists) })
+    private val selection = combine(filter, browse, view, listed) { filter, browse, view, listed ->
+        Selection(filter, browse, view, listed?.let { (lineup, lists) -> LiveTvModel.pickers(lineup, browse, lists) })
+    }
+
+    // The grid's layout and what it was made from: laid out again only when one of them changes, not
+    // each minute (bounds move at local midnight). Read and written only by uiState's derivation,
+    // which runs one emission at a time.
+    private data class GuideInputs(
+        val channels: List<Channel>,
+        val refs: Map<String, EpgRef>,
+        val guides: Map<String, EpgSnapshot>,
+        val bounds: GuideBounds
+    )
+    private var guideLayout: Pair<GuideInputs, GuideRows>? = null
+
+    // Null in List, which also lets the last layout go.
+    private fun guideRows(
+        view: LiveTvView,
+        channels: List<Channel>,
+        refs: Map<String, EpgRef>,
+        guides: Map<String, EpgSnapshot>,
+        nowMs: Long
+    ): GuideRows? {
+        if (!view.isGrid) {
+            guideLayout = null
+            return null
+        }
+        val inputs = GuideInputs(channels, refs, guides, LiveTvGuideGrid.bounds(nowMs, ZoneId.systemDefault()))
+        guideLayout?.let { (made, rows) -> if (made == inputs) return rows }
+        return LiveTvGuideGrid.rows(channels, refs, guides, inputs.bounds).also { guideLayout = inputs to it }
     }
 
     val uiState: StateFlow<LiveTvUiState> = combine(
@@ -234,11 +281,12 @@ class LiveTvViewModel internal constructor(
         refs,
         selection,
         guidesAtMinute
-    ) { hasChannelSources, listed, refs, (filter, browse, pickers), (guides, nowMs) ->
+    ) { hasChannelSources, listed, refs, (filter, browse, view, pickers), (guides, nowMs) ->
         if (listed == null || refs == null || filter == null) {
-            LiveTvUiState(loading = true, filter = filter ?: LiveTvFilter.initial, browse = browse)
+            LiveTvUiState(loading = true, filter = filter ?: LiveTvFilter.initial, browse = browse, view = view)
         } else {
             val (lineup, lists) = listed
+            val channels = LiveTvModel.filtered(lineup, filter, lists)
             LiveTvUiState(
                 loading = false,
                 hasChannelSources = hasChannelSources,
@@ -247,10 +295,10 @@ class LiveTvViewModel internal constructor(
                 browse = browse,
                 pickers = pickers,
                 categoryLabels = lineup.categoryLabels,
-                rows = LiveTvModel.rows(
-                    LiveTvModel.filtered(lineup, filter, lists), lineup.numbers, refs, guides, nowMs, lists.favoriteKeys
-                ),
-                nowMs = nowMs
+                rows = LiveTvModel.rows(channels, lineup.numbers, refs, guides, nowMs, lists.favoriteKeys),
+                nowMs = nowMs,
+                view = view,
+                guide = guideRows(view, channels, refs, guides, nowMs)
             )
         }
     }.flowOn(derive)
@@ -266,6 +314,42 @@ class LiveTvViewModel internal constructor(
         val channel = key?.let { lineup?.channel(it) }
         if (lineup == null || refs == null || channel == null) null
         else LiveTvModel.rows(listOf(channel), lineup.numbers, refs, guides, nowMs).single()
+    }.flowOn(derive)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
+
+    // The open day schedule (Spec 67 G2): its channel and a per-open id; null = closed. The id makes a
+    // close-then-reopen of one channel a new value, even when the null between them is conflated.
+    private data class ScheduleOpen(val key: String, val id: Int)
+    private val scheduleOpen = MutableStateFlow<ScheduleOpen?>(null)
+    private var nextScheduleId = 0
+
+    /**
+     * The open day schedule (Spec 67 G2, D3): the channel's guide programmes as today and tomorrow in
+     * the device zone, re-derived each minute. Null when closed, or once the channel or its guide is gone.
+     */
+    val schedule: StateFlow<LiveSchedule?> = combine(
+        combine(lineup, refs, ::Pair),
+        scheduleOpen,
+        sourceNames,
+        guidesAtMinute
+    ) { (lineup, refs), open, names, (guides, nowMs) ->
+        val key = open?.key
+        val channel = key?.let { lineup?.channel(it) }
+        val ref = key?.let { refs?.get(it) }
+        val programmes = ref?.let { guides[it.epgSourceId]?.programmes?.get(it.epgChannelId) }
+        if (lineup == null || refs == null || channel == null || ref == null || programmes == null) {
+            null
+        } else {
+            val zone = ZoneId.systemDefault()
+            LiveSchedule(
+                openId = open.id,
+                row = LiveTvModel.rows(listOf(channel), lineup.numbers, refs, guides, nowMs).single(),
+                guideName = names[ref.epgSourceId],
+                today = LiveTvSchedule.day(programmes, nowMs, zone, 0),
+                tomorrow = LiveTvSchedule.day(programmes, nowMs, zone, 1),
+                nowMs = nowMs
+            )
+        }
     }.flowOn(derive)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
@@ -292,6 +376,7 @@ class LiveTvViewModel internal constructor(
             shownRecents.value = user.recentKeys
             // The newest recent still held (a hidden or pruned head is passed over).
             if (_focusedKey.value == null) _focusedKey.value = lists.recents.firstOrNull()?.key
+            view.value = LiveTvView.fromId(user.lastView)
             selectFilter(LiveTvFilter.opening(user.lastFilter, lists.favorites.isNotEmpty()))
         }
         // A pill selects on focus: save the one focus settles on, not every pill passed.
@@ -320,6 +405,13 @@ class LiveTvViewModel internal constructor(
         }
         if (filter is LiveTvFilter.Browse) browse.value = filter
         this.filter.value = filter
+    }
+
+    /** The View picker (Spec 67 D7 Q1): shows [view] and keeps it for the profile's next visit. */
+    fun selectView(view: LiveTvView) {
+        if (this.view.value == view) return
+        this.view.value = view
+        viewModelScope.launch { userStore.setLastView(view.id) }
     }
 
     /**
@@ -376,6 +468,27 @@ class LiveTvViewModel internal constructor(
     private fun tune(channel: Channel) {
         player.state.value.channel?.key?.takeIf { it != channel.key }?.let { _previousKey.value = it }
         player.tune(channel)
+    }
+
+    /**
+     * Right on a row with a schedule (Spec 67 D3 Q1): starts deriving [channel]'s day schedule and
+     * tunes it at once (the head shows its picture; focus leaving the list would cancel a resting
+     * preview). Returns the open's id (the screen shows the column for that id only); null for a
+     * lost channel.
+     */
+    fun openSchedule(channel: Channel): Int? {
+        if (!tuneNow(channel)) return null
+        val id = ++nextScheduleId
+        scheduleOpen.value = ScheduleOpen(channel.key, id)
+        return id
+    }
+
+    /**
+     * Stops deriving the schedule. The screen owns whether the column shows (Spec 67 D5): it calls
+     * this when it closes the column, so a guide that returns later never reopens it.
+     */
+    fun closeSchedule() {
+        scheduleOpen.value = null
     }
 
     /** Focus left the list: a preview still waiting for focus to rest never starts (Q2). */
@@ -461,6 +574,52 @@ class LiveTvViewModel internal constructor(
     /** Hide channel (D16): gone from every filter; unhidden from Sources (L7e). */
     fun hideChannel(key: String) {
         viewModelScope.launch { hiddenStore.setHidden(key, true) }
+    }
+
+    private val _packOffer = MutableStateFlow(PackOffer())
+
+    /** The empty state's channel pack offer (Spec 73 D2): figures, Add channel pack's progress and failure. */
+    val packOffer: StateFlow<PackOffer> = _packOffer
+
+    // No replay: this ViewModel outlives the screen (tab state is saved), so an add that ends while
+    // Live TV is not shown must not open Sources when the viewer comes back.
+    private val packAddedEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Fires once the pack is added from the empty state, only to a screen collecting it: it opens Sources (Spec 73 D3). */
+    val packAdded: Flow<Unit> = packAddedEvents
+
+    private var summaryJob: Job? = null
+
+    /**
+     * The empty state is shown (Spec 73 D2): clears a failure from an earlier visit and reads the
+     * pack's figures unless they are already read or being read (a failed read is retried here).
+     */
+    fun loadPackSummary() {
+        _packOffer.update { it.copy(error = null) }
+        if (summaryJob?.isActive == true || _packOffer.value.summary != null) return
+        summaryJob = viewModelScope.launch {
+            val summary = sourceManager.packSummary()
+            _packOffer.update { it.copy(summary = summary) }
+        }
+    }
+
+    /**
+     * Empty state "Add channel pack" (Spec 73 D3): downloads and adds the pack, then [packAdded];
+     * a failure keeps the empty state with its reason. A second press while it runs does nothing.
+     */
+    fun addPack() {
+        if (_packOffer.value.adding) return
+        _packOffer.update { it.copy(adding = true, error = null) }
+        viewModelScope.launch {
+            try {
+                when (val result = sourceManager.addPack()) {
+                    is LiveSourceManager.AddResult.Added -> packAddedEvents.tryEmit(Unit)
+                    is LiveSourceManager.AddResult.Refused -> _packOffer.update { it.copy(error = result.reason) }
+                }
+            } finally {
+                _packOffer.update { it.copy(adding = false) }
+            }
+        }
     }
 
     /** The empty state's primary action (Q7): the broadcaster preset (its guides are a Sources suggestion, Spec 49 D27 F5). */

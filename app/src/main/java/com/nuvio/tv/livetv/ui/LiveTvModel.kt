@@ -104,6 +104,23 @@ sealed interface LiveTvFilter {
 }
 
 /**
+ * How Live TV lays out the shown filter (Spec 67 D7 Q1, Q8): the channel list with the preview, or the
+ * guide grid at 44 dp ([GUIDE]) or 32 dp rows ([COMPACT]). [id] is persisted per profile and never
+ * changes meaning; an unknown or missing id opens [LIST].
+ */
+enum class LiveTvView(val id: String) {
+    LIST("list"),
+    GUIDE("guide"),
+    COMPACT("compact");
+
+    val isGrid: Boolean get() = this != LIST
+
+    companion object {
+        fun fromId(id: String?): LiveTvView = entries.firstOrNull { it.id == id } ?: LIST
+    }
+}
+
+/**
  * A channel's picker values (Spec 38 Q1): its [country] ([LiveTvFilter.NO_COUNTRY] when none), its
  * [categories] (iptv-org's, else the playlist's groups; [LiveTvFilter.OTHER] when none), its
  * [languages] (iptv-org's; may be empty: such a channel is listed under All languages only).
@@ -167,6 +184,12 @@ data class LiveRow(
 
     /** Its source stopped listing it (D16 "Source lost", L8-D4): shown dimmed, never tuned. */
     val lost: Boolean get() = channel.lost
+
+    /**
+     * Right opens its day schedule (Spec 67 D3 Q1): a guide covers it and has something on now or
+     * next, so the schedule never opens empty. Never on a lost row.
+     */
+    val hasSchedule: Boolean get() = hasGuide && !lost && (now != null || next != null)
 
     /** The first category as worded ([LiveTvModel.categoryNames]: iptv-org's, else the playlist's). */
     val category: String? get() = LiveTvModel.categoryNames(channel).firstOrNull()

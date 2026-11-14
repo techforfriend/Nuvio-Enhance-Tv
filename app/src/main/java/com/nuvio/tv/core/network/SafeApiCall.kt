@@ -2,16 +2,16 @@ package com.nuvio.tv.core.network
 
 import android.content.Context
 import com.nuvio.tv.R
+import com.nuvio.tv.core.network.tls.isAddonCertificateFailure
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
 
 /**
- * Upper bound for addon-facing JSON requests (manifest / meta / stream lists).
- * Without this, the only backstop is the shared OkHttp 60 s read timeout, so a
- * single dead addon can hold a coroutine - and its UI chip - for a full minute.
- * A Stremio JSON endpoint should answer in low single-digit seconds; 20 s is
- * generous headroom.
+ * Default deadline for addon-facing JSON requests (manifests, the stream screen's
+ * inline-meta fallback). Stream lists (25 s, StreamRepositoryImpl) and meta
+ * lookups (28 s, MetaRepositoryImpl) set their own. A Stremio JSON endpoint should
+ * answer in low single-digit seconds; 20 s is generous headroom.
  */
 const val ADDON_REQUEST_TIMEOUT_MS = 20_000L
 
@@ -49,6 +49,8 @@ suspend fun <T> safeApiCall(
                 context.getString(R.string.network_error_malformed_json),
                 garbage = true
             )
+        } else if (e.isAddonCertificateFailure()) {
+            NetworkResult.Error(context.getString(R.string.network_error_addon_certificate), certificate = true)
         } else {
             NetworkResult.Error(e.message ?: context.getString(R.string.network_error_unknown))
         }

@@ -7,6 +7,9 @@ import com.nuvio.tv.core.assessment.ServiceTable
 import com.nuvio.tv.core.stream.StreamLimitInputs
 import com.nuvio.tv.core.stream.StreamLimitMode
 import com.nuvio.tv.core.stream.StreamLimitSettings
+import com.nuvio.tv.core.stream.FacetFilter
+import com.nuvio.tv.core.stream.FacetGroup
+import com.nuvio.tv.core.stream.FacetValue
 import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.hiddenStreamKeys
 import com.nuvio.tv.core.stream.limitKey
@@ -173,6 +176,21 @@ class PlayerStreamLimitTest {
         assertEquals(StreamListSelection.Addon("A"), kept.sourceListSelection)
     }
 
+    @Test
+    fun `each player list narrows under its own filter only (Spec 65 P1)`() {
+        val uhd = stream("Film.2012.2160p.WEB-DL.HEVC-GRP")
+        val hd = stream("Film.2012.1080p.WEB-DL.H.264-GRP")
+        val only4k = FacetFilter.NONE.toggled(FacetValue(FacetGroup.RESOLUTION, "P2160"))
+        val lists = PlayerUiState(sourceAllStreams = listOf(uhd, hd), episodeAllStreams = listOf(uhd, hd))
+        val source = lists.copy(sourceFacetFilter = only4k).withSourceList(emptyMap()).withEpisodeList(emptyMap())
+        assertEquals(listOf(uhd), source.sourceListView.streams)
+        assertEquals(only4k, source.sourceListView.filter)
+        assertEquals(listOf(uhd, hd), source.episodeListView.streams)
+        val episode = lists.copy(episodeFacetFilter = only4k).withSourceList(emptyMap()).withEpisodeList(emptyMap())
+        assertEquals(listOf(uhd), episode.episodeListView.streams)
+        assertEquals(listOf(uhd, hd), episode.sourceListView.streams)
+    }
+
     // -- dead-source failover (R4-1, R5-8) --
 
     @Test
@@ -218,5 +236,64 @@ class PlayerStreamLimitTest {
         assertNotEquals(key, streamLimitDeriveKey(base.copy(currentVideoId = "tt1:1:2")))
         assertNotEquals(key, streamLimitDeriveKey(base.copy(streamAutoPlayPreferBingeGroupForNextEpisode = true)))
         assertEquals(key, streamLimitDeriveKey(base.copy(isBuffering = false, showSourcesPanel = true)))
+    }
+    // -- Spec 65 P6: the show's preferred source in the player --
+
+    @Test
+    fun `both player lists lead with the preferred source's matches`() {
+        val uhd = stream("Show.S01E03.2160p.WEB-FLUX")
+        val fhd = stream("Show.S01E03.1080p.WEB-NTb")
+        val preferred = com.nuvio.tv.core.stream.PreferredSource("A", com.nuvio.tv.domain.model.ReleaseResolution.P1080)
+        val state = PlayerUiState(sourceAllStreams = listOf(uhd, fhd), episodeAllStreams = listOf(uhd, fhd), preferredSource = preferred)
+            .withSourceList(emptyMap()).withEpisodeList(emptyMap())
+        assertEquals(listOf(fhd, uhd), state.sourceListView.streams)
+        assertEquals(1, state.sourceListView.preferredCount)
+        assertEquals(listOf(fhd, uhd), state.episodeListView.streams)
+        assertEquals(1, state.episodeListView.preferredCount)
+        val none = state.copy(preferredSource = null).withSourceList(emptyMap())
+        assertEquals(listOf(uhd, fhd), none.sourceListView.streams)
+        assertEquals(0, none.sourceListView.preferredCount)
+    }
+
+    // D20: in MANUAL mode a preferred source alone makes the episode press select, and only a match plays.
+    @Test
+    fun `a preferred source lets a manual-mode episode press play its match and nothing else`() {
+        fun manual(next: Boolean, binge: Boolean, fallback: Boolean = true) = com.nuvio.tv.data.local.PlayerSettings(
+            streamAutoPlayMode = StreamAutoPlayMode.MANUAL,
+            streamAutoPlayNextEpisodeEnabled = next,
+            streamAutoPlayPreferBingeGroupForNextEpisode = binge,
+            streamAutoPlayNextEpisodeFallbackEnabled = fallback
+        )
+        val off = manual(next = false, binge = false)
+        assertEquals(ManualEpisodeSelect(autoSelect = false, matchOnly = false), manualEpisodeSelect(off, hasPreferred = false))
+        assertEquals(ManualEpisodeSelect(autoSelect = true, matchOnly = true), manualEpisodeSelect(off, hasPreferred = true))
+        // Where a setting already selects, a preferred source changes nothing.
+        for (preferred in listOf(false, true)) {
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = true, matchOnly = false),
+                manualEpisodeSelect(manual(next = true, binge = false), preferred)
+            )
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = true, matchOnly = false),
+                manualEpisodeSelect(manual(next = true, binge = false, fallback = false), preferred)
+            )
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = true, matchOnly = true),
+                manualEpisodeSelect(manual(next = false, binge = true), preferred)
+            )
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = true, matchOnly = true),
+                manualEpisodeSelect(manual(next = true, binge = true, fallback = false), preferred)
+            )
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = true, matchOnly = false),
+                manualEpisodeSelect(manual(next = true, binge = true), preferred)
+            )
+            // Outside MANUAL the mode itself selects.
+            assertEquals(
+                ManualEpisodeSelect(autoSelect = false, matchOnly = false),
+                manualEpisodeSelect(off.copy(streamAutoPlayMode = StreamAutoPlayMode.FIRST_STREAM), preferred)
+            )
+        }
     }
 }

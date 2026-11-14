@@ -3,10 +3,12 @@ package com.nuvio.tv.data.repository
 import android.content.Context
 import com.nuvio.tv.R
 import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
+import com.nuvio.tv.core.di.NetworkModule
 import com.nuvio.tv.core.di.aioStreamDataUserAgent
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.remote.api.AddonApi
+import com.nuvio.tv.data.remote.dto.MetaResponseDto
 import com.nuvio.tv.data.remote.dto.StreamClientResolveDto
 import com.nuvio.tv.data.remote.dto.StreamDto
 import com.nuvio.tv.data.remote.dto.StreamResponseDto
@@ -127,10 +129,58 @@ class StreamRepositoryFanOutCompletionTest {
         )
 
         assertTrue(result is NetworkResult.Success)
+        // A YouTube-only row cannot play in the player and is not listed (Spec 84 A4).
         assertEquals(
-            listOf("Direct", "Torrent", "YouTube", "External", "Info only"),
+            listOf("Direct", "Torrent", "External", "Info only"),
             (result as NetworkResult.Success).data.streams.map { it.name }
         )
+    }
+
+    @Test
+    fun `meta-inline fallback lists only rows the app can play`() = runBlocking {
+        // Spec 84 A4: the third stream-row source goes through toListedStreams too.
+        val base = streamAddon(id = "addon-a", name = "Addon A", baseUrl = "https://a.example")
+        val addon = base.copy(
+            resources = base.resources + AddonResource(name = "meta", types = listOf("movie"), idPrefixes = listOf("tt"))
+        )
+        val harness = newHarness(addons = listOf(addon), streams = emptyList())
+        coEvery { harness.api.getMeta(any(), any()) } returns Response.success(
+            NetworkModule.provideWireJson().decodeFromString<MetaResponseDto>(
+                """{"meta":{"id":"tt1341338","type":"movie","name":"M","videos":[{"id":"tt1341338","title":"M",
+                    "streams":[{"name":"yt","ytId":"abc"},{"name":"url","url":"https://cdn.example/a.mp4"}]}]}}"""
+            )
+        )
+
+        val final = withTimeout(5_000) {
+            harness.repository.getStreamsFromAllAddons(type = "movie", videoId = "tt1341338").toList()
+        }.last()
+
+        assertTrue(final is NetworkResult.Success)
+        assertEquals(listOf("url"), (final as NetworkResult.Success).data.single().streams.map { it.name })
+    }
+
+    @Test
+    fun `meta-inline fallback asks only addons that serve meta for the type and id`() = runBlocking {
+        // Spec 84 A8: no meta resource, or one for another id prefix or type, means no meta request.
+        val noMeta = streamAddon(id = "addon-a", name = "Addon A", baseUrl = "https://a.example")
+        val otherPrefix = streamAddon(id = "addon-b", name = "Addon B", baseUrl = "https://b.example").let {
+            it.copy(resources = it.resources + AddonResource(name = "meta", types = listOf("movie"), idPrefixes = listOf("kitsu:")))
+        }
+        val otherType = streamAddon(id = "addon-c", name = "Addon C", baseUrl = "https://c.example").let {
+            it.copy(resources = it.resources + AddonResource(name = "meta", types = listOf("series"), idPrefixes = null))
+        }
+        val serves = streamAddon(id = "addon-d", name = "Addon D", baseUrl = "https://d.example").let {
+            it.copy(resources = it.resources + AddonResource(name = "meta", types = listOf("movie"), idPrefixes = listOf("tt")))
+        }
+        val harness = newHarness(addons = listOf(noMeta, otherPrefix, otherType, serves), streams = emptyList())
+        coEvery { harness.api.getMeta(any(), any()) } returns Response.success(MetaResponseDto(meta = null))
+
+        withTimeout(5_000) {
+            harness.repository.getStreamsFromAllAddons(type = "movie", videoId = "tt1341338").toList()
+        }
+
+        coVerify(exactly = 1) { harness.api.getMeta(any(), any()) }
+        coVerify(exactly = 1) { harness.api.getMeta(match { it.startsWith("https://d.example/meta/movie/") }, any()) }
     }
 
     // Spec 48 P1: the inner request shares the 25 s stream deadline; with the 20 s addon

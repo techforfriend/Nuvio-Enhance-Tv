@@ -10,7 +10,8 @@ data class GuideCandidate(val ref: EpgRef, val name: String, val now: EpgProgram
 /**
  * Choose guide's list (Spec 34 L7d), pure: guide channels from every cached guide, closest names
  * first. Closeness per channel name (title, then [Channel.altNames]) against each guide channel's
- * display names and id stem: the same tvg-id or normalised name is exact; one normalised name
+ * display names and id stem: an id the matcher accepts (a [ChannelIdentity.tvgIdKeys] key, or its
+ * [ChannelIdentity.looseId]) or the same normalised name is exact; one normalised name
  * inside the other (3+ characters) next, by length ratio; else the share of words in common
  * ("Al Jazeera English" vs "Al Jazeera Arabic"), filler words (`tv`, `channel`) aside. Nothing in
  * common = not a candidate. No country gate (the user is choosing), but on a tie a guide of the
@@ -37,7 +38,8 @@ object GuideCandidates {
         nowMs: Long,
         limit: Int = MAX
     ): List<GuideCandidate> {
-        val tvgId = ChannelIdentity.normalizeTvgId(channel.tvgId)
+        val idKeys = ChannelIdentity.tvgIdKeys(channel.tvgId).toSet()
+        val looseKeys = idKeys.mapNotNullTo(HashSet(), ChannelIdentity::looseId)
         val country = ChannelIdentity.normalizeCountry(channel.country)
         val mine = (listOf(channel.name) + channel.altNames).map(::Name).filter { it.joined.isNotEmpty() }
         val scored = ArrayList<Scored>()
@@ -45,7 +47,7 @@ object GuideCandidates {
             val sameCountry = country != null && ChannelIdentity.normalizeCountry(source.country) == country
             for (epg in source.snapshot.channels.values) {
                 val theirs = (epg.displayNames + epg.id).map { Name(ChannelIdentity.stripCountrySuffix(it)) }
-                val score = if (tvgId != null && ChannelIdentity.normalizeTvgId(epg.id) == tvgId) EXACT
+                val score = if (idHit(epg.id, idKeys, looseKeys)) EXACT
                 else mine.maxOfOrNull { a -> theirs.maxOfOrNull { b -> closeness(a, b) } ?: 0.0 } ?: 0.0
                 if (score <= 0.0) continue
                 val name = epg.displayNames.firstOrNull { it.isNotBlank() } ?: epg.id
@@ -67,6 +69,18 @@ object GuideCandidates {
         val refs = if (current == null || current in ranked || !exists(current, sources)) ranked
         else listOf(current) + ranked.take(limit - 1)
         return refs.map { ref -> candidate(ref, sources, nowMs) }
+    }
+
+    /**
+     * Whether the matcher's tvg-id step would accept [epgId] for these tvg-id keys and their loose
+     * forms. Every key scores the same: a feed and its plain id tie (`Dave.+1.uk` / `Dave.uk`), and
+     * the current guide, which is the matcher's most specific hit, wins the tie.
+     */
+    private fun idHit(epgId: String, idKeys: Set<String>, looseKeys: Set<String>): Boolean {
+        val id = ChannelIdentity.normalizeTvgId(epgId) ?: return false
+        if (id in idKeys) return true
+        if (looseKeys.isEmpty()) return false
+        return ChannelIdentity.looseId(epgId)?.let { it in looseKeys } == true
     }
 
     private fun closeness(a: Name, b: Name): Double {

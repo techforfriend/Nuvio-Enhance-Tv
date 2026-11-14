@@ -174,9 +174,14 @@ internal fun PlayerRuntimeController.observeTorrentState() {
 
                 is TorrentState.Error -> {
                     Log.e(TAG, "Torrent error: ${torrentState.message}")
+                    val failure = playbackFailure(
+                        cause = com.nuvio.tv.core.stream.FailureCause.TORRENT,
+                        message = context.getString(com.nuvio.tv.R.string.player_error_torrent, torrentState.message),
+                        facts = FailureFacts(engineMessage = torrentState.message)
+                    )
                     _uiState.update {
                         it.copy(
-                            error = context.getString(com.nuvio.tv.R.string.player_error_torrent, torrentState.message),
+                            error = failure,
                             showLoadingOverlay = false,
                             torrentBufferingMessage = null
                         )
@@ -222,7 +227,17 @@ internal fun PlayerRuntimeController.launchTorrentStream(
     loadSavedProgress: Boolean
 ) {
     torrentStreamJob?.cancel()
+    // No link until TorrServer answers: a failure before then must not be recorded under, or name
+    // the host of, the source played before this torrent (Spec 75 S6 red team ed9fd20e).
+    currentStreamUrl = ""
+    currentHeaders = emptyMap()
+    // A new stream identity: preparePlaybackBeforeStart's forget below never fires here, since the
+    // local URL is set before it (Spec 85 G1: a re-picked torrent gets its one engine switch again).
+    forgetStreamEngineForNewStream()
     torrentStreamJob = scope.launch {
+        // Spec 75: the torrent's own attempt (first launch and every switch), with no URL to match
+        // until initializePlayer(localUrl) starts the next one; a TorrServer failure fails Getting the link.
+        stepClock.start(android.os.SystemClock.elapsedRealtime(), stepSourcesFoundMs, url = null)
         try {
             observeTorrentState()
             val localUrl = startTorrentStream(
@@ -245,12 +260,15 @@ internal fun PlayerRuntimeController.launchTorrentStream(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start torrent stream", e)
+            val engineMessage = e.message ?: context.getString(R.string.error_unknown)
+            val failure = playbackFailure(
+                cause = com.nuvio.tv.core.stream.FailureCause.TORRENT,
+                message = context.getString(R.string.player_error_failed_start_torrent, engineMessage),
+                facts = FailureFacts(engineMessage = engineMessage)
+            )
             _uiState.update {
                 it.copy(
-                    error = context.getString(
-                        R.string.player_error_failed_start_torrent,
-                        e.message ?: context.getString(R.string.error_unknown)
-                    ),
+                    error = failure,
                     showLoadingOverlay = false,
                     loadingProgress = null
                 )

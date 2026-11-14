@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.nuvio.tv.core.profile.DpadCombo
 import com.nuvio.tv.core.profile.DpadDirection
+import com.nuvio.tv.core.profile.PinRelock
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -56,6 +57,7 @@ class ProfileLockStateDataStore internal constructor(
     private val dpadComboSaltKey = stringPreferencesKey("dpad_combo_salt")
     private val dpadComboLengthKey = intPreferencesKey("dpad_combo_length")
     private val settingsAccessGrantedKey = booleanPreferencesKey("settings_access_granted")
+    private val relockAfterMinutesKey = intPreferencesKey("relock_after_minutes")
 
     val pinEnabled: Flow<Map<Int, Boolean>> = dataStore.data.map { prefs ->
         decode(prefs[pinEnabledMapKey])
@@ -73,6 +75,17 @@ class ProfileLockStateDataStore internal constructor(
     /** T5: true only when the primary explicitly granted non-primary Settings access. */
     val settingsAccessGranted: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[settingsAccessGrantedKey] ?: false
+    }
+
+    /** Spec 64 D15: minutes off screen before a PIN profile is asked again; [PinRelock.OFF] = only at start. */
+    val relockAfterMinutes: Flow<Int> = dataStore.data.map { prefs ->
+        PinRelock.sanitize(prefs[relockAfterMinutesKey])
+    }
+
+    suspend fun setRelockAfterMinutes(minutes: Int) {
+        dataStore.edit { prefs ->
+            prefs[relockAfterMinutesKey] = PinRelock.sanitize(minutes)
+        }
     }
 
     /**

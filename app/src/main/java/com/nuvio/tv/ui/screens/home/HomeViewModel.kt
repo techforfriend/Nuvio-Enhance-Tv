@@ -5,6 +5,7 @@ import com.nuvio.tv.core.util.StartupLatencyTrace
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -34,8 +35,11 @@ import com.nuvio.tv.domain.repository.LibraryRepository
 import com.nuvio.tv.domain.repository.MetaRepository
 import com.nuvio.tv.domain.repository.StreamRepository
 import com.nuvio.tv.domain.repository.WatchProgressRepository
+import com.nuvio.tv.ui.components.canMarkWatched
+import com.nuvio.tv.ui.components.toCompletedProgress
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -75,7 +79,8 @@ class HomeViewModel @Inject constructor(
     internal val streamRepository: StreamRepository,
     internal val prefetchSelectionSupplier: com.nuvio.tv.core.stream.PrefetchSelectionSupplier,
     internal val homeRefreshSignal: com.nuvio.tv.core.util.HomeRefreshSignal,
-    val posterOptions: com.nuvio.tv.ui.components.posteroptions.PosterOptionsController
+    val posterOptions: com.nuvio.tv.ui.components.posteroptions.PosterOptionsController,
+    activeRatingCap: com.nuvio.tv.core.profile.ActiveRatingCap
 ) : ViewModel() {
     companion object {
         internal const val TAG = "HomeViewModel"
@@ -98,7 +103,13 @@ class HomeViewModel @Inject constructor(
     }
 
     internal val _uiState = MutableStateFlow(HomeUiState())
-    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+    // Spec 64 K1c: the one exit every Continue Watching publish path reaches, so the cap is
+    // applied here; internal code keeps reading and writing the unfiltered _uiState.
+    val uiState: StateFlow<HomeUiState> = ContinueWatchingRatingGate(
+        scope = viewModelScope,
+        readCap = activeRatingCap::current,
+        lookUpRating = ContinueWatchingRatingGate.metaRepositoryLookup(metaRepository)
+    ).gate(_uiState)
 
     internal val _modernHomePresentation = MutableStateFlow(ModernHomePresentationState())
     val modernHomePresentation: StateFlow<ModernHomePresentationState> = _modernHomePresentation.asStateFlow()
@@ -170,7 +181,8 @@ class HomeViewModel @Inject constructor(
 
     private val cwPrefetchObserver: Job = viewModelScope.launch {
         collectPrefetchTargetsWhileOnTop(
-            targets = _uiState.map { state -> cwPrefetchTargetOf(state.continueWatchingItems.firstOrNull()) },
+            // Gated uiState (Spec 64 K1c): never warm a title the cap hides.
+            targets = uiState.map { state -> cwPrefetchTargetOf(state.continueWatchingItems.firstOrNull()) },
             onTop = homeOnTop,
             debounceMs = CW_STREAM_PREFETCH_DEBOUNCE_MS
         ) { target -> prefetchCw(target, source = "cw", prewarm = true) }
@@ -198,6 +210,7 @@ class HomeViewModel @Inject constructor(
                     contentId = target.contentId,
                     runtimeMinutes = target.runtimeMinutes,
                     episode = target.season != null && target.episode != null,
+                    film = com.nuvio.tv.core.stream.ContentIdentity.isFilmType(target.type),
                     prewarm = prewarm
                 )
             }
@@ -225,7 +238,8 @@ class HomeViewModel @Inject constructor(
         MutableSharedFlow<CwPrefetchTarget>(extraBufferCapacity = 16)
 
     fun onContinueWatchingItemFocused(index: Int) {
-        val item = _uiState.value.continueWatchingItems.getOrNull(index) ?: return
+        // [index] is a position in the gated row the UI shows (Spec 64 K1c).
+        val item = uiState.value.continueWatchingItems.getOrNull(index) ?: return
         if (item is ContinueWatchingItem.NextUp && !item.info.hasAired) return
         val target = cwPrefetchTargetOf(item) ?: return
         cwFocusPrefetchRequests.tryEmit(target)
@@ -640,6 +654,7 @@ class HomeViewModel @Inject constructor(
                 episode = event.episode,
                 isNextUp = event.isNextUp
             )
+            is HomeEvent.OnMarkContinueWatchingWatched -> markContinueWatchingWatched(event.item)
             HomeEvent.OnRetry -> viewModelScope.launch { loadAllCatalogs(addonsCache, forceReload = true) }
         }
     }
@@ -686,6 +701,20 @@ class HomeViewModel @Inject constructor(
         isNextUp = isNextUp
     )
 
+    // Spec 62 H4: the CW row updates from the progress flow, as after details' Mark as watched.
+    private fun markContinueWatchingWatched(item: ContinueWatchingItem) {
+        if (!item.canMarkWatched()) return
+        viewModelScope.launch {
+            try {
+                watchProgressRepository.markAsCompleted(item.toCompletedProgress())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to mark continue watching item as watched", e)
+            }
+        }
+    }
+
     private fun observeCollections() = observeCollectionsPipeline()
 
     private fun observeInstalledAddons() = observeInstalledAddonsPipeline()
@@ -716,6 +745,8 @@ class HomeViewModel @Inject constructor(
                 // Cleared before the pass snapshots state, so a later arrival gets its own pass.
                 catalogRowsDirty = false
                 updateCatalogRows()
+                // Spec 69 M1: the first rows reach the UI state here, after the debounce above.
+                if (firstRender) StartupLatencyTrace.mark("first_catalog_published")
             }
         }
     }

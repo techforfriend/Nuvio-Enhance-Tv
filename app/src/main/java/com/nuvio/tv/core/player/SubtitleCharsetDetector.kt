@@ -3,7 +3,6 @@ package com.nuvio.tv.core.player
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.Charset
-import java.nio.charset.CharsetDecoder
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import kotlin.math.min
@@ -340,38 +339,28 @@ object SubtitleCharsetDetector {
         return CHARSET_WIN1252
     }
 
-    private fun isCjkClean(bytes: ByteArray, offset: Int, length: Int, cs: Charset): Boolean {
-        return try {
-            val decoder: CharsetDecoder = cs.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-            decoder.decode(ByteBuffer.wrap(bytes, offset, length))
-            true
-        } catch (_: Exception) {
-            false
-        }
+    /**
+     * The bytes decoded strictly, or null on any result but UNDERFLOW (malformed, unmappable;
+     * overflow cannot happen at this size). A trailing partial sequence is left undecoded instead
+     * of failing: the detector's sample can end inside a multi-byte character, and a file cut
+     * mid-character still decodes in its own charset (Spec 87 T1, W5-01).
+     */
+    private fun decodeStrictly(bytes: ByteArray, offset: Int, length: Int, cs: Charset): CharBuffer? {
+        val decoder = cs.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val out = CharBuffer.allocate((length * decoder.maxCharsPerByte()).toInt() + 1)
+        val result = decoder.decode(ByteBuffer.wrap(bytes, offset, length), out, /* endOfInput = */ false)
+        if (!result.isUnderflow) return null
+        out.flip()
+        return out
     }
 
+    private fun isCjkClean(bytes: ByteArray, offset: Int, length: Int, cs: Charset): Boolean =
+        decodeStrictly(bytes, offset, length, cs) != null
+
     private fun countBlockMatches(bytes: ByteArray, offset: Int, length: Int, cs: Charset, vararg blocks: Character.UnicodeBlock): Int {
-        return try {
-            val decoder: CharsetDecoder = cs.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-            val cb: CharBuffer = decoder.decode(ByteBuffer.wrap(bytes, offset, length))
-            var matched = 0
-            for (i in 0 until cb.length) {
-                val c = cb.get(i)
-                val b = Character.UnicodeBlock.of(c)
-                for (target in blocks) {
-                    if (b == target) {
-                        matched++
-                        break
-                    }
-                }
-            }
-            matched
-        } catch (_: Exception) {
-            0
-        }
+        val decoded = decodeStrictly(bytes, offset, length, cs) ?: return 0
+        return decoded.count { Character.UnicodeBlock.of(it) in blocks }
     }
 }

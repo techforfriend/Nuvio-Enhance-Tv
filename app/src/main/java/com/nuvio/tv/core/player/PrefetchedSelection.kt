@@ -1,5 +1,6 @@
 package com.nuvio.tv.core.player
 
+import com.nuvio.tv.core.stream.ContentIdentityGuard
 import com.nuvio.tv.core.stream.limitKey
 import com.nuvio.tv.domain.model.Stream
 
@@ -29,6 +30,12 @@ import com.nuvio.tv.domain.model.Stream
  * StreamQualityRank.rank is a stable sort, so incoming order decides ties. An
  * addon reordered between prefetch and press would change the winner while the
  * Set compared equal.
+ *
+ * The press's [AutoPlaySelection.Inputs.identity] (Spec 65 S3) is not compared: each site reads
+ * the title and year from its own source, so exact equality would miss for no reason. The prefetch
+ * ranks without one (its film flag is compared), and the gate keeps the winner only when the
+ * press's identity guard passes it. Dropping other candidates never changes the winner of any
+ * mode, so that winner is what a live rank with the identity would pick.
  *
  * Upstream: NuvioMedia/NuvioTV. Licensed under GPL-3.0.
  */
@@ -68,6 +75,9 @@ object PrefetchedSelectionGate {
     /** Spec 51 P5: only the stream list limit's hidden set moved (a runtime or table landed). */
     const val REASON_HIDDEN_CHANGED = "hidden-changed"
 
+    /** Spec 65 S3: the press's identity guard rejects the cached winner. */
+    const val REASON_IDENTITY_REJECTED = "identity-rejected"
+
     /**
      * Resolves a prefetched winner against the list actually being presented.
      *
@@ -88,12 +98,14 @@ object PrefetchedSelectionGate {
     ): SelectionOutcome {
         if (prefetched == null) return SelectionOutcome.Live(REASON_NO_ENTRY)
         val sameCandidates = sameCandidates(prefetched.candidates, streams)
-        if (prefetched.snapshot != snapshot) {
+        val identity = snapshot.inputs.identity
+        val press = snapshot.withoutIdentity()
+        if (prefetched.snapshot.withoutIdentity() != press) {
             // The hidden set is computed over the candidates, so a late addon moves both: name
             // the cause the hidden set alone cannot tell apart (logging only, never the pick).
-            val hiddenOnly = prefetched.snapshot.copy(
-                inputs = prefetched.snapshot.inputs.copy(hiddenKeys = snapshot.inputs.hiddenKeys)
-            ) == snapshot
+            val hiddenOnly = prefetched.snapshot.withoutIdentity().let {
+                it.copy(inputs = it.inputs.copy(hiddenKeys = snapshot.inputs.hiddenKeys))
+            } == press
             val reason = when {
                 !hiddenOnly -> REASON_INPUTS_CHANGED
                 sameCandidates -> REASON_HIDDEN_CHANGED
@@ -105,8 +117,17 @@ object PrefetchedSelectionGate {
         val wantedKey = prefetched.winner.limitKey()
         val match = streams.firstOrNull { it.limitKey() == wantedKey }
             ?: return SelectionOutcome.Live(REASON_KEY_MISS)
+        // The snapshots are equal, so the winner already passed every other candidate filter at
+        // the prefetch; only the press's identity is new, and its verdict is per stream.
+        if (identity != null && ContentIdentityGuard.rejections(listOf(match), identity).isNotEmpty()) {
+            return SelectionOutcome.Live(REASON_IDENTITY_REJECTED)
+        }
         return SelectionOutcome.Hit(match)
     }
+
+    /** The snapshot less the press-only identity. */
+    private fun SelectionSnapshot.withoutIdentity(): SelectionSnapshot =
+        if (inputs.identity == null) this else copy(inputs = inputs.copy(identity = null))
 
     /**
      * Spec 36/S8 (B1-18, upstream 3d1aad1eb): the winner only holds for the list

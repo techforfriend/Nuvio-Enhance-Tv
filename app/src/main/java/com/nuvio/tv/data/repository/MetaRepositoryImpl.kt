@@ -2,14 +2,12 @@ package com.nuvio.tv.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.nuvio.tv.core.network.ADDON_REQUEST_TIMEOUT_MS
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.network.sanitizedFetchMessage
 import com.nuvio.tv.data.mapper.toDomain
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.Meta
-import com.nuvio.tv.domain.model.AddonResource
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.MetaRepository
 import com.nuvio.tv.core.util.safeHost
@@ -63,6 +61,16 @@ class MetaRepositoryImpl @Inject constructor(
          * [getMeta] checks its cache first, so a hit never waits.
          */
         private const val INSTALLED_ADDONS_WAIT_MS = 3000L
+
+        /**
+         * Deadline for one meta request (Spec 84 A6), above the 20 s addon default
+         * (SafeApiCall.kt): a cold AIOMetadata long-show meta took 10-14 s on the server
+         * before the device downloaded and decoded 4-8 MB, and the 20 s cut lost it (Spec 83
+         * W1-04). Stays under the @Api client's 30 s callTimeout minus AddonHostGuard's 1 s
+         * slack, so this cut, not the callTimeout, ends a dead addon's request and reads as
+         * the caller's drop, not a host timeout.
+         */
+        internal const val META_FETCH_TIMEOUT_MS = 28_000L
     }
 
     /** Internal result type for the deferred meta lookup to distinguish
@@ -514,16 +522,14 @@ class MetaRepositoryImpl @Inject constructor(
     }
 
     /**
-     * One meta request, shared by every lookup path. Keeps the fork's 20 s addon
-     * deadline (SafeApiCall.kt) that a raw call would drop -- without it a dead addon
-     * holds the caller for the shared client's full 60 s read timeout. A success is
-     * written to [metaCache] under this addon's key; callers add their own lookup
-     * cache entry.
+     * One meta request, shared by every lookup path, under [META_FETCH_TIMEOUT_MS].
+     * A success is written to [metaCache] under this addon's key; callers add their
+     * own lookup cache entry.
      */
     private suspend fun fetchMetaOnce(baseUrl: String, type: String, id: String): MetaFetchOutcome {
         val url = buildMetaUrl(baseUrl, type, id)
         return try {
-            val response = withTimeoutOrNull(ADDON_REQUEST_TIMEOUT_MS) { api.getMeta(url) }
+            val response = withTimeoutOrNull(META_FETCH_TIMEOUT_MS) { api.getMeta(url) }
                 ?: throw java.io.IOException(context.getString(R.string.network_error_addon_timeout))
             val metaDto = if (response.isSuccessful) response.body()?.meta else null
             when {
@@ -714,32 +720,6 @@ internal fun prioritizedMetaCandidates(
             ?.let { top -> top.supportedCandidateType(requestedType, inferredType)?.let { candidates += top to it } }
     }
     return candidates.toList()
-}
-
-private fun Addon.supportsMetaType(type: String): Boolean {
-    val target = type.trim()
-    if (target.isBlank()) return false
-    return resources.any { resource -> resource.name == "meta" && resource.supportsType(target) }
-}
-
-/** A meta resource serves [type] and its id prefixes accept [id]. */
-private fun Addon.servesMeta(type: String, id: String): Boolean {
-    val target = type.trim()
-    if (target.isBlank()) return false
-    return resources.any { resource ->
-        resource.name == "meta" && resource.supportsType(target) && acceptsMetaId(resource, id)
-    }
-}
-
-/** The resource's own idPrefixes, else the addon's; none declared accepts every id. */
-private fun Addon.acceptsMetaId(resource: AddonResource, id: String): Boolean {
-    val prefixes = resource.idPrefixes?.takeIf { it.isNotEmpty() } ?: idPrefixes
-    return prefixes.isEmpty() || prefixes.any { prefix -> id.startsWith(prefix, ignoreCase = true) }
-}
-
-private fun AddonResource.supportsType(type: String): Boolean {
-    if (types.isEmpty()) return true
-    return types.any { it.equals(type, ignoreCase = true) }
 }
 
 /**

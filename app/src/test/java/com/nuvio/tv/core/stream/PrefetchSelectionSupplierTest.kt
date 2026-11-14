@@ -9,6 +9,7 @@ import com.nuvio.tv.domain.model.AioStreamData
 import com.nuvio.tv.domain.model.Stream
 import com.nuvio.tv.domain.model.StreamBehaviorHints
 import com.nuvio.tv.core.player.PlayerPlaybackNetworking
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -33,17 +34,28 @@ class PrefetchSelectionSupplierTest {
         every { it.getInstalledAddons() } returns flowOf(emptyList())
     }
 
+    private val preferredSources = mockk<com.nuvio.tv.data.local.PreferredSourceDataStore>().also {
+        coEvery { it.get(any()) } returns null
+    }
+
     private val supplier = PrefetchSelectionSupplier(
         context = mockk(relaxed = true),
         playerSettingsDataStore = settings,
         addonRepository = addons,
         bingeGroupCacheDataStore = mockk(relaxed = true),
+        preferredSourceDataStore = preferredSources,
         streamBadgePresentation = mockk(relaxed = true),
-        rejectedStreamUrls = RejectedStreamUrls()
+        failedReleases = FailedReleases(
+            object : FailedReleaseStorage {
+                override fun load(): String? = null
+                override fun save(value: String) = Unit
+            },
+            kotlin.time.Clock.System
+        )
     )
 
     private suspend fun publishEmpty(uiKey: String) {
-        supplier.rankAndPrewarm(groups = emptyList(), contentId = null, runtimeMinutes = null, episode = false, uiKey = uiKey)
+        supplier.rankAndPrewarm(groups = emptyList(), contentId = null, runtimeMinutes = null, episode = false, film = false, uiKey = uiKey)
     }
 
     // Mirrors PrefetchSelectionSupplier.MAX_UI_SIGNALS (private).
@@ -108,7 +120,7 @@ class PrefetchSelectionSupplierTest {
         every { settings.playerSettings } returns flowOf(
             PlayerSettings(streamAutoPlayMode = StreamAutoPlayMode.FIRST_STREAM)
         )
-        return supplier.rankAndPrewarm(oneStream, contentId = null, runtimeMinutes = null, episode = false, uiKey = uiKey, prewarm = prewarm) != null
+        return supplier.rankAndPrewarm(oneStream, contentId = null, runtimeMinutes = null, episode = false, film = false, uiKey = uiKey, prewarm = prewarm) != null
     }
 
     @Test
@@ -149,14 +161,52 @@ class PrefetchSelectionSupplierTest {
         val small = sized("https://host/small.mkv", 6_000_000_000L)
         val groups = listOf(AddonStreams(addonName = "A", addonLogo = null, streams = listOf(big, small)))
 
-        val limited = supplier.rankAndPrewarm(groups, contentId = null, runtimeMinutes = 60, episode = false, prewarm = false)!!
+        val limited = supplier.rankAndPrewarm(groups, contentId = null, runtimeMinutes = 60, episode = false, film = false, prewarm = false)!!
         assertEquals(small.url, limited.winner.url)
         assertEquals(setOf(big.limitKey()), limited.snapshot.inputs.hiddenKeys)
 
         // No runtime known and no file length: nothing is estimated, so nothing is hidden (D8).
-        val unknown = supplier.rankAndPrewarm(groups, contentId = null, runtimeMinutes = null, episode = false, prewarm = false)!!
+        val unknown = supplier.rankAndPrewarm(groups, contentId = null, runtimeMinutes = null, episode = false, film = false, prewarm = false)!!
         assertEquals(big.url, unknown.winner.url)
         assertEquals(emptySet<String>(), unknown.snapshot.inputs.hiddenKeys)
+        // Spec 65 D4: the film flag reaches the snapshot the press compares.
+        val film = supplier.rankAndPrewarm(groups, contentId = null, runtimeMinutes = null, episode = false, film = true, prewarm = false)!!
+        assertEquals(true, film.snapshot.inputs.filmSizeFloors)
+        assertEquals(false, unknown.snapshot.inputs.filmSizeFloors)
+    }
+
+    // Spec 65 P6: the prefetch reads the show's preferred source as the press does, so both pick it.
+    @Test
+    fun `the rank takes the show's preferred source and carries it in its snapshot`() = runTest {
+        every { settings.playerSettings } returns flowOf(
+            PlayerSettings(streamAutoPlayMode = StreamAutoPlayMode.FIRST_STREAM)
+        )
+        fun named(filename: String) = Stream(
+            name = "A", title = null, description = null, url = "https://host/$filename", ytId = null, infoHash = null,
+            fileIdx = null, externalUrl = null,
+            behaviorHints = StreamBehaviorHints(
+                notWebReady = null, bingeGroup = null, countryWhitelist = null, proxyHeaders = null, filename = filename
+            ),
+            addonName = "A", addonLogo = null
+        )
+        val first = named("Show.S01E03.2160p.WEB-DL-FLUX.mkv")
+        val wanted = named("Show.S01E03.1080p.WEB-DL-NTb.mkv")
+        val groups = listOf(AddonStreams(addonName = "A", addonLogo = null, streams = listOf(first, wanted)))
+        val preferred = PreferredSource.of(named("Show.S01E02.1080p.WEB-DL-NTb.mkv"))
+        coEvery { preferredSources.get("tt1") } returns preferred
+
+        val ranked = supplier.rankAndPrewarm(groups, contentId = "tt1", runtimeMinutes = null, episode = true, film = false, prewarm = false)!!
+        assertEquals(wanted.url, ranked.winner.url)
+        assertEquals(preferred, ranked.snapshot.inputs.preferred)
+        // Another show: no preference, the mode's own pick.
+        val other = supplier.rankAndPrewarm(groups, contentId = "tt2", runtimeMinutes = null, episode = true, film = false, prewarm = false)!!
+        assertEquals(first.url, other.winner.url)
+        assertEquals(null, other.snapshot.inputs.preferred)
+        // MANUAL mode (D20): the preferred match is still the winner; without one nothing ranks.
+        every { settings.playerSettings } returns flowOf(PlayerSettings())
+        val manual = supplier.rankAndPrewarm(groups, contentId = "tt1", runtimeMinutes = null, episode = true, film = false, prewarm = false)!!
+        assertEquals(wanted.url, manual.winner.url)
+        assertEquals(null, supplier.rankAndPrewarm(groups, contentId = "tt2", runtimeMinutes = null, episode = true, film = false, prewarm = false))
     }
 
     // Spec 51 r1: the binge lookahead passes the player's exemption, so its rank keeps the group.
@@ -181,12 +231,12 @@ class PrefetchSelectionSupplierTest {
         val groups = listOf(AddonStreams(addonName = "A", addonLogo = null, streams = listOf(sameGroup, other)))
 
         val exempt = supplier.rankAndPrewarm(
-            groups, contentId = null, runtimeMinutes = 60, episode = true,
+            groups, contentId = null, runtimeMinutes = 60, episode = true, film = false,
             bingeOverride = "g1", exemptBingeGroup = "g1", prewarm = false
         )!!
         assertEquals(sameGroup.url, exempt.winner.url)
         val notExempt = supplier.rankAndPrewarm(
-            groups, contentId = null, runtimeMinutes = 60, episode = true, bingeOverride = "g1", prewarm = false
+            groups, contentId = null, runtimeMinutes = 60, episode = true, film = false, bingeOverride = "g1", prewarm = false
         )!!
         assertEquals(other.url, notExempt.winner.url)
     }

@@ -24,6 +24,17 @@ data class StreamDto(
     @SerialName("subtitles") val subtitles: List<SubtitleDto>? = null,
     @SerialName("clientResolve") val clientResolve: StreamClientResolveDto? = null,
     /**
+     * Usenet and archive targets (Stremio SDK stream object), which the app cannot play: read only
+     * to recognise such rows ([com.nuvio.tv.data.mapper.isUnplayable], Spec 84 A4). Raw, so a
+     * shape the app does not expect never fails the response.
+     */
+    @SerialName("nzbUrl") val nzbUrl: JsonElement? = null,
+    @SerialName("rarUrls") val rarUrls: JsonElement? = null,
+    @SerialName("zipUrls") val zipUrls: JsonElement? = null,
+    @SerialName("7zipUrls") val sevenZipUrls: JsonElement? = null,
+    @SerialName("tgzUrls") val tgzUrls: JsonElement? = null,
+    @SerialName("tarUrls") val tarUrls: JsonElement? = null,
+    /**
      * AIOStreams' structured release data (X1). Kept raw and decoded per stream into
      * [AioStreamDataDto] by the mapper, so a schema drift in one stream drops only its data.
      */

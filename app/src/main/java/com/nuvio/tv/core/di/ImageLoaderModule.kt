@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import coil3.ImageLoader
+import coil3.SingletonImageLoader
 import coil3.bitmapFactoryMaxParallelism
 import coil3.disk.DiskCache
 import coil3.gif.AnimatedImageDecoder
@@ -30,6 +31,22 @@ import javax.inject.Singleton
  * path resolve the same loader. That injected handle is the seam memory-M2
  * trims through (derisk S1) — do not build ad-hoc loaders for new surfaces.
  */
+/** Share of the image memory cache kept while the full-screen player is up (Spec 61 Q5). */
+private const val PLAYBACK_IMAGE_CACHE_DIVISOR = 4
+
+/**
+ * Spec 61 Q5 (savantguarded NuvioCPlayerMemory.onPlayerOpened): gives most of the image memory
+ * cache back when a stream starts, so the browse screens' posters do not sit in the heap next to
+ * a 4K decode. Least-recently-used entries go first, so the art the player itself just loaded
+ * stays; the cap is unchanged, and the disk cache refills the rest on the way back.
+ */
+internal fun trimImageMemoryCacheForPlayback(context: Context) {
+    runCatching {
+        val cache = SingletonImageLoader.get(context).memoryCache ?: return
+        cache.trimToSize(cache.maxSize / PLAYBACK_IMAGE_CACHE_DIVISOR)
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object ImageLoaderModule {

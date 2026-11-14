@@ -5,6 +5,8 @@ package com.nuvio.tv.core.player
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import com.nuvio.tv.data.local.AFR_SETTLE_HOLD_MAX_SECONDS
+import com.nuvio.tv.data.local.AFR_SETTLE_HOLD_MIN_SECONDS
 import com.nuvio.tv.data.local.FrameRateMatchingMode
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import kotlinx.coroutines.Dispatchers
@@ -15,17 +17,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-// Absolute ceiling on the whole track-AFR step (mode switch wait + settle
-// hold). Timer-released, never event-gated — cannot deadlock startup.
-// P-F4: 8 s covers the worst case (~4 s mode-switch wait + 2 s settle hold)
-// with margin; 7 s could clip a slow HDMI mode change mid-settle.
-private const val TRACK_AFR_ABSOLUTE_DEADLINE_MS = 8_000L
+// The track-AFR step's absolute ceiling is the settle hold plus this budget.
+// Timer-released, never event-gated — cannot deadlock startup. P-F4: the
+// budget covers the ~4 s mode-switch wait with margin (the old fixed 8 s
+// ceiling = this + the old fixed 2 s hold); less could clip a slow HDMI mode
+// change mid-settle. Spec 62 D6: the ceiling grows with the hold, or a long
+// hold would be clipped.
+private const val TRACK_AFR_SWITCH_BUDGET_MS = 6_000L
 
-// Settle hold after a real display-mode switch, mirroring
-// AFR_EXO_SETTLE_HOLD_MS on the preflight path (AFR review R5 / community
-// 0.7.14 QMS stutter report): don't start the A/V pipeline inside the mode
-// transition.
-private const val TRACK_AFR_SETTLE_HOLD_MS = 2_000L
+/**
+ * Settle hold after a real display-mode switch (AFR review R5 / community
+ * 0.7.14 QMS stutter report: don't start the A/V pipeline inside the mode
+ * transition). Spec 62 H1: the "Wait after display switch" setting, shared by
+ * the track path here, the preflight path (startPlaybackThroughAfrGates) and
+ * mpv's start (D9).
+ */
+internal fun afrSettleHoldMs(holdSeconds: Int): Long =
+    holdSeconds.coerceIn(AFR_SETTLE_HOLD_MIN_SECONDS, AFR_SETTLE_HOLD_MAX_SECONDS) * 1_000L
+
+/**
+ * The part of [holdMs] still to wait at [nowElapsedMs] after the last real display-mode switch at
+ * [lastSwitchElapsedMs] (0 = none yet). The hold belongs to the switch, not to the engine that made
+ * it (Spec 85: ExoPlayer's pre-start switch before a hop to mpv, whose preflight then finds the
+ * panel already in mode).
+ */
+internal fun afrSettleHoldRemainingMs(holdMs: Long, lastSwitchElapsedMs: Long, nowElapsedMs: Long): Long {
+    if (holdMs <= 0L || lastSwitchElapsedMs <= 0L) return 0L
+    return (holdMs - (nowElapsedMs - lastSwitchElapsedMs)).coerceIn(0L, holdMs)
+}
+
+/** Absolute ceiling on the whole track-AFR step (mode switch wait + [holdMs]). */
+internal fun trackAfrDeadlineMs(holdMs: Long): Long = holdMs + TRACK_AFR_SWITCH_BUDGET_MS
 
 /**
  * nt6 AFR option 1: frame-rate matching driven by ExoPlayer's reported track
@@ -48,9 +70,10 @@ private const val TRACK_AFR_SETTLE_HOLD_MS = 2_000L
  * resumePlaybackAfterTrackAfrIfHeld() starts playback if the first frame
  * arrived during the hold, otherwise the normal onRenderedFirstFrame /
  * tunneled READY path starts it with the gate now open. If the deadline
- * expires the finally block releases the gate regardless; the 12 s
- * first-frame watchdog is a second, longer net and cannot fire inside the
- * 8 s gate window.
+ * expires the finally block releases the gate regardless. The 12 s
+ * first-frame watchdog (armed at READY) waits while this gate or the preflight
+ * settle hold is in flight, so the hold (up to 10 s + the 6 s budget) is never
+ * force-started; both gates are timer-bounded, so that wait ends.
  */
 internal fun PlayerRuntimeController.maybeRunTrackFormatAfr(rawFps: Float, format: Format) {
     if (currentInternalPlayerEngine != InternalPlayerEngine.EXOPLAYER) return
@@ -140,9 +163,18 @@ internal fun PlayerRuntimeController.maybeRunTrackFormatAfr(rawFps: Float, forma
     // Spec 50 I6 review 740b6c39: AfrNoisyPolicy's window opens only on a real mode change (not on audio quiescing).
     var displayModeSwitched = false
 
+    // One read of the live settings, so the deadline and the hold below agree.
+    val settleHoldMs = afrSettleHoldMs(currentPlayerSettings.afrSettleHoldSeconds)
+    val deadlineMs = trackAfrDeadlineMs(settleHoldMs)
+    // The cache key of the stream these tracks belong to: a switch to another stream can land
+    // while the coroutine below suspends.
+    val streamUrl = currentStreamUrl
+    val streamHeaders = currentHeaders
+    val streamFilename = currentFilename
+
     scope.launch {
         try {
-            withTimeoutOrNull(TRACK_AFR_ABSOLUTE_DEADLINE_MS) {
+            withTimeoutOrNull(deadlineMs) {
                 val playerSettings = playerSettingsDataStore.playerSettings.first()
                 val snapped = FrameRateUtils.snapToStandardRate(rawFps)
                 val prefer23976TrackBias = rawFps in 23.95f..23.999f
@@ -176,16 +208,20 @@ internal fun PlayerRuntimeController.maybeRunTrackFormatAfr(rawFps: Float, forma
                 // same format used for the switch below, so a later hit
                 // preflights with the size that actually applied.
                 AfrFpsCache.cacheFrameRate(
-                    currentStreamUrl,
-                    currentHeaders,
+                    streamUrl,
+                    streamHeaders,
                     FrameRateUtils.FrameRateDetection(
                         raw = rawFps,
                         snapped = snapped,
                         videoWidth = format.width.takeIf { it > 0 },
                         videoHeight = format.height.takeIf { it > 0 }
                     ),
-                    currentFilename
+                    streamFilename
                 )
+
+                // A rebuild since the launch (a recovery rung, the Spec 85 mpv hop) started a new
+                // stream generation: its own start owns the display switch and the settle hold.
+                if (afrTrackGeneration != startGeneration) return@withTimeoutOrNull
 
                 // Fix 1: quiesce audio across the HDMI mode switch. On the
                 // Shield, switching display mode tears the audio output down
@@ -236,9 +272,9 @@ internal fun PlayerRuntimeController.maybeRunTrackFormatAfr(rawFps: Float, forma
                         lastAfrModeSwitchElapsedMs = android.os.SystemClock.elapsedRealtime()
                         Log.d(
                             PlayerRuntimeController.TAG,
-                            "Track AFR: display mode switched; holding playback start ${TRACK_AFR_SETTLE_HOLD_MS}ms"
+                            "Track AFR: display mode switched; holding playback start ${settleHoldMs}ms"
                         )
-                        delay(TRACK_AFR_SETTLE_HOLD_MS)
+                        delay(settleHoldMs)
                         val sinceSwitchMs = if (switchStartElapsedMs > 0L) {
                             android.os.SystemClock.elapsedRealtime() - switchStartElapsedMs
                         } else {
@@ -254,7 +290,7 @@ internal fun PlayerRuntimeController.maybeRunTrackFormatAfr(rawFps: Float, forma
                 }
             } ?: Log.w(
                 PlayerRuntimeController.TAG,
-                "Track AFR exceeded absolute deadline (${TRACK_AFR_ABSOLUTE_DEADLINE_MS}ms); releasing start gate"
+                "Track AFR exceeded absolute deadline (${deadlineMs}ms); releasing start gate"
             )
         } finally {
             // P-F3: act only if this coroutine still belongs to the current
@@ -299,6 +335,8 @@ internal fun PlayerRuntimeController.resumePlaybackAfterTrackAfrIfHeld() {
     if (!hasRenderedFirstFrame) return
     if (userPausedManually) return
     if (player.playWhenReady) return
+    // Spec 62 H1: a preflight settle hold still running starts playback from its own timer.
+    if (afrSettleHoldInFlight) return
     Log.d(PlayerRuntimeController.TAG, "Track AFR: settle complete; starting held playback")
     player.playWhenReady = true
     player.play()

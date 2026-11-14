@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.sync.AddonSyncService
+import com.nuvio.tv.core.network.tls.AddonCertPinKeeper
 import com.nuvio.tv.data.local.decodeManifestCache
 import com.nuvio.tv.data.local.encodeManifestCache
 import java.util.concurrent.CopyOnWriteArrayList
@@ -64,7 +65,9 @@ class AddonRepositoryImpl(
     /** Backs syncScope, the cache disk IO and installedAddonsFlow; injectable for tests. */
     private val dispatcher: CoroutineDispatcher,
     /** Source of the refresh clock, injectable so the TTL policy is tested without waiting. */
-    private val clock: () -> Long
+    private val clock: () -> Long,
+    /** Spec 68 P8: forgets trusted certificates no stored addon list uses; never throws. */
+    private val pruneCertPins: suspend () -> Unit = {}
 ) : AddonRepository {
 
     @Inject
@@ -73,7 +76,8 @@ class AddonRepositoryImpl(
         preferences: AddonPreferences,
         addonSyncService: AddonSyncService,
         authManager: AuthManager,
-        @ApplicationContext context: Context
+        @ApplicationContext context: Context,
+        certPinKeeper: AddonCertPinKeeper
     ) : this(
         api = api,
         preferences = preferences,
@@ -81,7 +85,8 @@ class AddonRepositoryImpl(
         authManager = authManager,
         context = context,
         dispatcher = Dispatchers.IO,
-        clock = System::currentTimeMillis
+        clock = System::currentTimeMillis,
+        pruneCertPins = certPinKeeper::prune
     )
 
     companion object {
@@ -434,6 +439,7 @@ class AddonRepositoryImpl(
             persistManifestCacheToDisk()
             bumpManifestCacheRevision()
         }
+        pruneCertPins()
         triggerRemoteSync()
     }
 
@@ -451,6 +457,7 @@ class AddonRepositoryImpl(
 
     override suspend fun spliceAddonOrder(urls: List<String>, removedUrls: Collection<String>) {
         if (!preferences.spliceAddonOrder(urls, removedUrls)) return
+        pruneCertPins()
         triggerRemoteSync()
     }
 
@@ -535,6 +542,7 @@ class AddonRepositoryImpl(
         val currentCanonical = initialLocalUrls.map { canonicalizeUrl(it) }
         if (finalList != currentCanonical) {
             preferences.setAddonOrder(finalList, profileId)
+            pruneCertPins()
         }
     }
 

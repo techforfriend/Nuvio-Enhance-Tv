@@ -180,6 +180,9 @@ internal fun PlaybackSettingsContent(
         onSetResolutionMatchingEnabled = { enabled ->
             coroutineScope.launch { viewModel.setResolutionMatchingEnabled(enabled) }
         },
+        onSetAfrSettleHoldSeconds = { seconds ->
+            coroutineScope.launch { viewModel.setAfrSettleHoldSeconds(seconds) }
+        },
         onDisableAfrAndResolution = { coroutineScope.launch { viewModel.disableAfrAndResolution() } },
         onSetDownmixEnabled = { enabled ->
             coroutineScope.launch { viewModel.setDownmixEnabled(enabled) }
@@ -229,6 +232,10 @@ internal fun PlaybackSettingsContent(
             coroutineScope.launch { viewModel.setSubtitleStripSdh(enabled) }
         },
         onSetSubtitleEdgeStyle = { style -> coroutineScope.launch { viewModel.setSubtitleEdgeStyle(style) } },
+        onSetSubtitleHdrStyleEnabled = { coroutineScope.launch { viewModel.setSubtitleHdrStyleEnabled(it) } },
+        onSetSubtitleHdrTextColor = { coroutineScope.launch { viewModel.setSubtitleHdrTextColor(it) } },
+        onSetSubtitleHdrBrightness = { coroutineScope.launch { viewModel.setSubtitleHdrBrightnessPercent(it) } },
+        onSetSubtitleHdrDimPlayerControls = { coroutineScope.launch { viewModel.setSubtitleHdrDimPlayerControls(it) } },
         onSetUseLibass = { enabled -> coroutineScope.launch { viewModel.setUseLibass(enabled) } },
         p2pEnabled = torrentSettings.p2pEnabled,
         onSetP2pEnabled = { enabled ->

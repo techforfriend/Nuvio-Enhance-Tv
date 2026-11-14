@@ -76,12 +76,17 @@ class UpdateControllerTest {
         }
         .build()
 
-    private fun controller(supported: Boolean = true, installedCode: Int = 1391, over: UpdateStore = store) =
-        UpdateController(
-            api, over, UpdateFeed(supported, "Arshad-Kamal", "Nuvio-AK", installedCode, listOf("armeabi-v7a")), scope, now::get,
-            ApkDownloader(toServer, updatesDir, "com.nuvio.tv.ak") { archiveIdentity },
-            { file -> install(file) }
-        )
+    /** [panelShown]: the update panel on screen (Spec 80 D14), so a verified file goes to the installer at once. */
+    private fun controller(
+        supported: Boolean = true,
+        installedCode: Int = 1391,
+        over: UpdateStore = store,
+        panelShown: Boolean = true
+    ) = UpdateController(
+        api, over, UpdateFeed(supported, "Arshad-Kamal", "Nuvio-AK", installedCode, listOf("armeabi-v7a")), scope, now::get,
+        ApkDownloader(toServer, updatesDir, "com.nuvio.tv.ak") { archiveIdentity },
+        { file -> install(file) }
+    ).also { it.setPanelShown(panelShown) }
 
     @After
     fun tearDown() {
@@ -128,6 +133,28 @@ class UpdateControllerTest {
         val state = controller.settled { it.available != null }
         assertEquals(1392, state.available?.versionCode)
         assertFalse(state.lastCheckFailed)
+    }
+
+    @Test
+    fun `the pill pulses once per release, across starts, and only while it shows`() = runBlocking<Unit> {
+        answer(200, releaseJson(code = 1392))
+        val controller = controller()
+        controller.awaitCheck()
+        assertEquals(1392, withTimeout(5_000) { controller.pulseRelease.first { it != null } })
+        controller.pillPulsed(1392)
+        withTimeout(5_000) { controller.pulseRelease.first { it == null } }
+        assertEquals(1392, store.read().pulsedVersionCode)
+
+        // Next start, same release: no pulse; a newer release: a pulse again.
+        assertNull(controller().apply { settled { it.available != null } }.pulseRelease.value)
+        answer(200, releaseJson(code = 1393))
+        val next = controller()
+        next.awaitCheck()
+        assertEquals(1393, withTimeout(5_000) { next.pulseRelease.first { it != null } })
+
+        // Check automatically off hides the pill: no pulse either.
+        next.setAutoCheck(false)
+        withTimeout(5_000) { next.pulseRelease.first { it == null } }
     }
 
     @Test
@@ -428,5 +455,94 @@ class UpdateControllerTest {
         File(updatesDir, "update-1392-armeabi-v7a.apk").writeText("left by a past run")
         controller()
         withTimeout(5_000) { while (updatesDir.list().orEmpty().isNotEmpty()) delay(10) }
+    }
+
+    // --- Spec 80 D6 / D14: a download that verifies off the panel waits as Ready ---
+
+    @Test
+    fun `a file that verifies with the panel off screen waits as Ready, Install now hands it over`() = runBlocking<Unit> {
+        downloadable()
+        serveApk()
+        val controller = controller(panelShown = false)
+        controller.downloadAndInstall()!!.join()
+        controller.downloadState { it == DownloadState.Ready }
+        assertTrue(installed.isEmpty())
+        assertEquals(listOf("update-1392-armeabi-v7a.apk"), updatesDir.list().orEmpty().toList())
+
+        controller.installReady()!!.join()
+        assertArrayEquals(apk, installed.single().readBytes())
+        controller.downloadState { it == DownloadState.Idle }
+        assertNull(controller.installReady())
+    }
+
+    @Test
+    fun `a press while Ready installs the waiting file, no second download`() = runBlocking<Unit> {
+        downloadable()
+        serveApk()
+        val controller = controller(panelShown = false)
+        controller.downloadAndInstall()!!.join()
+        controller.downloadState { it == DownloadState.Ready }
+        controller.downloadAndInstall()!!.join()
+        assertEquals(1, installed.size)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `cancel or Not now on Ready deletes the waiting file`() = runBlocking<Unit> {
+        downloadable()
+        serveApk()
+        val controller = controller(panelShown = false)
+        controller.downloadAndInstall()!!.join()
+        controller.downloadState { it == DownloadState.Ready }
+        controller.cancelDownload()
+        controller.downloadState { it == DownloadState.Idle }
+        assertEquals(emptyList<String>(), updatesDir.list().orEmpty().toList())
+        assertNull(controller.installReady())
+        assertTrue(installed.isEmpty())
+    }
+
+    @Test
+    fun `Install now with no installer answering fails`() = runBlocking<Unit> {
+        install = { file -> installed += file; false }
+        downloadable()
+        serveApk()
+        val controller = controller(panelShown = false)
+        controller.downloadAndInstall()!!.join()
+        controller.downloadState { it == DownloadState.Ready }
+        controller.installReady()!!.join()
+        controller.downloadState { it == DownloadState.Failed }
+    }
+
+    @Test
+    fun `the panel coming back before the file verifies hands it over at once`() = runBlocking<Unit> {
+        downloadable()
+        server.enqueue(MockResponse().setBody(Buffer().write(apk)).throttleBody(16_384, 100, TimeUnit.MILLISECONDS))
+        val controller = controller(panelShown = false)
+        val job = controller.downloadAndInstall()!!
+        controller.downloadState { ((it as? DownloadState.Running)?.bytes ?: 0L) > 0L }
+        controller.setPanelShown(true)
+        job.join()
+        assertEquals(1, installed.size)
+        controller.downloadState { it == DownloadState.Idle }
+    }
+
+    @Test
+    fun `the offer carries the release video and poster for the changelog page`() = runBlocking<Unit> {
+        answer(
+            200,
+            """{"name":"Nuvio KE","body":"## What's new\n- A\n## Fixes\n- B","published_at":"2026-11-03T10:00:00Z",
+             "assets":[{"name":"NuvioKE-1.0.0-1392-armeabi-v7a.apk","state":"uploaded","size":41000000,
+               "digest":"sha256:${"ab".repeat(32)}","browser_download_url":"https://github.com/x/a.apk"},
+              {"name":"whats-new.mp4","state":"uploaded","size":3000,"content_type":"video/mp4","browser_download_url":"https://github.com/x/v.mp4"},
+              {"name":"poster.jpg","state":"uploaded","size":300,"content_type":"image/jpeg","browser_download_url":"https://github.com/x/p.jpg"}]}"""
+        )
+        val controller = controller()
+        controller.awaitCheck()
+        val page = controller.settled { it.available != null }.available!!.toChangelogRelease()
+        assertEquals("1.0.0", page.versionName)
+        assertEquals(1392, page.versionCode)
+        assertEquals("- A", page.whatsNew)
+        assertEquals("## Fixes\n- B", page.notes)
+        assertEquals(ReleaseVideo("https://github.com/x/v.mp4", 3000L, "https://github.com/x/p.jpg"), page.video)
     }
 }

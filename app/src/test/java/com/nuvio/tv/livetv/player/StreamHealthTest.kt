@@ -38,6 +38,8 @@ class StreamHealthTest {
         assertEquals(StreamState.DISPUTED, StreamHealth.state(failedAfterPlay(FailureKind.DEAD)))
         assertEquals(StreamState.DEAD, StreamHealth.state(failedAfterPlay(FailureKind.PARSE)))
         assertEquals(StreamState.DEAD, StreamHealth.state(failedNever(FailureKind.DRM)))
+        // Spec 74 S2b: a licence refused after a recent play is likely an expired token.
+        assertEquals(StreamState.DISPUTED, StreamHealth.state(failedAfterPlay(FailureKind.DRM)))
         assertEquals(StreamState.ALIVE, StreamHealth.state(StreamHealth.played(t0)))
         // A play older than a day no longer vouches for the stream.
         val stale = StreamHealthRecord(lastPlayedMs = t0 - 25 * hour, lastFailedMs = t0, lastFailure = FailureKind.DEAD, failures = 1)

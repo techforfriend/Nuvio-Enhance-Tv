@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +24,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -32,6 +36,12 @@ private const val FADE_OUT_MS = 200
 private const val COMPLETE_AT = 0.999f
 private const val COMPLETE_MS = 160
 
+// Spec 75 failover notice (sandbox `spec-75-failure-reasons` `.hand .fo`): a 15 dp icon 8 dp from
+// its text, the status line 2 dp under it.
+private val NOTICE_ICON_SIZE = 15.dp
+private val NOTICE_ICON_GAP = 8.dp
+private val NOTICE_STATUS_TOP = 2.dp
+
 /**
  * Loading hand-off (approved sandbox `u6-player-panels-marquee` stages 12-14, "B Hand-off"): the
  * Stream screen's backdrop, scrims and title block, the plot replaced by [MarqueeHandOffStatus].
@@ -39,7 +49,8 @@ private const val COMPLETE_MS = 160
  * Stream screen's direct auto-play draws the same block over its own backdrop at the same anchor.
  * [eyebrowStatus] ends the eyebrow ("Starting"); [reserveStatusLines] keeps the block still while
  * progress and the filename arrive (see [MarqueeHandOffStatus]). [headline] and [progressLabel] are
- * the Spec 33 network test hold's (sandbox `u33-welcome-setup` stage t-hold).
+ * the Spec 33 network test hold's (sandbox `u33-welcome-setup` stage t-hold); [notice] and [footer]
+ * the Spec 75 failover's (sandbox `spec-75-failure-reasons` stage 8).
  */
 @Composable
 internal fun MarqueeLoadingScreen(
@@ -65,7 +76,9 @@ internal fun MarqueeLoadingScreen(
     sourceLine: String? = null,
     filename: String? = null,
     progress: Float? = null,
-    reserveStatusLines: Boolean = false
+    reserveStatusLines: Boolean = false,
+    notice: String? = null,
+    footer: (@Composable () -> Unit)? = null
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -109,7 +122,9 @@ internal fun MarqueeLoadingScreen(
                     message = message,
                     sourceLine = sourceLine,
                     filename = filename,
-                    reserveLines = reserveStatusLines
+                    reserveLines = reserveStatusLines,
+                    notice = notice,
+                    footer = footer
                 )
             }
         }
@@ -122,6 +137,8 @@ internal fun MarqueeLoadingScreen(
  * percentage, or a spinner before any progress; the [message]; the [sourceLine] after a dot,
  * capped at `handOffSourceMaxWidth`), then the [filename]. Addon text ellipsizes. The block is bottom-anchored, so a line that appears pushes
  * the title up: [reserveLines] lays out the bar and the filename line while they are still empty.
+ * [notice] is an amber line behind a warning icon between the bar and the status line (Spec 75: a
+ * failover's reason); [footer] follows the filename (the failed source's step line).
  */
 @Composable
 internal fun ColumnScope.MarqueeHandOffStatus(
@@ -132,7 +149,9 @@ internal fun ColumnScope.MarqueeHandOffStatus(
     message: String? = null,
     sourceLine: String? = null,
     filename: String? = null,
-    reserveLines: Boolean = false
+    reserveLines: Boolean = false,
+    notice: String? = null,
+    footer: (@Composable () -> Unit)? = null
 ) {
     val marquee = NuvioTheme.marquee
     val tokens = marquee.playerPanel
@@ -148,8 +167,29 @@ internal fun ColumnScope.MarqueeHandOffStatus(
     if (progress != null || reserveLines) {
         HandOffBar(progress = progress, accent = accent, modifier = Modifier.padding(top = tokens.handOffBarTop))
     }
+    if (!notice.isNullOrBlank()) {
+        Row(
+            modifier = Modifier.padding(top = tokens.handOffStatusTop),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(NOTICE_ICON_GAP)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                tint = NuvioPrimitives.warning,
+                modifier = Modifier.size(NOTICE_ICON_SIZE)
+            )
+            Text(
+                text = notice,
+                style = NuvioTheme.textStyles.meta,
+                color = NuvioPrimitives.warning,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
     Row(
-        modifier = Modifier.padding(top = tokens.handOffStatusTop),
+        modifier = Modifier.padding(top = if (notice.isNullOrBlank()) tokens.handOffStatusTop else NOTICE_STATUS_TOP),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(tokens.handOffStatusGap)
     ) {
@@ -185,6 +225,7 @@ internal fun ColumnScope.MarqueeHandOffStatus(
             overflow = TextOverflow.Ellipsis
         )
     }
+    footer?.invoke()
 }
 
 @Composable

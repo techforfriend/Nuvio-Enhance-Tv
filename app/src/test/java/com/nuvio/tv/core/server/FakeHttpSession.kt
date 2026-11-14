@@ -44,7 +44,7 @@ internal class FakePostSession(
 }
 
 internal class FakeGetSession(
-    private val uri: String = "/api/settings",
+    private val uri: String,
     private val host: String? = FAKE_HOST
 ) : NanoHTTPD.IHTTPSession {
     override fun execute() = Unit
@@ -108,6 +108,17 @@ internal class FakeUploadSession(
     override fun parseBody(files: MutableMap<String, String>) = error("parseBody should not be used")
     override fun getRemoteIpAddress(): String = "127.0.0.1"
     override fun getRemoteHostName(): String = "localhost"
+}
+
+/**
+ * Spec 68 X3: a token page must call its routes relative to its own path; an absolute same-origin
+ * fetch / src / href ('/api/...', src="/logo.png") would miss the token and 404.
+ */
+internal fun assertNoAbsoluteSameOriginPath(html: String) {
+    val absolute = Regex("""(fetch\(|fetchWithTimeout\(|src=|href=)\s*['"]/(?!/)""").findAll(html)
+        .map { it.value }
+        .toList()
+    org.junit.Assert.assertTrue("absolute paths: $absolute", absolute.isEmpty())
 }
 
 /** Reads a NanoHTTPD response body as UTF-8 text. */

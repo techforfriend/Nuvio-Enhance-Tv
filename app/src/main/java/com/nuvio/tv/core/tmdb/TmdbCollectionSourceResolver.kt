@@ -3,6 +3,7 @@ package com.nuvio.tv.core.tmdb
 import android.content.Context
 import com.nuvio.tv.R
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.profile.ActiveRatingCap
 import com.nuvio.tv.data.local.TmdbSettingsDataStore
 import com.nuvio.tv.data.remote.api.TmdbApi
 import com.nuvio.tv.data.remote.api.TmdbCollectionSearchResult
@@ -41,7 +42,8 @@ class TmdbCollectionSourceResolver @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val tmdbApi: TmdbApi,
     private val tmdbSettingsDataStore: TmdbSettingsDataStore,
-    private val apiKeys: TmdbApiKeySource
+    private val apiKeys: TmdbApiKeySource,
+    private val activeRatingCap: ActiveRatingCap
 ) {
     private fun string(resId: Int): String = appContext.getString(resId)
 
@@ -56,6 +58,12 @@ class TmdbCollectionSourceResolver @Inject constructor(
 
     fun resolve(source: TmdbCollectionSource, page: Int = 1): Flow<NetworkResult<CatalogRow>> = flow {
         emit(NetworkResult.Loading)
+        // Spec 64 D1/D5: TMDB titles carry no US rating here, so a capped profile gets an
+        // empty last page and no TMDB request.
+        if (activeRatingCap.current() != null) {
+            emit(NetworkResult.Success(row(source, page, hasMore = false, items = emptyList())))
+            return@flow
+        }
         val row = try {
             withContext(Dispatchers.IO) {
                 val language = tmdbSettingsDataStore.settings.first().language

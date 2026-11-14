@@ -1,19 +1,14 @@
 package com.nuvio.tv.data.local
 
-import androidx.datastore.preferences.core.Preferences
 import com.nuvio.tv.core.profile.ProfileManager
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -21,23 +16,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class SearchHistoryDataStoreTest {
 
-    /**
-     * Suspends before each read and each write, so saves and profile switches can interleave the
-     * way they do on the device.
-     */
-    private class YieldingDataStore : TestPreferencesDataStore() {
-        override val data: Flow<Preferences> = flow {
-            yield()
-            emitAll(super.data)
-        }
-
-        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
-            yield()
-            return super.updateData(transform)
-        }
-    }
-
-    private val profiles = mapOf(1 to YieldingDataStore(), 2 to YieldingDataStore())
+    private val profiles = mapOf(1 to YieldingPreferencesDataStore(), 2 to YieldingPreferencesDataStore())
     private val activeProfileIdFlow = MutableStateFlow(1)
     private val store = SearchHistoryDataStore(
         factory = mockk<ProfileDataStoreFactory> {

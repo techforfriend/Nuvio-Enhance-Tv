@@ -22,6 +22,10 @@ private val PLUGIN_CODE_DIR_REGEX = Regex("""^plugin_code(_p\d+)?$""")
 private val PLUGIN_SETTINGS_STORE_REGEX = Regex("""^plugin_settings(_p\d+)?\.preferences_pb(\.bak)?$""")
 private const val CS3_PLUGIN_PREFS_FILE = "cs3_plugin_preferences.xml"
 
+// Spec 68 X7: the @Api client's cache from the trust-all era (entries fetched unvalidated); the
+// client now caches under ADDON_HTTP_CACHE_DIR. Exact name: http_cache_validated must survive.
+private const val PRE_X7_HTTP_CACHE_DIR = "http_cache"
+
 // Stale secrets of cut services, removed key-by-key; the stores themselves stay
 // (they are profile-settings blob passthroughs). Every key here must be excluded by
 // ProfileSettingsSyncService.shouldExcludePreferenceFromProfileSettingsSync so the
@@ -89,6 +93,13 @@ internal fun deleteLegacyFeatureFiles(filesDir: File, dataStoreDir: File, shared
         dataStoreDir.listFiles()?.filterTo(this) { PLUGIN_SETTINGS_STORE_REGEX.matches(it.name) }
         add(File(sharedPrefsDir, CS3_PLUGIN_PREFS_FILE))
     }
+    return deleteAll(targets)
+}
+
+/** Deletes the pre-X7 `@Api` HTTP cache (exact name) and returns the bytes freed; 0 once it is gone. */
+internal fun deletePreX7HttpCache(cacheDir: File): Long = deleteAll(listOf(File(cacheDir, PRE_X7_HTTP_CACHE_DIR)))
+
+private fun deleteAll(targets: List<File>): Long {
     var freed = 0L
     for (target in targets) {
         if (!target.exists()) continue
@@ -110,7 +121,8 @@ internal fun deleteLegacyFeatureFiles(filesDir: File, dataStoreDir: File, shared
 
 /**
  * X15: removes leftovers of cut features (plugin runtime files, stale debrid/MDBList API
- * keys). Run once per process, delayed and on IO, from NuvioApplication.
+ * keys) and the pre-X7 `@Api` HTTP cache (Spec 68). Run once per process, delayed and on IO,
+ * from NuvioApplication.
  */
 @Singleton
 class LegacyFeatureDataCleanup @Inject constructor(
@@ -126,8 +138,12 @@ class LegacyFeatureDataCleanup @Inject constructor(
                 dataStoreDir = dataStoreDir,
                 sharedPrefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
             )
+            val httpCacheFreed = deletePreX7HttpCache(context.cacheDir)
             val keysRemoved = removeStaleSecrets(dataStoreDir)
-            Log.i(TAG, "Legacy feature cleanup: bytesFreed=$bytesFreed keysRemoved=$keysRemoved")
+            Log.i(
+                TAG,
+                "Legacy feature cleanup: bytesFreed=$bytesFreed httpCacheFreed=$httpCacheFreed keysRemoved=$keysRemoved"
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -233,7 +233,7 @@ class LayoutSettingsViewModel @Inject constructor(
             _streamBadgeUiState.update { it.copy(serverError = context.getString(R.string.error_server_ports_unavailable)) }
             return
         }
-        val url = "http://$ip:${server.listeningPort}"
+        val url = server.url(ip)
         _streamBadgeUiState.update {
             it.copy(
                 isQrModeActive = true,

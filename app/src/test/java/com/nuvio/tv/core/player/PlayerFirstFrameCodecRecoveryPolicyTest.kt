@@ -6,7 +6,8 @@ import org.junit.Test
 
 /**
  * Spec 21 P1: pins [PlayerFirstFrameCodecRecoveryPolicy], the first-frame watchdog's codec rungs
- * (DV mode 2 -> mode 1, then VC-1 software, then VC-1 track-selection bypass).
+ * (DV mode 2 -> mode 1, then VC-1 software, then VC-1 track-selection bypass), then Spec 86 R1's
+ * black-picture rungs (same-stream rebuild once, then the next source).
  */
 class PlayerFirstFrameCodecRecoveryPolicyTest {
 
@@ -18,6 +19,10 @@ class PlayerFirstFrameCodecRecoveryPolicyTest {
         vc1Software: Boolean = false,
         trackSelected: Boolean = false,
         vc1Bypass: Boolean = false,
+        rebuilt: Boolean = false,
+        error: Boolean = false,
+        background: Boolean = false,
+        priming: Boolean = false,
     ) = PlayerFirstFrameCodecRecoveryPolicy.evaluateAfterWatchdogTimeout(
         PlayerFirstFrameCodecRecoveryPolicy.Input(
             playWhenReady = playWhenReady,
@@ -27,6 +32,10 @@ class PlayerFirstFrameCodecRecoveryPolicyTest {
             isVc1SoftwareFallbackActive = vc1Software,
             currentVideoTrackSelected = trackSelected,
             isVc1TrackSelectionBypassActive = vc1Bypass,
+            blackStartRebuildDone = rebuilt,
+            errorOnScreen = error,
+            inBackground = background,
+            primingFromZero = priming,
         )
     )
 
@@ -56,12 +65,38 @@ class PlayerFirstFrameCodecRecoveryPolicyTest {
 
     @Test
     fun `VC-1 rungs end when the track is selected or the bypass is spent`() {
-        assertEquals(RecoveryAction.None, evaluate(vc1 = true, vc1Software = true, trackSelected = true))
+        // A selected track then takes R1's rebuild, not another VC-1 rung.
+        assertEquals(RecoveryAction.RebuildSameStream, evaluate(vc1 = true, vc1Software = true, trackSelected = true))
         assertEquals(RecoveryAction.None, evaluate(vc1 = true, vc1Software = true, vc1Bypass = true))
     }
 
     @Test
     fun `VC-1 state without a VC-1 track is no action`() {
         assertEquals(RecoveryAction.None, evaluate(vc1Software = true))
+    }
+
+    @Test
+    fun `a selected track with no frame rebuilds once, then goes to the next source`() {
+        assertEquals(RecoveryAction.RebuildSameStream, evaluate(trackSelected = true))
+        assertEquals(RecoveryAction.NextSource, evaluate(trackSelected = true, rebuilt = true))
+        // The codec rungs still come first.
+        assertEquals(RecoveryAction.RetryDv7Mode1, evaluate(mode2 = true, trackSelected = true, rebuilt = true))
+        assertEquals(RecoveryAction.RetryVc1Software, evaluate(vc1 = true, trackSelected = true))
+    }
+
+    @Test
+    fun `the black-picture rungs skip an unselected track, an error on screen and the background`() {
+        assertEquals(RecoveryAction.None, evaluate(trackSelected = false, rebuilt = true))
+        assertEquals(RecoveryAction.None, evaluate(trackSelected = true, error = true))
+        assertEquals(RecoveryAction.None, evaluate(trackSelected = true, rebuilt = true, background = true))
+        assertEquals(RecoveryAction.None, evaluate(playWhenReady = false, trackSelected = true))
+    }
+
+    @Test
+    fun `a START_PRIME resume start keeps the startup watchdog's fallback (D5)`() {
+        assertEquals(RecoveryAction.None, evaluate(trackSelected = true, priming = true))
+        assertEquals(RecoveryAction.None, evaluate(trackSelected = true, rebuilt = true, priming = true))
+        // The codec rungs are unchanged by it.
+        assertEquals(RecoveryAction.RetryDv7Mode1, evaluate(mode2 = true, trackSelected = true, priming = true))
     }
 }

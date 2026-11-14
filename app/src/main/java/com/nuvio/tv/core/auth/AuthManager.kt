@@ -3,6 +3,7 @@ package com.nuvio.tv.core.auth
 import android.os.SystemClock
 import android.util.Log
 import com.nuvio.tv.core.logging.diagnosticSummary
+import com.nuvio.tv.core.util.StartupLatencyTrace
 import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
 import com.nuvio.tv.data.remote.supabase.TvLoginExchangeResult
 import com.nuvio.tv.data.remote.supabase.TvLoginPollResult
@@ -96,6 +97,9 @@ class AuthManager @Inject constructor(
             auth.sessionStatus.collect { status ->
                 when (status) {
                     is SessionStatus.Authenticated -> {
+                        // Spec 69 M1: restored session in hand; gate_auth_resolved follows the validation.
+                        // On a signed-out start this first fires at sign-in instead (large t).
+                        StartupLatencyTrace.markOnce("auth_session_restored")
                         val user = auth.currentUserOrNull()
                         val tokenPresent = auth.currentAccessTokenOrNull()?.isNotBlank() == true
                         Log.d(TAG, "SessionStatus.Authenticated userPresent=${user != null} emailPresent=${!user?.email.isNullOrBlank()} tokenPresent=$tokenPresent")

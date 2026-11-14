@@ -1,5 +1,7 @@
 package com.nuvio.tv.data.local
 
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.preferencesOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -45,5 +47,29 @@ class ProfileLockStateDataStoreTest {
         store.refreshPinEnabled { Result.failure(IllegalStateException("offline")) }
 
         assertEquals(mapOf(2 to true), store.pinEnabled.first())
+    }
+
+    @Test
+    fun `ask-for-PIN-again defaults to 15 min, round-trips, and sign-out resets it`() = runTest {
+        val store = ProfileLockStateDataStore(TestPreferencesDataStore())
+        assertEquals(15, store.relockAfterMinutes.first())
+
+        store.setRelockAfterMinutes(45)
+        assertEquals(45, store.relockAfterMinutes.first())
+        store.setRelockAfterMinutes(0)
+        assertEquals(0, store.relockAfterMinutes.first())
+
+        store.clearAll()
+        assertEquals(15, store.relockAfterMinutes.first())
+    }
+
+    @Test
+    fun `a stored ask-for-PIN-again value the picker does not offer reads as 15 min`() = runTest {
+        listOf(7, -1).forEach { junk ->
+            val store = ProfileLockStateDataStore(
+                TestPreferencesDataStore(preferencesOf(intPreferencesKey("relock_after_minutes") to junk))
+            )
+            assertEquals("$junk", 15, store.relockAfterMinutes.first())
+        }
     }
 }

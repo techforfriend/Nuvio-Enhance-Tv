@@ -95,7 +95,7 @@ class SourcePanelInitialFocusTest {
 
     @Test
     fun `a pending rescue yields to the user's own move`() {
-        // Left/Right on the chips changed the selection meanwhile.
+        // A pick in a sheet changed the selection meanwhile.
         assertNull(
             rowFocusAfterRederive(null, StreamListSelection.All, StreamListSelection.Hidden, listOf("h0"), rescuePending = true)
         )

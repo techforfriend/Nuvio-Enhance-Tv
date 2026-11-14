@@ -6,47 +6,64 @@ import android.text.format.DateFormat
 import android.text.format.Formatter
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.R
 import com.nuvio.tv.core.update.UpdateState
+import com.nuvio.tv.core.update.toChangelogRelease
 import com.nuvio.tv.core.update.noticeShown
 import com.nuvio.tv.ui.components.BrandWordmark
 import com.nuvio.tv.ui.components.marquee.MarqueeFormRow
 import com.nuvio.tv.ui.components.marquee.MarqueeFormRowIcon
 import com.nuvio.tv.ui.components.marquee.MarqueeFormRowValue
+import com.nuvio.tv.ui.components.marquee.formRowSurface
 import com.nuvio.tv.ui.screens.detail.formatDayMonth
+import com.nuvio.tv.ui.screens.tip.TipEntryDialog
+import com.nuvio.tv.ui.screens.tip.TipEntryState
+import com.nuvio.tv.ui.screens.tip.TipViewModel
 import com.nuvio.tv.ui.theme.NuvioPrimitives
+import com.nuvio.tv.ui.util.requestFocusAfterFrames
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -68,23 +85,38 @@ internal const val ABOUT_UPDATE_ROW_KEY = "about_update"
  * turns into Update available while a newer release is known (OK opens [UpdateSidePanel]), and
  * Check automatically. [initialFocusRequester] goes on the first row; [openUpdatePanel]
  * (Settings' deep entry [SettingsEntry.UPDATE], once that row has focus) opens the panel, and
- * [onUpdatePanelOpened] clears it. Home (ON_STOP) or leaving the pane closes the panel, which
- * stops a download. A build without the check has nothing focusable here.
+ * [onUpdatePanelOpened] clears it. Home (ON_STOP, SettingsScreen) closes the panel, which stops
+ * a download; the panel's changelog row opens the update's page (Spec 80 B1) and the panel shows
+ * again on Back. Spec 80: a Changelog row ends Updates (alone under it in a build without the
+ * check, D13); OK swaps the pane to the changelog list ([ChangelogList]), Back returns to the row.
+ * Spec 81 T3 (sandbox spec-81-donate v3, stage a-about): a Support section ends the pane, one Tip
+ * the developer row that opens the tip card, while a tip link is set (D4; a locked profile never
+ * reaches Settings).
  */
 @Composable
 fun AboutSettingsContent(
     initialFocusRequester: FocusRequester? = null,
     openUpdatePanel: Boolean = false,
     onUpdatePanelOpened: () -> Unit = {},
-    viewModel: UpdateViewModel = hiltViewModel()
+    viewModel: UpdateViewModel = hiltViewModel(),
+    changelog: ChangelogViewModel = hiltViewModel(),
+    tipViewModel: TipViewModel = hiltViewModel()
 ) {
+    val tipLink = tipViewModel.link.collectAsStateWithLifecycle().value
+    val tip = remember { TipEntryState() }
     val update = viewModel.state.collectAsStateWithLifecycle().value
     val panelRelease = viewModel.panelRelease.collectAsStateWithLifecycle().value
-
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.closePanel() }
-    DisposableEffect(viewModel) {
-        onDispose { viewModel.closePanel() }
+    val changelogOpen = changelog.listOpen.collectAsStateWithLifecycle().value
+    val changelogList = changelog.list.collectAsStateWithLifecycle().value
+    val changelogRow = rememberSettingsReturnTarget(ABOUT_CHANGELOG_ROW_KEY)
+    var backToChangelogRow by remember { mutableStateOf(false) }
+    LaunchedEffect(changelogOpen) {
+        if (!changelogOpen && backToChangelogRow) {
+            backToChangelogRow = false
+            changelogRow.requester.requestFocusAfterFrames()
+        }
     }
+
     LaunchedEffect(openUpdatePanel) {
         if (openUpdatePanel) {
             viewModel.openPanel()
@@ -92,7 +124,19 @@ fun AboutSettingsContent(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    if (changelogOpen) {
+        ChangelogList(
+            state = changelogList,
+            focusOn = changelog.lastOpened,
+            initialFocusRequester = initialFocusRequester,
+            onRetry = changelog::retry,
+            onOpenRelease = changelog::openPage,
+            onBack = {
+                backToChangelogRow = true
+                changelog.closeList()
+            }
+        )
+    } else Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SettingsPaneHeader(
                 title = stringResource(R.string.about_title),
@@ -110,19 +154,90 @@ fun AboutSettingsContent(
                 initialFocusRequester = initialFocusRequester,
                 onCheck = viewModel::checkNow,
                 onOpenPanel = viewModel::openPanel,
-                onAutoCheckChange = viewModel::setAutoCheck
+                onAutoCheckChange = viewModel::setAutoCheck,
+                changelogRow = changelogRow,
+                onOpenChangelog = changelog::openList
             )
+        } else {
+            // Spec 80 D13: a build without the update check still has the changelog, alone under Updates.
+            Spacer(modifier = Modifier.height(4.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.marquee.settings.rowGap)) {
+                SettingsSectionLabel(text = stringResource(R.string.update_section))
+                AboutChangelogRow(
+                    onOpen = changelog::openList,
+                    modifier = Modifier
+                        .optionalFocusRequester(changelogRow.requester)
+                        .optionalFocusRequester(initialFocusRequester)
+                )
+            }
+        }
+        if (tipLink != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.marquee.settings.rowGap)) {
+                SettingsSectionLabel(text = stringResource(R.string.tip_section))
+                AboutTipRow(onOpen = { tip.open(tipLink) }, modifier = Modifier.focusRequester(tip.focus))
+            }
         }
     }
+    // The Changelog row, just above Support, is in every build's pane.
+    TipEntryDialog(tip, fallback = changelogRow.requester)
 
     if (panelRelease != null) {
         UpdateSidePanel(
             release = panelRelease,
             download = update.download,
             onDownload = viewModel::download,
+            onInstallReady = viewModel::installReady,
+            onShown = viewModel::setPanelShown,
+            onOpenChangelog = { changelog.openPage(panelRelease.toChangelogRelease(), forUpdate = true) },
             onCancel = viewModel::cancelDownload,
             onDismiss = viewModel::closePanel
         )
+    }
+}
+
+/**
+ * `.l8r` + `.s81lead`: the heart before Tip the developer and its line (both, so not
+ * [MarqueeFormRow]'s in-label icon), the chevron at the end; lit like any form row.
+ */
+@Composable
+private fun AboutTipRow(onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    val marquee = NuvioTheme.marquee
+    val row = marquee.formRow
+    val tip = marquee.tip
+    var lit by remember { mutableStateOf(false) }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = marquee.settings.rowMinHeight)
+            .onFocusChanged { lit = it.hasFocus }
+            .formRowSurface(lit)
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onOpen)
+            .padding(horizontal = row.paddingHorizontal, vertical = row.paddingVertical),
+        horizontalArrangement = Arrangement.spacedBy(row.innerGap),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Favorite,
+            contentDescription = null,
+            tint = if (lit) tip.heartOnFocus else tip.heart,
+            modifier = Modifier.padding(end = tip.rowHeartEnd).size(tip.rowHeart)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.tip_row_title),
+                style = NuvioTheme.textStyles.button,
+                color = NuvioPrimitives.white,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = stringResource(R.string.tip_row_subtitle),
+                style = NuvioTheme.textStyles.panelHelper,
+                color = marquee.onImage3
+            )
+        }
+        MarqueeFormRowIcon(Icons.AutoMirrored.Filled.KeyboardArrowRight)
     }
 }
 
@@ -199,7 +314,9 @@ private fun AboutUpdates(
     initialFocusRequester: FocusRequester?,
     onCheck: () -> Unit,
     onOpenPanel: () -> Unit,
-    onAutoCheckChange: (Boolean) -> Unit
+    onAutoCheckChange: (Boolean) -> Unit,
+    changelogRow: SettingsReturnRow,
+    onOpenChangelog: () -> Unit
 ) {
     val tokens = NuvioTheme.marquee.settings
     val available = state.available
@@ -245,6 +362,7 @@ private fun AboutUpdates(
             checked = state.autoCheck,
             onCheckedChange = onAutoCheckChange
         )
+        AboutChangelogRow(onOpen = onOpenChangelog, modifier = Modifier.optionalFocusRequester(changelogRow.requester))
     }
 }
 
@@ -313,9 +431,9 @@ private fun checkedWhen(epochMs: Long): String {
     }
 }
 
-/** `.s52new`: NEW in black on amber, 8 dp after the label. */
+/** `.s52new`: NEW in black on amber, 8 dp after the label (also the changelog's rows). */
 @Composable
-private fun UpdateNewBadge() {
+internal fun UpdateNewBadge() {
     Text(
         text = stringResource(R.string.update_new_badge),
         style = NuvioTheme.textStyles.techBadge.copy(lineHeight = 14.sp, letterSpacing = 1.sp),

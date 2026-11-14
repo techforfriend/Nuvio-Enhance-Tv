@@ -3,13 +3,21 @@ package com.nuvio.tv.livetv.model
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
-/** One way to play a channel (Spec 34 D6). The origin is the owning [Channel.sourceId]. */
+/**
+ * One way to play a channel (Spec 34 D6). The origin is the owning [Channel.sourceId]. The maps
+ * hold the playlist's own data (Spec 74 D1) and are null when empty, so a plain list's cache gains
+ * no bytes; their values can hold licence keys and credentials: never log them (KT-SEC-02).
+ */
 @Serializable
 data class LiveStream(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
-    /** DRM channels are out of v1 scope; kept so the UI can say why a stream is skipped. */
-    val drm: Boolean = false
+    /** Needs a DRM licence (`M3uEntry.drm`); the player asks for it from [kodiProps] (Spec 74 S2b). */
+    val drm: Boolean = false,
+    /** Every `#KODIPROP` of the playlist item (`M3uEntry.kodiProps`): licence details for Spec 74 S2. */
+    val kodiProps: Map<String, String>? = null,
+    /** The item's other directives as written (`M3uEntry.tags`). */
+    val tags: Map<String, String>? = null
 )
 
 /**
@@ -43,6 +51,11 @@ data class Channel(
     val streams: List<LiveStream>,
     /** When the source's refresh stopped listing it: hidden as "Source lost", pruned later. */
     val lostAtMs: Long? = null,
+    /**
+     * The first item's other `#EXTINF` attributes as written (`M3uEntry.attrs`: catchup-*, tvg-shift,
+     * ...); null when none. Later feeds' differing values are not kept, like their names and logos.
+     */
+    val attrs: Map<String, String>? = null,
     // Filled in memory from iptv-org metadata (`ChannelEnricher`), never by a source or the cache.
     /** iptv-org category ids (`sports`, `news`, ...). */
     @Transient val categories: List<String> = emptyList(),

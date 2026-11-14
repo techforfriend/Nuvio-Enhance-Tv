@@ -48,6 +48,47 @@ class PlayerStartupWatchdogPolicyTest {
         )
     }
 
+    @Test
+    fun arrivingDataExtendsAFlatBufferUnderTheCeilingOnly() {
+        // Spec 86 D3: nothing buffered yet, but bytes still arrive.
+        assertTrue(
+            PlayerStartupWatchdogPolicy.shouldExtend(
+                elapsedMs = interval,
+                bufferedAheadMs = 0L,
+                lastBufferedAheadMs = 0L,
+                dataArriving = true,
+            )
+        )
+        assertFalse(
+            PlayerStartupWatchdogPolicy.shouldExtend(
+                elapsedMs = ceiling,
+                bufferedAheadMs = 0L,
+                lastBufferedAheadMs = 0L,
+                dataArriving = true,
+            )
+        )
+    }
+
+    // --- waitsForData: Spec 86 D3, only a start whose video is selected ---
+
+    private fun input(
+        tracks: Boolean = true,
+        hasVideo: Boolean = true,
+        videoSelected: Boolean = true,
+        bytesGrew: Boolean? = true,
+    ) = PlayerStartupWatchdogPolicy.FireInput(tracks, hasVideo, videoSelected, bytesGrew)
+
+    @Test
+    fun waitsForDataOnlyWithVideoSelectedAndBytesArriving() {
+        assertTrue(PlayerStartupWatchdogPolicy.waitsForData(input()))
+        assertFalse(PlayerStartupWatchdogPolicy.waitsForData(input(bytesGrew = false)))
+        assertFalse(PlayerStartupWatchdogPolicy.waitsForData(input(bytesGrew = null)))
+        // Unread tracks, a refused or missing video track: no frame can come, so the fire stays at 20 s.
+        assertFalse(PlayerStartupWatchdogPolicy.waitsForData(input(tracks = false)))
+        assertFalse(PlayerStartupWatchdogPolicy.waitsForData(input(videoSelected = false)))
+        assertFalse(PlayerStartupWatchdogPolicy.waitsForData(input(hasVideo = false, videoSelected = false)))
+    }
+
     // --- shouldExtend: ceiling arithmetic (checks land at ~20/~40/~60 s) ---
 
     @Test
@@ -140,6 +181,7 @@ class PlayerStartupWatchdogPolicyTest {
 
     @Test
     fun videoSelectedWithoutFrameIsTheGenuineDecoderWedge() {
+        // Unknown byte flow (mpv's input) keeps today's decoder reason.
         assertEquals(
             PlayerStartupWatchdogPolicy.FireReason.DecoderUnresponsive,
             PlayerStartupWatchdogPolicy.fireReason(
@@ -149,6 +191,45 @@ class PlayerStartupWatchdogPolicyTest {
                     videoTrackSelected = true,
                 )
             ),
+        )
+        // No bytes arriving: the Codec2 wedge blocks the playback thread, so loading stops.
+        assertEquals(
+            PlayerStartupWatchdogPolicy.FireReason.DecoderUnresponsive,
+            PlayerStartupWatchdogPolicy.fireReason(input(bytesGrew = false)),
+        )
+    }
+
+    @Test
+    fun videoSelectedWithBytesStillArrivingIsADataReason() {
+        // Spec 86 R9/D3 (Shield window 2026-11-12): 36 of 38 Mbit/s arriving read as a stuck decoder.
+        assertEquals(PlayerStartupWatchdogPolicy.FireReason.DataStillArriving, PlayerStartupWatchdogPolicy.fireReason(input()))
+        // The track checks still come first.
+        assertEquals(
+            PlayerStartupWatchdogPolicy.FireReason.TracksNotRead,
+            PlayerStartupWatchdogPolicy.fireReason(input(tracks = false)),
+        )
+        assertEquals(
+            PlayerStartupWatchdogPolicy.FireReason.VideoTrackUnsupported,
+            PlayerStartupWatchdogPolicy.fireReason(input(videoSelected = false)),
+        )
+        assertEquals(
+            PlayerStartupWatchdogPolicy.FireReason.NoVideoTrack,
+            PlayerStartupWatchdogPolicy.fireReason(input(hasVideo = false, videoSelected = false)),
+        )
+    }
+
+    // --- failsOver: Spec 86 R4/D3 ---
+
+    @Test
+    fun sourceFacingFiresFailOverRefusedFormatAndStuckDecoderStayOnTheBox() {
+        val failing = PlayerStartupWatchdogPolicy.FireReason.entries.filter(PlayerStartupWatchdogPolicy::failsOver)
+        assertEquals(
+            listOf(
+                PlayerStartupWatchdogPolicy.FireReason.TracksNotRead,
+                PlayerStartupWatchdogPolicy.FireReason.NoVideoTrack,
+                PlayerStartupWatchdogPolicy.FireReason.DataStillArriving,
+            ),
+            failing,
         )
     }
 
@@ -169,6 +250,10 @@ class PlayerStartupWatchdogPolicyTest {
             PlayerStartupWatchdogPolicy.messageRes(PlayerStartupWatchdogPolicy.FireReason.NoVideoTrack),
         )
         assertEquals(
+            R.string.player_error_startup_no_stream_data,
+            PlayerStartupWatchdogPolicy.messageRes(PlayerStartupWatchdogPolicy.FireReason.DataStillArriving),
+        )
+        assertEquals(
             R.string.player_error_startup_timeout,
             PlayerStartupWatchdogPolicy.messageRes(PlayerStartupWatchdogPolicy.FireReason.DecoderUnresponsive),
         )
@@ -184,7 +269,7 @@ class PlayerStartupWatchdogPolicyTest {
         hasRenderedFirstFrame = hasRenderedFirstFrame,
         samePlayer = samePlayer,
         currentError = currentError,
-        fireMessage = "fire",
+        fire = "fire",
     )
 
     @Test

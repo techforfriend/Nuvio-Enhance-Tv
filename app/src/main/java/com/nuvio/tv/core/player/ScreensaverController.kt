@@ -36,6 +36,8 @@ class ScreensaverController @Inject constructor(
     val overlayVisible: StateFlow<Boolean> = _overlayVisible.asStateFlow()
 
     private val _playbackActive = MutableStateFlow(false)
+    /** Spec 62 H3: playback (the player and Live TV feed it) also holds off the return to Who's watching. */
+    val playbackActive: StateFlow<Boolean> = _playbackActive.asStateFlow()
 
     @Volatile
     private var lastInteractionMs: Long = SystemClock.elapsedRealtime()

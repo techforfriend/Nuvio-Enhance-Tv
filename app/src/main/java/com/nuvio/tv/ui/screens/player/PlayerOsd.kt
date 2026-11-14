@@ -185,7 +185,9 @@ internal fun PlayerOsd(
             enter = slideInVertically(tween(OSD_FADE_MS)) { risePx },
             exit = slideOutVertically(tween(OSD_FADE_MS)) { risePx }
         )
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Spec 62 H2d: the whole OSD (scrims, top band, seek bar, transport, More tray) dims as one.
+        val osdDim = rememberPlayerControlsDim(uiState.playerControlsBrightness)
+        Box(modifier = Modifier.fillMaxSize().then(osdDim)) {
             OsdScrims()
             OsdTopBand(
                 uiState = uiState,

@@ -53,6 +53,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -73,23 +74,27 @@ import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
 import kotlinx.coroutines.delay
 
+/** [CompactPanel]'s default fill. */
+internal val COMPACT_PANEL_FILL = Color.Black.copy(alpha = 0.85f)
+
 /**
  * Compact panel shell (approved F3 panel A; Audio, Subtitles and Speed through PlayerCompactPanel, the
  * subtitle delay strip and the Sync line directly; the other player panels still inline the same values
  * until their U6 slice): black .85,
- * radius 20, [contentPadding] 16 / 14 by default. Content is usually a [PanelEyebrow] over [PlayerPanelRow]s;
+ * radius 20 ([color] overrides the fill), [contentPadding] 16 / 14 by default. Content is usually a [PanelEyebrow] over [PlayerPanelRow]s;
  * it is clipped to the panel's shape (a list may run to the panel edge).
  */
 @Composable
 internal fun CompactPanel(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+    color: Color = COMPACT_PANEL_FILL,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(Color.Black.copy(alpha = 0.85f))
+            .background(color)
             .padding(contentPadding),
         content = content
     )
@@ -118,11 +123,22 @@ internal fun PanelRule() {
 /** A compact panel's eyebrow text (uppercase, +2.2 tracking, white .55), without [PanelEyebrow]'s rule. */
 @Composable
 internal fun PanelEyebrowText(text: String, modifier: Modifier = Modifier) {
+    PanelEyebrowText(text = AnnotatedString(text.uppercase()), modifier = modifier)
+}
+
+/**
+ * [PanelEyebrowText] for text with coloured parts (the Sources panel's filter name). [text] is
+ * drawn as given: the caller uppercases its parts. Longer than [maxLines], it ends in an ellipsis.
+ */
+@Composable
+internal fun PanelEyebrowText(text: AnnotatedString, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) {
     Text(
-        text = text.uppercase(),
+        text = text,
         style = MaterialTheme.typography.labelMedium,
         letterSpacing = 2.2.sp,
         color = Color.White.copy(alpha = 0.55f),
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier
     )
 }
@@ -197,13 +213,16 @@ internal fun PanelActionRow(
  * or right after the title with [titleEndInline] (the Discover catalog picker's addon name).
  * [subtitleMark] ends the subtitle in [markColor], semibold (the Audio panel's output mode, data st11),
  * or leads it with [markLeading] (the Subtitles panel's "Matches your file", st12). [titleTag] is a
- * small outlined tag right after the title (SDH, st12). [trailingIcon] ends an unselected row (a
+ * small outlined tag right after the title (SDH, st12); [subtitleTags] are the same tags after the
+ * subtitle, on its line (the Rating limit panel's ratings, Spec 64 K2); with them the subtitle is
+ * one plain line and [subtitleMark] / [subtitleMaxLines] are ignored. [trailingIcon] ends an unselected row (a
  * row that opens its own list: the Library Sort & filter panel's chevron, u7 stage 5); [dimTitle]
  * rests the title at white .72 (that panel's Show shelves). [trailingIconTint] rests the trailing icon
  * in a colour (the collection Add catalog panel's green tick); [destructive] titles the row red (a
  * Remove action); [enabled] false dims the row and ignores OK, but it stays focusable so focus never
  * drops when an action reaches its limit (Move down on the last source, u8 stage 14).
- * [titleFontFamily] draws the title in its own font (the App font picker); [subtitleMaxLines] lets a
+ * [selectedFill] false keeps a selected row's tick but not its fill (a multi-select list's ticks, Spec 55
+ * stage `s55-pick`). [titleFontFamily] draws the title in its own font (the App font picker); [subtitleMaxLines] lets a
  * picker option's description wrap (u11 stage 18). [leading] draws before the title (the Settings
  * colour panel's swatch chip).
  */
@@ -229,7 +248,9 @@ internal fun PlayerPanelRow(
     enabled: Boolean = true,
     titleFontFamily: FontFamily? = null,
     subtitleMaxLines: Int = 1,
-    leading: (@Composable () -> Unit)? = null
+    leading: (@Composable () -> Unit)? = null,
+    selectedFill: Boolean = true,
+    subtitleTags: List<String> = emptyList()
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { MutableInteractionSource() }
@@ -238,7 +259,7 @@ internal fun PlayerPanelRow(
     val bgColor by animateColorAsState(
         targetValue = when {
             isFocused -> Color.White
-            selected -> Color.White.copy(alpha = 0.16f)
+            selected && selectedFill -> Color.White.copy(alpha = 0.16f)
             else -> Color.Transparent
         },
         animationSpec = tween(150),
@@ -300,22 +321,7 @@ internal fun PlayerPanelRow(
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     if (!titleTag.isNullOrBlank()) {
-                        Text(
-                            text = titleTag,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.6.sp,
-                            color = titleColor,
-                            maxLines = 1,
-                            modifier = Modifier
-                                .padding(start = 6.dp)
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isFocused) darkContent.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.38f),
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 4.dp)
-                        )
+                        PanelRowTag(text = titleTag, color = titleColor, focused = isFocused, modifier = Modifier.padding(start = 6.dp))
                     }
                 }
                 if (!titleEnd.isNullOrBlank()) {
@@ -337,7 +343,25 @@ internal fun PlayerPanelRow(
             }
             val subtitleText = subtitle?.takeIf { it.isNotBlank() }
             val markText = subtitleMark?.takeIf { it.isNotBlank() }
-            if (subtitleText != null || markText != null) {
+            if (subtitleTags.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (subtitleText != null) {
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = subtitleColor,
+                            maxLines = 1
+                        )
+                    }
+                    subtitleTags.forEach { tag ->
+                        PanelRowTag(text = tag, color = if (isFocused) darkContent else Color.White, focused = isFocused)
+                    }
+                }
+            } else if (subtitleText != null || markText != null) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = buildAnnotatedString {
@@ -375,6 +399,26 @@ internal fun PlayerPanelRow(
             )
         }
     }
+}
+
+/** [PlayerPanelRow]'s small outlined tag (`.rt`): [color] text in a 1 dp edge that darkens on the [focused] pill. */
+@Composable
+private fun PanelRowTag(text: String, color: Color, focused: Boolean, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.6.sp,
+        color = color,
+        maxLines = 1,
+        modifier = modifier
+            .border(
+                width = 1.dp,
+                color = if (focused) Color.Black.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.38f),
+                shape = RoundedCornerShape(4.dp)
+            )
+            .padding(horizontal = 4.dp)
+    )
 }
 
 /** How far [PlayerPanelRow]'s subtitle mark darkens toward black on the focused white pill. */

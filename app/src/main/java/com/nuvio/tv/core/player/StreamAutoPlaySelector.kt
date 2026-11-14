@@ -2,6 +2,7 @@ package com.nuvio.tv.core.player
 
 import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.local.StreamAutoPlaySource
+import com.nuvio.tv.core.stream.PreferredSource
 import com.nuvio.tv.domain.model.AddonStreams
 import com.nuvio.tv.domain.model.Stream
 
@@ -25,10 +26,15 @@ object StreamAutoPlaySelector {
         return orderedAddons + otherEntries
     }
 
+    /**
+     * Whether auto-play may pick [stream]: the rule the Stream screen's press opens by
+     * (`StreamPlaybackInfo.hasTarget`, Spec 84 S2; Spec 86 R8): a url, or a torrent with its info
+     * hash (a magnet or `torrent:` link with no readable hash opens nothing). External links (error
+     * pages, web links) never auto-play.
+     */
     private fun isPlayable(stream: Stream): Boolean {
-        // External URL streams (e.g. error pages, web links) are not playable.
         if (stream.isExternal()) return false
-        return stream.getStreamUrl() != null || stream.isTorrent()
+        return stream.getStreamUrl() != null || (stream.isTorrent() && stream.getEffectiveInfoHash() != null)
     }
 
     fun selectAutoPlayStream(
@@ -40,7 +46,12 @@ object StreamAutoPlaySelector {
         selectedAddons: Set<String>,
         preferredBingeGroup: String? = null,
         preferBingeGroupInSelection: Boolean = false,
-        bingeGroupOnly: Boolean = false
+        bingeGroupOnly: Boolean = false,
+        filmSizeFloors: Boolean = false,
+        demoted: ((Stream) -> Boolean)? = null,
+        continuation: ContinuationTarget? = null,
+        preferred: PreferredSource? = null,
+        softwareDecoded: ((Stream) -> Boolean)? = null
     ): Stream? {
         if (streams.isEmpty()) return null
 
@@ -50,18 +61,34 @@ object StreamAutoPlaySelector {
         }
         // The addon allow-list only narrows installed-addon streams; groups under
         // other names are not subject to it.
+        // Spec 65 P5 / Spec 86 R7: a demoted stream (recently failed, or reported uncached) goes
+        // behind the rest in every step (binge group, first stream, regex, and after the quality
+        // rank), never out.
         val candidateStreams = sourceScopedStreams.filter { stream ->
             val isAddonStream = stream.addonName in installedAddonNames
             !isAddonStream || selectedAddons.isEmpty() || stream.addonName in selectedAddons
-        }
+        }.demotedLast(demoted)
         if (candidateStreams.isEmpty()) return null
+
+        // Spec 65 P6 (D20): the source the viewer prefers for the show comes before the playing
+        // source and the binge group, in every mode (MANUAL too) and whatever the binge settings:
+        // they asked for it by hand. The order the list shows ([PreferredSource.matchesIn]), a
+        // demoted match behind the others.
+        if (preferred != null) {
+            preferred.matchesIn(candidateStreams.filter { isPlayable(it) }).demotedLast(demoted)
+                .firstOrNull()?.let { return it }
+        }
 
         // Binge group matching takes priority over mode — even in MANUAL mode,
         // a persisted binge group should auto-play without showing the picker.
         // A group that names no release (BingeGroups) counts as absent.
         val targetBingeGroup = preferredBingeGroup?.trim()
             ?.takeIf(BingeGroups::namesRelease).orEmpty()
-        if (preferBingeGroupInSelection && targetBingeGroup.isNotEmpty()) {
+        if (continuation != null) {
+            // Spec 65 P7: the player's episode press keeps the playing source (StreamContinuation);
+            // it replaces the group match, so preferredBingeGroup is not read then.
+            StreamContinuation.pick(candidateStreams.filter { isPlayable(it) }, continuation)?.let { return it }
+        } else if (preferBingeGroupInSelection && targetBingeGroup.isNotEmpty()) {
             val bingeGroupMatch = candidateStreams.firstOrNull { stream ->
                 stream.behaviorHints?.bingeGroup == targetBingeGroup && isPlayable(stream)
             }
@@ -73,11 +100,17 @@ object StreamAutoPlaySelector {
         // return null so the caller shows the stream picker instead.
         if (bingeGroupOnly) return null
 
+        // Spec 65 P8 (D15): in the first-stream and regex steps a stream this device decodes in
+        // software ([softwareDecoded]) plays only when no other candidate of the step does. The
+        // steps above follow a choice the viewer made by hand and are not second-guessed (D2); the
+        // quality rank has its own encode exclusion (AV1) and fallback, left as they are.
         return when (mode) {
             StreamAutoPlayMode.MANUAL -> null
-            StreamAutoPlayMode.FIRST_STREAM -> candidateStreams.firstOrNull { isPlayable(it) }
+            StreamAutoPlayMode.FIRST_STREAM ->
+                candidateStreams.filter { isPlayable(it) }.firstHardwareDecoded(softwareDecoded, demoted)
             StreamAutoPlayMode.QUALITY_RANK ->
-                StreamQualityRank.rank(candidateStreams.filter { isPlayable(it) }).firstOrNull()
+                StreamQualityRank.rank(candidateStreams.filter { isPlayable(it) }, filmSizeFloors)
+                    .demotedLast(demoted).firstOrNull()
             StreamAutoPlayMode.REGEX_MATCH -> {
                 val pattern = regexPattern.trim()
  
@@ -132,9 +165,30 @@ object StreamAutoPlaySelector {
                     true
                 }
 
-                matchingStreams.firstOrNull()
+                matchingStreams.firstHardwareDecoded(softwareDecoded, demoted)
             }
 
         }
+    }
+
+    /**
+     * The first stream neither [softwareDecoded] nor demoted ([demoted]: recently failed or reported
+     * uncached), else the first of all: a working software-decoded stream comes before a demoted
+     * one, as [demotedLast] left them. Asked stream by stream, front first: the usual pick costs one
+     * answer (a parse of that stream's facts).
+     */
+    private fun List<Stream>.firstHardwareDecoded(
+        softwareDecoded: ((Stream) -> Boolean)?,
+        demoted: ((Stream) -> Boolean)?
+    ): Stream? {
+        if (softwareDecoded == null) return firstOrNull()
+        return firstOrNull { demoted?.invoke(it) != true && !softwareDecoded(it) } ?: firstOrNull()
+    }
+
+    /** [this] with the [demoted] streams moved behind the rest, order otherwise kept. */
+    private fun List<Stream>.demotedLast(demoted: ((Stream) -> Boolean)?): List<Stream> {
+        if (demoted == null || isEmpty()) return this
+        val (late, early) = partition(demoted)
+        return if (late.isEmpty()) this else early + late
     }
 }

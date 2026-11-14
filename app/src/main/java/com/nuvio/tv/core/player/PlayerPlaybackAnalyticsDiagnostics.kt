@@ -16,6 +16,9 @@ import androidx.media3.exoplayer.source.MediaLoadData
 
 private const val POSITION_STALL_THRESHOLD_MS = 5_000L
 private const val POSITION_PROGRESS_EPSILON_MS = 250L
+private const val POSITION_MOVING_MAX_STALL_MS = 1_500L
+/** The progress tick runs every 500 ms; a longer gap means it was stopped (error, retry, IDLE). */
+private const val SNAPSHOT_GAP_REARM_MS = 2_000L
 
 /** First-frame figures for the PLAYBACK_STARTUP log line (the only startup reader). */
 internal data class PlaybackStartupCounters(
@@ -53,10 +56,21 @@ internal class PlayerPlaybackAnalyticsDiagnostics {
     private var bufferedPositionMs: Long? = null
 
     private var lastPositionForStallMs: Long = -1L
+    private var lastSnapshotAtMs: Long = -1L
     private var positionLastAdvancedAtMs: Long = sessionStartedAtElapsedMs
     private var positionStallActive: Boolean = false
     private var positionStallCount: Int = 0
     private var longestPositionStallMs: Long = 0L
+
+    /**
+     * Spec 70 R2: how long the position has been frozen as of the last progress snapshot (0 while
+     * advancing or not watched: paused, buffering, before the first frame). Read by the freeze recovery.
+     */
+    var currentPositionStallMs: Long = 0L
+        private set
+
+    /** No stall longer than a couple of 500 ms ticks as of the last snapshot. */
+    fun isPositionMoving(): Boolean = currentPositionStallMs < POSITION_MOVING_MAX_STALL_MS
 
     private var droppedFrames: Int = 0
     private var videoDecoderName: String? = null
@@ -139,10 +153,12 @@ internal class PlayerPlaybackAnalyticsDiagnostics {
         positionMs = null
         bufferedPositionMs = null
         lastPositionForStallMs = -1L
+        lastSnapshotAtMs = -1L
         positionLastAdvancedAtMs = sessionStartedAtElapsedMs
         positionStallActive = false
         positionStallCount = 0
         longestPositionStallMs = 0L
+        currentPositionStallMs = 0L
         droppedFrames = 0
         videoDecoderName = null
         audioDecoderName = null
@@ -161,8 +177,11 @@ internal class PlayerPlaybackAnalyticsDiagnostics {
         PlaybackConnectionEvents.clear()
     }
 
-    fun recordProgressSnapshot(player: Player, hasRenderedFirstFrame: Boolean) {
-        val now = SystemClock.elapsedRealtime()
+    fun recordProgressSnapshot(
+        player: Player,
+        hasRenderedFirstFrame: Boolean,
+        now: Long = SystemClock.elapsedRealtime()
+    ) {
         val position = player.currentPosition.coerceAtLeast(0L)
         playbackStateName = player.playbackState.playbackStateName()
         playWhenReady = player.playWhenReady
@@ -173,18 +192,33 @@ internal class PlayerPlaybackAnalyticsDiagnostics {
         positionMs = position
         bufferedPositionMs = player.bufferedPosition.coerceAtLeast(position)
 
-        val shouldDetectStall = hasRenderedFirstFrame &&
+        // Spec 70 R2 (red team round 3 finding): a gap between snapshots is time nobody watched (the tick stops on an
+        // error and its in-place retry); counting it would read error + retry as a freeze.
+        val watchedContinuously = lastSnapshotAtMs >= 0L && now - lastSnapshotAtMs <= SNAPSHOT_GAP_REARM_MS
+        lastSnapshotAtMs = now
+        val shouldDetectStall = watchedContinuously &&
+            hasRenderedFirstFrame &&
             player.playWhenReady &&
             player.isPlaying &&
             player.playbackState == Player.STATE_READY
         if (!shouldDetectStall) {
+            // Also re-arms the timer at resume: a freeze right after a pause counts from the resume.
+            if (positionStallActive) {
+                // Watch ended (pause, buffering, gap) with a freeze open: close it in the log.
+                Log.i("NuvioPosFreeze", "FREEZE_END unwatched stallMs=$currentPositionStallMs positionMs=$position")
+            }
             lastPositionForStallMs = position
             positionLastAdvancedAtMs = now
             positionStallActive = false
+            currentPositionStallMs = 0L
             return
         }
 
-        if (lastPositionForStallMs < 0L || position > lastPositionForStallMs + POSITION_PROGRESS_EPSILON_MS) {
+        // A backward jump (seek, rollback) restarts the watch; it never reads as a freeze (Spec 70 R2).
+        // Same tolerance both ways, so clock jitter during a real freeze does not keep resetting it.
+        if (position > lastPositionForStallMs + POSITION_PROGRESS_EPSILON_MS ||
+            position < lastPositionForStallMs - POSITION_PROGRESS_EPSILON_MS
+        ) {
             if (positionStallActive) {
                 Log.i("NuvioPosFreeze", "FREEZE_END stallMs=${(now - positionLastAdvancedAtMs).coerceAtLeast(0L)} positionMs=$position")
                 record(
@@ -200,10 +234,12 @@ internal class PlayerPlaybackAnalyticsDiagnostics {
             lastPositionForStallMs = position
             positionLastAdvancedAtMs = now
             positionStallActive = false
+            currentPositionStallMs = 0L
             return
         }
 
         val stalledForMs = (now - positionLastAdvancedAtMs).coerceAtLeast(0L)
+        currentPositionStallMs = stalledForMs
         if (stalledForMs >= POSITION_STALL_THRESHOLD_MS) {
             longestPositionStallMs = maxOf(longestPositionStallMs, stalledForMs)
             if (!positionStallActive) {

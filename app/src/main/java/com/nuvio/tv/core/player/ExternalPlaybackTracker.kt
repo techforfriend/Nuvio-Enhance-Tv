@@ -456,7 +456,9 @@ class ExternalPlaybackTracker @Inject constructor(
                 ?: return@withTimeoutOrNull null
             val s = metadata.season ?: return@withTimeoutOrNull null
             val e = metadata.episode ?: return@withTimeoutOrNull null
-            skipIntroRepository.getSkipIntervals(imdbId, s, e)
+            // IntroDB's only, as before Spec 61 Q7: TheIntroDB's stamps are bounded by the
+            // player against the duration (withPlausiblePositions), which is not known here.
+            skipIntroRepository.getSkipIntervals(imdbId, s, e).filter { it.provider == "introdb" }
         }
         if (intervals.isNullOrEmpty()) return null
 

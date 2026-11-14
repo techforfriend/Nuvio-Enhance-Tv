@@ -27,7 +27,8 @@ data class AddonManifestDto(
 data class CatalogDescriptorDto(
     @SerialName("type") val type: String,
     @SerialName("id") val id: String,
-    @SerialName("name") val name: String,
+    /** Optional in the Stremio SDK (its own example omits it); the mapper falls back to the addon's name. */
+    @SerialName("name") val name: String? = null,
     @SerialName("extra") val extra: List<JsonElement>? = null,
     @SerialName("pageSize") val pageSize: Int? = null,
     @SerialName("showInHome") val showInHome: Boolean? = null,

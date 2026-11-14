@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.update
 internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) {
     isReleasingPlayer = true
     if (flushPlaybackState) {
+        // The exit (Go Back, Back, or the screen cleared): before the torrent stops (Spec 75 D6(5)).
+        recordBoxEndingFailure()
         stopTorrentStream()
         flushPlaybackSnapshotForSwitchOrExit()
     }

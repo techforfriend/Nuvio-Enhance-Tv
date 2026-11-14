@@ -44,8 +44,8 @@ annotation class Image
  * callTimeout (spans body reads), no JSON gate, no logging — consumers
  * stream to disk/file, so there is no heap-buffering vector to cap here
  * (W2.2 note: heap-buffering downloads belong on this client, never on
- * [Api], whose response guard caps bodies at 2 MB). Trust-all TLS like
- * [Api]: subtitle URLs are addon-supplied self-hosted hosts.
+ * [Api], whose response guard caps bodies at 2 MB). The same TLS as
+ * [Api] (Spec 68 X7: validated, plus certificates the user trusted for an addon).
  */
 @Qualifier
 @Retention(AnnotationRetention.BINARY)

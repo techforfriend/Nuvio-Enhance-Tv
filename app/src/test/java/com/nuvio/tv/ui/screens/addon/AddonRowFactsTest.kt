@@ -174,4 +174,23 @@ class AddonRowFactsTest {
         assertEquals("OV", addonInitials("OpenSubtitles v3"))
         assertEquals("?", addonInitials("  "))
     }
+
+    @Test
+    fun `a certificate-paused row leads with CERTIFICATE and shows no health`() {
+        val facts = addonRowFacts(addon(), AddonHealthLevel.HEALTHY, certificateFailed = true)
+        assertEquals(AddonMark.CERTIFICATE, facts.marks.first())
+        assertTrue(facts.certificatePaused)
+        assertNull(facts.health)
+        assertFalse(addonRowFacts(addon(), AddonHealthLevel.HEALTHY).certificatePaused)
+    }
+
+    @Test
+    fun `fingerprints print in groups of four, eight or four to a line`() {
+        val sha = "4F9A21C80B7ED153A96C3E02F84D7B1692E5C07A1D3F68B45A0E9C277DE0B315"
+        assertEquals(
+            "4F9A 21C8 0B7E D153 A96C 3E02 F84D 7B16\n92E5 C07A 1D3F 68B4 5A0E 9C27 7DE0 B315",
+            fingerprintLines(sha, groupsPerLine = 8)
+        )
+        assertEquals(4, fingerprintLines(sha, groupsPerLine = 4).lines().size)
+    }
 }

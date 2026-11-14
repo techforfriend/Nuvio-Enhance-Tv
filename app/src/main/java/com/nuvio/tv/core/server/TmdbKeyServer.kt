@@ -4,7 +4,6 @@ import com.nuvio.tv.core.tmdb.tmdbKeyInput
 import fi.iki.elonen.NanoHTTPD
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -72,19 +71,12 @@ class TmdbKeyServer internal constructor(
         }
     }
 
-    override fun serve(session: IHTTPSession): Response {
-        val response = route(session)
-        // The token rides in the path: no copy in a cache or a Referer.
-        response.addHeader("Cache-Control", "no-store")
-        response.addHeader("Referrer-Policy", "no-referrer")
-        // PhotoUploadServer m4: a body left unread (an early answer) must not be parsed as the next request.
-        if (session.method == Method.POST) response.addHeader("Connection", "close")
-        return response
-    }
+    override fun serve(session: IHTTPSession): Response =
+        route(session).withTokenPathHeaders(session.method)
 
     private fun route(session: IHTTPSession): Response {
         session.rejectUntrustedRequest()?.let { return it }
-        val path = pathAfterToken(session.uri)
+        val path = pathAfterToken(session.uri, PATH_PREFIX, token)
             // A send from a page whose panel has closed or reopened: drained, so its browser reads "expired".
             ?: return if (session.method == Method.POST) session.earlyAnswer(Response.Status.NOT_FOUND, NOT_FOUND) else notFoundResponse()
         return when {
@@ -92,15 +84,6 @@ class TmdbKeyServer internal constructor(
             session.method == Method.POST && path == "key" -> receive(session)
             else -> notFoundResponse()
         }
-    }
-
-    /** The path after `/k/<token>/` ("" for the page, also without the last slash); null for another token. */
-    private fun pathAfterToken(uri: String): String? {
-        if (!uri.startsWith(PATH_PREFIX)) return null
-        val rest = uri.substring(PATH_PREFIX.length)
-        val presented = rest.substringBefore('/')
-        if (!MessageDigest.isEqual(presented.toByteArray(), token.toByteArray())) return null
-        return rest.substringAfter('/', missingDelimiterValue = "")
     }
 
     private fun page(): Response =

@@ -14,7 +14,7 @@ import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 
-/** Spec 34 D7: mime from the URL, else one GET for extension-less URLs; headers normalized. */
+/** Spec 34 D7: mime from the URL, else one GET for extension-less URLs (not Xtream live, Spec 78 D3); headers normalized. */
 class LiveMediaSourcesTest {
 
     private lateinit var server: MockWebServer
@@ -55,6 +55,29 @@ class LiveMediaSourcesTest {
     fun `an HLS content type decides before the body`() = runTest {
         server.enqueue(MockResponse().setHeader("Content-Type", "application/vnd.apple.mpegurl").setBody("x"))
         assertEquals(MimeTypes.APPLICATION_M3U8, LiveMediaSources.resolveMimeType(request("/play/43"), client))
+    }
+
+    @Test
+    fun `an extension-less Xtream live url plays as progressive without a request`() = runTest {
+        // Answers a regressed sniff at once (as HLS), so it fails fast instead of on the read timeout.
+        repeat(2) { server.enqueue(MockResponse().setBody("#EXTM3U")) }
+        assertNull(LiveMediaSources.resolveMimeType(request("/user1/pass1/1003"), client))
+        assertNull(LiveMediaSources.resolveMimeType(request("/live/user1/pass1/1004"), client))
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `path tokens still type an Xtream-shaped url before the shortcut`() = runTest {
+        // Non-Xtream HLS of the same shape keeps its old inference (Spec 78 D3 red-team r1).
+        assertEquals(MimeTypes.APPLICATION_M3U8, LiveMediaSources.resolveMimeType(request("/hls/chan/1005"), client))
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `a near-Xtream url with a query is still sniffed`() = runTest {
+        server.enqueue(MockResponse().setBody("#EXTM3U"))
+        assertEquals(MimeTypes.APPLICATION_M3U8, LiveMediaSources.resolveMimeType(request("/user1/pass1/1003?token=x"), client))
+        assertEquals(1, server.requestCount)
     }
 
     @Test

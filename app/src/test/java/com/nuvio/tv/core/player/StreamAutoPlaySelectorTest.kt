@@ -496,6 +496,30 @@ class StreamAutoPlaySelectorTest {
         assertNull(pick(base, "REMUX"))
     }
 
+    // Spec 86 R8: auto-play picks only what the Stream screen's press opens (hasTarget): a torrent
+    // row needs a readable info hash, so a hashless magnet or torrent: link is passed over.
+    @Test
+    fun `a torrent row without a readable info hash is never auto-selected`() {
+        val hashlessMagnet = stream(addonName = "AddonA", url = "magnet:?xt=urn:btmh:1220abcd", name = "v2 magnet")
+        val hashlessTorrent = stream(addonName = "AddonA", url = "torrent://bad", name = "bad torrent")
+        val hashed = stream(addonName = "AddonA", name = "torrent", infoHash = "0123456789abcdef0123456789abcdef01234567")
+        val http = stream(addonName = "AddonB", url = "https://example.com/b.mkv", name = "http")
+        fun pick(vararg candidates: Stream, mode: StreamAutoPlayMode = StreamAutoPlayMode.FIRST_STREAM) =
+            StreamAutoPlaySelector.selectAutoPlayStream(
+                streams = candidates.toList(),
+                mode = mode,
+                regexPattern = "torrent|magnet|http",
+                source = StreamAutoPlaySource.ALL_SOURCES,
+                installedAddonNames = setOf("AddonA", "AddonB"),
+                selectedAddons = emptySet()
+            )
+
+        assertEquals(http, pick(hashlessMagnet, hashlessTorrent, http))
+        assertEquals(http, pick(hashlessMagnet, hashlessTorrent, http, mode = StreamAutoPlayMode.REGEX_MATCH))
+        assertEquals(hashed, pick(hashlessMagnet, hashed, http))
+        assertNull(pick(hashlessMagnet, hashlessTorrent))
+    }
+
     private fun stream(
         addonName: String,
         url: String? = null,

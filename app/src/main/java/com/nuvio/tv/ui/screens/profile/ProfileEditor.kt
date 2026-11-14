@@ -38,6 +38,7 @@ import com.nuvio.tv.data.local.MyPhoto
 import com.nuvio.tv.data.local.MyPhotoKind
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
 import com.nuvio.tv.data.remote.supabase.ProfileBackgroundCatalogItem
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.ProfileBackgroundSelection
 import com.nuvio.tv.domain.model.ProfileLookPick
 import com.nuvio.tv.ui.components.AvatarPickerGrid
@@ -54,6 +55,7 @@ import com.nuvio.tv.ui.components.avatarCategoryLabel
 import com.nuvio.tv.ui.components.parseProfileColor
 import com.nuvio.tv.ui.components.marquee.MarqueeNameField
 import com.nuvio.tv.ui.components.marquee.MarqueeSwitchRow
+import com.nuvio.tv.ui.components.marquee.MarqueeValueRow
 import com.nuvio.tv.ui.screens.collection.DiscardChangesPanel
 import com.nuvio.tv.ui.screens.collection.EditorHeaderActions
 import com.nuvio.tv.ui.screens.home.MarqueeBreadcrumb
@@ -71,7 +73,10 @@ import com.nuvio.tv.ui.util.requestFocusAfterFrames
  * Cancel with changes asks "Discard changes?". [onSubmit] saves and reports back: true closes
  * (the caller), false re-arms the button (the caller shows the failure toast).
  * Under the Name field the Access block (Spec 34 D17, sandbox `l9-live-tv-profile-switch`): the
- * Live TV switch when [liveTvEditable] (Manage profiles, primary active), else a read-only note.
+ * Live TV switch when [liveTvEditable] (Manage profiles, primary active), else a read-only note;
+ * then the Rating limit (Spec 64 K2, sandbox `spec-64-k2-rating-cap` stages 1-3) per
+ * [ratingLimitAccess]: a row opening [RatingLimitPanel] ([openProfiles] for its lock line), a
+ * note, or nothing.
  * My photos (Spec 44, [library]) lead the Avatar tab and follow the bundled backgrounds on the
  * Background tab; holding OK or MENU on one opens [MyPhotoPanel]
  * ([photoUserNames] for its "Used by", [onRemovePhoto] for Remove). Add from phone leads My photos on
@@ -85,6 +90,8 @@ internal fun ProfileEditor(
     catalogImageUrl: (String) -> String?,
     background: @Composable (Color, ProfileBackgroundSelection?) -> Unit,
     liveTvEditable: Boolean,
+    ratingLimitAccess: RatingLimitAccess,
+    openProfiles: List<String>,
     onDismiss: () -> Unit,
     onSubmit: (onResult: (Boolean) -> Unit) -> Unit,
     library: LocalLookLibrary,
@@ -102,6 +109,10 @@ internal fun ProfileEditor(
     var selectedTab by remember { mutableStateOf(ProfileEditorTab.Avatar) }
     // The My photo whose hold panel is open (stage 7).
     var heldPhoto by remember { mutableStateOf<MyPhoto?>(null) }
+    var ratingPanelOpen by remember { mutableStateOf(false) }
+    // Set when the panel closes: focus goes back to the row once the panel (which holds focus in) is gone.
+    var returnToRatingRow by remember { mutableStateOf(false) }
+    val ratingRowFocus = remember { FocusRequester() }
     // Edits always get the Background tab: it holds Normal (clear) even when the catalog is empty.
     val showTabs = !draft.isCreate
 
@@ -111,6 +122,12 @@ internal fun ProfileEditor(
 
     LaunchedEffect(Unit) {
         nameFocus.requestFocusAfterFrames()
+    }
+    LaunchedEffect(returnToRatingRow) {
+        if (returnToRatingRow) {
+            ratingRowFocus.requestFocusAfterFrames()
+            returnToRatingRow = false
+        }
     }
     LaunchedEffect(showTabs) {
         if (!showTabs) selectedTab = ProfileEditorTab.Avatar
@@ -190,7 +207,13 @@ internal fun ProfileEditor(
                         onDone = { focusManager.moveFocus(FocusDirection.Right) }
                     )
                 }
-                LiveTvAccess(draft = draft, editable = liveTvEditable)
+                AccessBlock(
+                    draft = draft,
+                    liveTvEditable = liveTvEditable,
+                    ratingLimitAccess = ratingLimitAccess,
+                    ratingRowFocus = ratingRowFocus,
+                    onOpenRatingLimit = { ratingPanelOpen = true }
+                )
             }
 
             Box(
@@ -271,6 +294,25 @@ internal fun ProfileEditor(
                 onRemovePhoto(photo)
             },
             onDismiss = { heldPhoto = null }
+        )
+    }
+
+    if (ratingPanelOpen) {
+        val close = {
+            ratingPanelOpen = false
+            returnToRatingRow = true
+        }
+        RatingLimitPanel(
+            profileName = draft.name,
+            avatarColorHex = draft.colorHex,
+            avatarArt = draft.selectedArt(avatarCatalog, library, catalogImageUrl),
+            current = draft.ratingCap,
+            openProfiles = openProfiles,
+            onPick = { cap ->
+                draft.updateRatingCap(cap)
+                close()
+            },
+            onDismiss = close
         )
     }
 
@@ -367,9 +409,18 @@ private fun FocusedTileLabel(name: String, detail: String?) {
     }
 }
 
-/** The Access block: the Live TV switch, or (not editable here) the value as a note (D17 Q3). */
+/**
+ * The Access block: the Live TV switch, or (not editable here) the value as a note (D17 Q3); then
+ * the Rating limit row (OK = [onOpenRatingLimit]), its note, or nothing ([ratingLimitAccess]).
+ */
 @Composable
-private fun LiveTvAccess(draft: ProfileEditorDraft, editable: Boolean) {
+private fun AccessBlock(
+    draft: ProfileEditorDraft,
+    liveTvEditable: Boolean,
+    ratingLimitAccess: RatingLimitAccess,
+    ratingRowFocus: FocusRequester,
+    onOpenRatingLimit: () -> Unit
+) {
     val name = draft.name.trim().ifEmpty { stringResource(R.string.profile_live_tv_unnamed) }
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = NuvioTheme.marquee.profiles.editorFieldTop),
@@ -379,7 +430,7 @@ private fun LiveTvAccess(draft: ProfileEditorDraft, editable: Boolean) {
             text = stringResource(R.string.profile_access_label),
             modifier = Modifier.padding(horizontal = NuvioTheme.spacing.xs)
         )
-        if (editable) {
+        if (liveTvEditable) {
             MarqueeSwitchRow(
                 label = stringResource(R.string.nav_live_tv),
                 checked = draft.liveTvEnabled,
@@ -398,7 +449,34 @@ private fun LiveTvAccess(draft: ProfileEditorDraft, editable: Boolean) {
                 )
             )
         }
+        val cap = draft.ratingCap
+        when (ratingLimitAccess) {
+            RatingLimitAccess.EDIT -> MarqueeValueRow(
+                label = stringResource(R.string.profile_rating_limit_label),
+                value = stringResource(cap?.labelRes() ?: R.string.rating_limit_none),
+                helper = ratingLimitHelper(cap),
+                onClick = onOpenRatingLimit,
+                modifier = Modifier.focusRequester(ratingRowFocus)
+            )
+            RatingLimitAccess.NOTE -> EditorNote(
+                if (cap == null) {
+                    stringResource(R.string.rating_limit_note_none)
+                } else {
+                    val (movie, tv) = cap.ceiling()
+                    stringResource(R.string.rating_limit_note_set, stringResource(cap.labelRes()), movie, tv)
+                }
+            )
+            RatingLimitAccess.NONE -> Unit
+        }
     }
+}
+
+/** The row's helper: "Up to PG and TV-PG", or what No limit means. */
+@Composable
+private fun ratingLimitHelper(cap: ContentRatingCap?): String {
+    if (cap == null) return stringResource(R.string.rating_limit_none_sub)
+    val (movie, tv) = cap.ceiling()
+    return stringResource(R.string.rating_limit_up_to, movie, tv)
 }
 
 @Composable

@@ -68,6 +68,7 @@ import com.nuvio.tv.core.profile.PinLockouts
 import android.os.SystemClock
 import com.nuvio.tv.core.sync.SetProfilePinResult
 import com.nuvio.tv.data.remote.supabase.ProfileBackgroundCatalogItem
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.UserProfile
 import com.nuvio.tv.ui.components.CustomProfileBackgroundImage
 import com.nuvio.tv.ui.components.BrandWordmark
@@ -202,6 +203,8 @@ fun ProfileSelectionScreen(
     val pinLockedUntil by viewModel.pinLockedUntil.collectAsState()
     val liveTvEnabledById by viewModel.liveTvEnabledById.collectAsState()
     val storedActiveProfileId by viewModel.storedActiveProfileId.collectAsState()
+    // Spec 64 K2: null until loaded; Edit, and Add / Delete outside primary-managed Manage, wait for it.
+    val ratingCapById by viewModel.ratingCapById.collectAsState()
     val loadedLookEntries by viewModel.lookEntriesById.collectAsState()
     val lookEntriesById = loadedLookEntries.orEmpty()
     // My photos (Spec 44): null until read; Edit waits for it as for the look entries.
@@ -261,6 +264,14 @@ fun ProfileSelectionScreen(
     }
     val focusedProfile = profiles.firstOrNull { it.id == focusedProfileId }
     val isManagementMode = screenMode == ProfileSelectionMode.Management
+    // The active id this screen opened under, pinned once loaded (Spec 64 D14): deleting the active
+    // profile makes the store fall back to 1 a few frames before the app returns to Who's watching,
+    // and the screen must not turn primary-managed in between.
+    // Keyed on loaded-or-not: computed at null, again once at load, then never (it stays loaded).
+    val openedActiveProfileId = remember(storedActiveProfileId == null) { storedActiveProfileId }
+    // Manage profiles with the primary active: where the Live TV switch and the rating limit are
+    // editable, and where Add / Delete ignore limits (Spec 64 D9, D10).
+    val managedByPrimary = liveTvEditable(isManagementMode, openedActiveProfileId)
     // Q9: Manage gets a breadcrumb, a subtitle that no longer promises a switch, and "OK · Manage profile".
     val manageHeading = stringResource(R.string.profile_manage_heading)
     val header = if (isManagementMode) {
@@ -344,8 +355,9 @@ fun ProfileSelectionScreen(
                     showHint = !toast.onScreen,
                     profiles = profiles,
                     activeProfileId = activeProfileId,
-                    canAddProfile = viewModel.canAddProfile,
+                    canAddProfile = showAddProfile(viewModel.canAddProfile, managedByPrimary, profiles, ratingCapById),
                     profilePinEnabled = profilePinEnabled,
+                    ratingCapById = ratingCapById.orEmpty(),
                     avatarArtById = avatarArtById,
                     onProfileFocused = onProfileFocusedChange,
                     onProfileSelected = { profile ->
@@ -509,6 +521,7 @@ fun ProfileSelectionScreen(
         }
 
         editorDraft?.let { draft ->
+            val editorRatingAccess = ratingLimitAccess(managedByPrimary, isPrimary = draft.original?.isPrimary == true)
             ProfileEditor(
                 draft = draft,
                 avatarCatalog = avatarCatalog,
@@ -521,7 +534,10 @@ fun ProfileSelectionScreen(
                         gradientVeil = NuvioTheme.marquee.profiles.editorVeil
                     )
                 },
-                liveTvEditable = liveTvEditable(isManagementMode, storedActiveProfileId),
+                liveTvEditable = managedByPrimary,
+                ratingLimitAccess = editorRatingAccess,
+                openProfiles = noPinUnlimitedProfiles(draft.original?.id, profiles, profilePinEnabled, ratingCapById)
+                    .map(UserProfile::name),
                 library = library,
                 photoUserNames = { photo -> photoUsers(photo.id, profiles, lookEntriesById, library.sets).map { it.name } },
                 onRemovePhoto = { photo ->
@@ -547,6 +563,7 @@ fun ProfileSelectionScreen(
                     // A result may arrive after Back closed the editor: success then changes nothing, failure still toasts.
                     val liveTvNotSaved = { toast.show(context.getString(R.string.profile_live_tv_save_failed)) }
                     val lookNotSaved = { toast.show(context.getString(R.string.profile_look_save_failed)) }
+                    val ratingCapNotSaved = { toast.show(context.getString(R.string.rating_limit_save_failed)) }
                     val report: (Boolean) -> Unit = { saved ->
                         onResult(saved)
                         if (saved) {
@@ -562,13 +579,16 @@ fun ProfileSelectionScreen(
                     if (draft.isCreate) {
                         viewModel.createProfile(
                             draft.name, draft.colorHex, draft.avatarId, draft.liveTvEnabled, liveTvNotSaved,
-                            localAvatar = draft.localAvatar, onLookNotSaved = lookNotSaved, onResult = report
+                            localAvatar = draft.localAvatar, onLookNotSaved = lookNotSaved,
+                            ratingCap = draft.ratingCap, onRatingCapNotSaved = ratingCapNotSaved, onResult = report
                         )
                     } else {
                         viewModel.updateProfile(
                             draft.toProfile(), draft.liveTvEnabled.takeIf { draft.liveTvChanged }, liveTvNotSaved,
                             localAvatar = draft.localAvatar, localBackground = draft.localBackground,
-                            onLookNotSaved = lookNotSaved, onResult = report
+                            onLookNotSaved = lookNotSaved,
+                            ratingCap = ratingCapEditFor(editorRatingAccess, draft.ratingCap),
+                            onRatingCapNotSaved = ratingCapNotSaved, onResult = report
                         )
                     }
                 }
@@ -594,20 +614,30 @@ fun ProfileSelectionScreen(
                 profile = profile,
                 avatarArt = avatarArtById[profile.id],
                 sharesAddonsOf = sharesAddonsOf(profile, profiles),
-                options = profileOptionRows(isPrimary = profile.isPrimary, hasPin = hasPin),
+                options = profileOptionRows(
+                    canDelete = profileDeletable(profile, managedByPrimary, ratingCapById),
+                    hasPin = hasPin
+                ),
                 openedByHold = request.openedByHold,
                 onDismiss = { optionsRequest = null },
                 onOption = { option ->
                     val target = profileOptionTarget(option, profile, hasPin, request.verifiedPin)
                     optionsRequest = null
                     when (target) {
-                        // Not before the look entries and My photos load: a save would clear a look
-                        // (or a photo pick) the draft never saw.
-                        ProfileOptionTarget.Edit -> loadedLookEntries?.takeIf { loadedPhotos != null }?.let { looks ->
-                            editorDraft = ProfileEditorDraft.edit(
-                                profile, liveTvEnabledById[profile.id] ?: true, looks[profile.id], library.sets
-                            )
-                        }
+                        // Not before the look entries, My photos and the rating cap load: a save would
+                        // clear a look (or a photo pick) the draft never saw, and the editor would show
+                        // the wrong limit.
+                        ProfileOptionTarget.Edit -> loadedLookEntries
+                            ?.takeIf { loadedPhotos != null && ratingCapLoaded(profile.id, ratingCapById) }
+                            ?.let { looks ->
+                                editorDraft = ProfileEditorDraft.edit(
+                                    profile,
+                                    liveTvEnabledById[profile.id] ?: true,
+                                    ratingCapById?.get(profile.id),
+                                    looks[profile.id],
+                                    library.sets
+                                )
+                            }
                         ProfileOptionTarget.ConfirmDelete -> profileToDelete = profile
                         is ProfileOptionTarget.Pin -> {
                             pinOverlayError = null
@@ -660,15 +690,9 @@ private fun ProfileOptionsPanel(
         width = tokens.optionsPanelWidth
     ) {
         PanelEyebrow(text = stringResource(R.string.profile_selection_options_title))
-        Row(
-            modifier = Modifier.padding(
-                start = tokens.optionsHeadPaddingHorizontal,
-                end = tokens.optionsHeadPaddingHorizontal,
-                top = tokens.optionsHeadPaddingTop,
-                bottom = tokens.optionsHeadPaddingBottom
-            ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(tokens.optionsHeadGap)
+        ProfilePanelHead(
+            title = profile.name,
+            subtitle = sharesAddonsOf?.let { stringResource(R.string.profile_shares_addons, it) }
         ) {
             ProfileAvatarCircle(
                 name = profile.name,
@@ -676,24 +700,6 @@ private fun ProfileOptionsPanel(
                 size = tokens.optionsAvatarSize,
                 art = avatarArt
             )
-            Column {
-                Text(
-                    text = profile.name,
-                    style = NuvioTheme.textStyles.panelHeadName,
-                    color = NuvioPrimitives.white,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (sharesAddonsOf != null) {
-                    Text(
-                        text = stringResource(R.string.profile_shares_addons, sharesAddonsOf),
-                        style = NuvioTheme.textStyles.caption,
-                        color = NuvioTheme.marquee.onImage3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
         }
         PanelRule()
         options.forEachIndexed { index, option ->
@@ -927,6 +933,7 @@ private fun ProfileSelectionMainContent(
     activeProfileId: Int,
     canAddProfile: Boolean,
     profilePinEnabled: Map<Int, Boolean>,
+    ratingCapById: Map<Int, ContentRatingCap?>,
     avatarArtById: Map<Int, AvatarArt?>,
     onProfileFocused: (UserProfile) -> Unit,
     onProfileSelected: (UserProfile) -> Unit,
@@ -969,6 +976,7 @@ private fun ProfileSelectionMainContent(
             activeProfileId = activeProfileId,
             canAddProfile = canAddProfile,
             profilePinEnabled = profilePinEnabled,
+            ratingCapById = ratingCapById,
             avatarArtById = avatarArtById,
             onProfileFocused = onProfileFocused,
             onProfileSelected = onProfileSelected,
@@ -995,6 +1003,7 @@ private fun ProfileGrid(
     activeProfileId: Int,
     canAddProfile: Boolean,
     profilePinEnabled: Map<Int, Boolean>,
+    ratingCapById: Map<Int, ContentRatingCap?>,
     avatarArtById: Map<Int, AvatarArt?>,
     onProfileFocused: (UserProfile) -> Unit,
     onProfileSelected: (UserProfile) -> Unit,
@@ -1044,6 +1053,7 @@ private fun ProfileGrid(
                     avatarSize = avatarSize,
                     avatarArt = avatarArtById[profile.id],
                     hasPin = profilePinEnabled[profile.id] == true,
+                    ratingCap = ratingCapById[profile.id],
                     sharesAddonsOf = sharesAddonsOf(profile, profiles),
                     focusRequester = focusRequesters[index],
                     onFocused = { onProfileFocused(profile) },
@@ -1065,8 +1075,9 @@ private fun ProfileGrid(
 /**
  * A profile card (Spec 43 `.cD`): the avatar on a circular Marquee card (scale, ring, a glow in the
  * avatar's colour; hold OK or MENU = [onLongPress]), the lock badge on PIN profiles, then the name in
- * a fixed line box. Only while focused: the name grows to 18 and PRIMARY (profile 1) and the addon
- * line ("Shares <primary>'s addons" or "Own addons") appear under it.
+ * a fixed line box. Only while focused: the name grows to 18 and PRIMARY (profile 1) or the
+ * profile's rating limit ([ratingCap], Spec 64 K2 stage 4: "OLDER KIDS", grey) and the addon line
+ * ("Shares <primary>'s addons" or "Own addons") appear under it.
  */
 @Composable
 private fun ProfileCard(
@@ -1074,6 +1085,7 @@ private fun ProfileCard(
     avatarSize: Dp,
     avatarArt: AvatarArt?,
     hasPin: Boolean,
+    ratingCap: ContentRatingCap?,
     sharesAddonsOf: String?,
     focusRequester: FocusRequester,
     onFocused: () -> Unit,
@@ -1129,6 +1141,13 @@ private fun ProfileCard(
                     text = stringResource(R.string.profile_selection_primary_badge),
                     style = NuvioTheme.textStyles.profileTag,
                     color = tokens.primaryTag
+                )
+                Spacer(modifier = Modifier.height(tokens.cardLineGap))
+            } else if (ratingCap != null) {
+                Text(
+                    text = stringResource(ratingCap.labelRes()).uppercase(),
+                    style = NuvioTheme.textStyles.profileTag,
+                    color = marquee.onImage2
                 )
                 Spacer(modifier = Modifier.height(tokens.cardLineGap))
             }

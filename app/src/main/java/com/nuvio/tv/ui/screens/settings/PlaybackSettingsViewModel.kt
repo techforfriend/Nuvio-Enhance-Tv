@@ -332,6 +332,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setResolutionMatchingEnabled(enabled)
     }
 
+    suspend fun setAfrSettleHoldSeconds(seconds: Int) {
+        playerSettingsDataStore.setAfrSettleHoldSeconds(seconds)
+    }
+
     suspend fun disableAfrAndResolution() {
         playerSettingsDataStore.setFrameRateMatchingMode(FrameRateMatchingMode.OFF)
         playerSettingsDataStore.setResolutionMatchingEnabled(false)
@@ -430,6 +434,23 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setSubtitleOutlineWidth(width: Int) {
         playerSettingsDataStore.setSubtitleOutlineWidth(width)
+    }
+
+    // Spec 62 H2b (D7): the HDR and Dolby Vision subtitle style.
+    suspend fun setSubtitleHdrStyleEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setSubtitleHdrStyleEnabled(enabled)
+    }
+
+    suspend fun setSubtitleHdrTextColor(color: Int) {
+        playerSettingsDataStore.setSubtitleHdrTextColor(color)
+    }
+
+    suspend fun setSubtitleHdrBrightnessPercent(percent: Int) {
+        playerSettingsDataStore.setSubtitleHdrBrightnessPercent(percent)
+    }
+
+    suspend fun setSubtitleHdrDimPlayerControls(enabled: Boolean) {
+        playerSettingsDataStore.setSubtitleHdrDimPlayerControls(enabled)
     }
 
     // Buffer settings functions

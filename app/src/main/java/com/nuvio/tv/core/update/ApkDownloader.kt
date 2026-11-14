@@ -45,8 +45,8 @@ sealed interface DownloadResult {
 data class ApkIdentity(val packageName: String, val versionCode: Long)
 
 /**
- * The validated client (TMDB's TLS rules) for an APK download (Spec 52 P8), never the trust-all
- * @Download client. newBuilder() would copy the 30 s callTimeout (spans the body) and the HTTP
+ * The validated client (TMDB's TLS rules) for an APK download (Spec 52 P8), never the @Download client
+ * (it also accepts certificates the user trusted for a self-hosted addon, Spec 68 X7). newBuilder() would copy the 30 s callTimeout (spans the body) and the HTTP
  * cache; redirects stay on https (GitHub answers with one to its asset host).
  */
 internal fun apkDownloadClient(validated: OkHttpClient): OkHttpClient = validated.newBuilder()

@@ -5,6 +5,8 @@ import android.util.Log
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +63,12 @@ sealed interface DownloadState {
 
     /** "Download failed. Try again." The fresh check or the download failed, or no installer answered. */
     data object Failed : DownloadState
+
+    /**
+     * Spec 80 D6/D14: verified while the update panel was not on screen (the changelog or its video
+     * was), so the file waits for "Ready: Install now" ([UpdateController.installReady]).
+     */
+    data object Ready : DownloadState
 }
 
 /**
@@ -95,7 +103,11 @@ val UpdateState.noticeShown: Boolean
  * is collected on this scope (a read error reads as defaults, never a crash).
  *
  * Download and install (P8) is one action from the press to the installer handoff, one at a time;
- * it runs on the same scope, so only [cancelDownload] (Cancel, leaving the panel) stops it.
+ * it runs on the same scope, so only [cancelDownload] (Cancel, the panel's Back or Not now, the activity's ON_STOP while
+ * Settings shows, Settings leaving the screen other than for the release video, its back-stack
+ * entry ending: Spec 80 D14) stops it. The installer opens the moment the file verifies only
+ * while the update panel is on screen ([setPanelShown]); otherwise the file waits as
+ * [DownloadState.Ready] until [installReady] (Spec 80 D6: never over a changelog or its video).
  */
 @Singleton
 class UpdateController internal constructor(
@@ -134,6 +146,12 @@ class UpdateController internal constructor(
     private val files = Mutex()
     private var downloadJob: Job? = null
 
+    /** Whether the update panel is on screen now (Spec 80 D14): a verified file goes to the installer at once only then. */
+    @Volatile private var panelShown = false
+
+    /** The verified file while [DownloadState.Ready]; guarded by [lock]. */
+    private var readyApk: File? = null
+
     /** App start: a file a past run left (handed to the installer, or cut by a kill) goes; downloads wait for it. */
     private val cleanup: Job? = if (feed.supported) scope.launch { downloader.clear() } else null
 
@@ -146,6 +164,17 @@ class UpdateController internal constructor(
 
     /** [UpdateState.noticeShown] alone (the top-bar pill, About's rail dot): progress never reaches them. */
     val notice: StateFlow<Boolean> = state.map { it.noticeShown }.stateIn(scope, SharingStarted.Eagerly, state.value.noticeShown)
+
+    /**
+     * Spec 80 D5: the release (versionCode) the top-bar pill is to pulse for, once: the pill shows
+     * for it and has not pulsed for it yet ([pillPulsed] records that). Null = no pulse.
+     */
+    val pulseRelease: StateFlow<Int?> =
+        if (!feed.supported) {
+            MutableStateFlow(null)
+        } else {
+            snapshot.map(::pulseOf).stateIn(scope, SharingStarted.Eagerly, null)
+        }
 
     init {
         if (feed.supported) {
@@ -206,6 +235,7 @@ class UpdateController internal constructor(
      */
     fun downloadAndInstall(): Job? {
         if (!feed.supported) return null
+        if (snapshot.value.download == DownloadState.Ready) return installReady()
         return synchronized(lock) {
             downloadJob?.takeIf { it.isActive }
                 ?: scope.launch {
@@ -216,15 +246,64 @@ class UpdateController internal constructor(
     }
 
     /**
-     * Cancel, or the update panel closing (Not now, Back, leaving About, and the activity's ON_STOP:
-     * from the background Android drops the installer launch without an error): stops the action,
-     * and what it wrote is deleted. A failed state clears too (also one a Try again left before it
+     * Cancel, or the update panel closing (Not now, Back, Settings leaving the screen other than for
+     * the release video, and the activity's ON_STOP: from the background Android drops the installer
+     * launch without an error; Spec 80 D14): stops the action, and what it wrote is deleted, a file
+     * waiting as Ready too. A failed state clears too (also one a Try again left before it
      * started running), so the panel opens fresh next time. After the installer handoff the action
      * has ended: nothing is cancelled and the handed-over file stays.
      */
     fun cancelDownload() {
-        synchronized(lock) { downloadJob }?.cancel()
-        snapshot.update { if (it.download == DownloadState.Failed) it.copy(download = DownloadState.Idle) else it }
+        // A waiting file is dropped too (Not now on Ready): the next press downloads afresh.
+        val ready = synchronized(lock) {
+            downloadJob?.cancel()
+            snapshot.update {
+                if (it.download == DownloadState.Failed || it.download == DownloadState.Ready) it.copy(download = DownloadState.Idle) else it
+            }
+            readyApk.also { readyApk = null }
+        }
+        ready?.delete()
+    }
+
+    /** The pill has started its pulse for [versionCode] (Spec 80 D5): it never pulses for it again. */
+    fun pillPulsed(versionCode: Int) {
+        if (!feed.supported) return
+        scope.launch {
+            try {
+                write { setPulsed(versionCode) }
+            } catch (e: IOException) {
+                // Kept in memory at least, so this run does not pulse for it again.
+                Log.w(TAG, "pulse not recorded: ${e.javaClass.simpleName}")
+                // Under the write lock, so it lands in write order (a later write's record still drops it).
+                writes.withLock { snapshot.update { it.copy(record = it.record.copy(pulsedVersionCode = versionCode)) } }
+            }
+        }
+    }
+
+    /** The update panel came on screen ([shown]) or left it; see [panelShown]. */
+    fun setPanelShown(shown: Boolean) {
+        panelShown = shown
+    }
+
+    /**
+     * "Ready: Install now" (Spec 80 D6): the waiting file to the installer. Idle once handed over,
+     * Failed when no installer answered. Null when nothing waits.
+     */
+    fun installReady(): Job? {
+        val apk = synchronized(lock) { readyApk.also { readyApk = null } } ?: return null
+        return scope.launch {
+            val handed = try {
+                install(apk)
+            } catch (e: Exception) {
+                Log.w(UPDATE_DOWNLOAD_TAG, "handoff failed: ${e.javaClass.simpleName}")
+                false
+            }
+            if (!handed) apk.delete()
+            // Only over the Ready this press answered: a Cancel and a new press meanwhile own the state now.
+            snapshot.update {
+                if (it.download == DownloadState.Ready) it.copy(download = if (handed) DownloadState.Idle else DownloadState.Failed) else it
+            }
+        }
     }
 
     private suspend fun runDownload() {
@@ -240,8 +319,14 @@ class UpdateController internal constructor(
         } catch (e: Exception) {
             // Nothing may escape to the scope (no handler: an app crash), e.g. FileProvider's IllegalArgumentException.
             Log.w(UPDATE_DOWNLOAD_TAG, "download action failed: ${e.javaClass.simpleName}")
+            // A handoff that threw leaves no file behind (Spec 80 S4).
+            downloader.clear()
         } finally {
-            snapshot.update { it.copy(download = end) }
+            // Under the lock with cancelDownload: a Ready whose file a cancel already took reads Idle.
+            synchronized(lock) {
+                val final = if (end == DownloadState.Ready && readyApk == null) DownloadState.Idle else end
+                snapshot.update { it.copy(download = final) }
+            }
         }
     }
 
@@ -263,7 +348,28 @@ class UpdateController internal constructor(
             }
         }
         return when (result) {
-            is DownloadResult.Verified -> if (install(result.apk)) DownloadState.Idle else DownloadState.Failed
+            is DownloadResult.Verified -> {
+                // A cancel that landed while the file was checked wins: no installer, no Ready (the
+                // CancellationException path deletes the file).
+                val context = currentCoroutineContext()
+                context.ensureActive()
+                when {
+                    panelShown -> if (install(result.apk)) {
+                        DownloadState.Idle
+                    } else {
+                        result.apk.delete()
+                        DownloadState.Failed
+                    }
+                    else -> {
+                        // Under the lock cancelDownload cancels under: either it sees the file or this sees the cancel.
+                        synchronized(lock) {
+                            context.ensureActive()
+                            readyApk = result.apk
+                        }
+                        DownloadState.Ready
+                    }
+                }
+            }
             DownloadResult.Rejected -> {
                 forget(offer)
                 DownloadState.Failed
@@ -332,6 +438,12 @@ class UpdateController internal constructor(
             val record = store.block()
             snapshot.update { it.copy(record = record) }
         }
+    }
+
+    private fun pulseOf(snapshot: Snapshot): Int? {
+        val state = toState(snapshot)
+        val code = state.available?.versionCode ?: return null
+        return code.takeIf { state.noticeShown && it != snapshot.record.pulsedVersionCode }
     }
 
     private fun toState(snapshot: Snapshot) = UpdateState(

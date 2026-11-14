@@ -11,7 +11,9 @@ import com.nuvio.tv.domain.model.Stream
  * (ReleaseFactsParser) against the shipped default ladders
  * (ReleaseRankPreferences.DEFAULT); there is no user-editable override.
  *
- * Order (Q18: resolution wins outright, no cross-tier trading):
+ * Order (Q18: resolution wins outright, no cross-tier trading), after one guard key: a suspect
+ * stream (ReleaseFacts.suspect: fake quality or a size implausible for its resolution, Spec 65 P4;
+ * with [rank]'s filmSizeFloors, also a size under the film floor) ranks below every other, then
  * resolution -> quality (REMUX > BluRay > WEB-DL > ...) -> preferred release
  * group ladder (TRaSH HQ tiers by default) -> visual tags -> audio tags
  * (TrueHD first by default) -> channels -> encode -> size (desc) -> container
@@ -28,15 +30,23 @@ object StreamQualityRank {
 
     private val CONTAINER_MKV = Regex("\\.mkv\\b|\\bmkv\\b", RegexOption.IGNORE_CASE)
 
-    /** Stable, deterministic best-first ordering of the given streams. */
-    fun rank(streams: List<Stream>): List<Stream> {
+    /**
+     * Stable, deterministic best-first ordering of the given streams. [filmSizeFloors]: the caller
+     * knows the content is a film, so the higher film size floors apply (Spec 65 D4).
+     */
+    fun rank(streams: List<Stream>, filmSizeFloors: Boolean = false): List<Stream> {
         if (streams.size <= 1) return streams
         val factsByStream = streams.associateWith { ReleaseFactsParser.factsFor(it) }
+        val suspect = streams.associateWith { stream ->
+            val facts = factsByStream.getValue(stream)
+            facts.suspect || (filmSizeFloors && ReleaseFactsParser.belowFilmSizeFloor(facts))
+        }
         val pool = streams.filter {
             ReleaseFactsParser.passesExclusionFilters(factsByStream.getValue(it))
         }.ifEmpty { streams }
         return pool.sortedWith(
-            compareBy<Stream> { factsByStream.getValue(it).resolutionRank }
+            compareBy<Stream> { suspect.getValue(it) }
+                .thenBy { factsByStream.getValue(it).resolutionRank }
                 .thenBy { factsByStream.getValue(it).qualityRank }
                 .thenBy { factsByStream.getValue(it).groupRank }
                 .thenBy { factsByStream.getValue(it).visualRank }

@@ -417,6 +417,40 @@
     <string name="update_percent">%1$d%%</string>
     <string name="update_failed">Download failed. Try again.</string>
     <string name="update_try_again">Try again</string>
+    <!-- Spec 80: the changelog (Settings › About) -->
+    <string name="changelog_title">Changelog</string>
+    <string name="update_open_changelog_video">Watch video and read the notes</string>
+    <string name="update_open_changelog">Read the notes</string>
+    <string name="update_keeps_going">The download keeps going</string>
+    <string name="update_ready_install">Ready: Install now</string>
+    <string name="update_ready_checked">Downloaded and checked · %1$s</string>
+    <string name="update_downloading_version">Downloading %1$s</string>
+    <string name="changelog_row_subtitle">What\'s new in each release, with its video when there is one</string>
+    <string name="changelog_list_subtitle">Releases from %1$s, newest first</string>
+    <string name="changelog_video_tag">Video</string>
+    <string name="changelog_installed">Installed</string>
+    <string name="changelog_not_installed">Not installed yet</string>
+    <string name="changelog_failed">Couldn\'t load the changelog. Check the connection and try again.</string>
+    <string name="changelog_empty">No releases yet.</string>
+    <string name="changelog_breadcrumb">Settings › About › Changelog</string>
+    <string name="changelog_installed_here">Installed on this TV</string>
+    <string name="changelog_full_notes">Full notes</string>
+    <string name="changelog_notes">Notes</string>
+    <string name="changelog_no_notes">No notes for this release.</string>
+    <string name="changelog_video_title">What\'s new in %1$s</string>
+    <string name="changelog_video_note">Plays in Nuvio\'s own player; Back comes back here.</string>
+    <string name="changelog_also_at">Also at %1$s/releases</string>
+    <string name="changelog_notes_hint">Up / Down scroll the notes · Back: the list</string>
+    <string name="cd_changelog_play_video">Play the release video</string>
+    <!-- Spec 80 C1: the What's new card, first start after an update -->
+    <string name="whats_new_eyebrow">WHAT\'S NEW</string>
+    <string name="whats_new_updated_from">Updated from %1$s</string>
+    <string name="whats_new_released_after">released %1$s</string>
+    <string name="whats_new_note_video">The full notes and the video stay in Settings › About › Changelog.</string>
+    <string name="whats_new_note">The full notes stay in Settings › About › Changelog.</string>
+    <string name="whats_new_watch">Watch video</string>
+    <string name="whats_new_read">Read notes</string>
+    <string name="whats_new_dismiss">Dismiss</string>
 
     <!-- Settings row kit (Spec 31 S8) -->
     <string name="settings_this_tv">This TV</string>
@@ -484,6 +518,14 @@
     <string name="advanced_focus_scroll_subtitle">Nuvio\'s own focus scroll animation and positioning</string>
     <string name="advanced_addon_health_title">Addon health indicators</string>
     <string name="advanced_addon_health_subtitle">OK, Slow or Down on addons and resolvers. Passive, no background checks.</string>
+    <string name="advanced_section_diagnostics">Diagnostics</string>
+    <string name="advanced_last_close_title">Last unexpected close</string>
+    <string name="advanced_last_close_subtitle">Crashes, freezes and memory kills. This TV only.</string>
+    <string name="advanced_last_close_none">None recorded</string>
+    <string name="advanced_last_close_crash">Crashed</string>
+    <string name="advanced_last_close_anr">Stopped responding</string>
+    <string name="advanced_last_close_memory">Out of memory</string>
+    <string name="advanced_last_close_value">%1$s · %2$s</string>
     <string name="advanced_section_cache">Cache</string>
     <string name="advanced_compose_highlighter">Compose Highlighter</string>
     <string name="advanced_compose_highlighter_subtitle">Flash borders around recomposing UI elements for performance debugging.</string>
@@ -558,6 +600,10 @@
     <string name="playback_frame_rate_matching_sub">Switch the display refresh rate to the video\'s</string>
     <string name="playback_afr_start_stop">On start + stop</string>
     <string name="playback_resolution_matching_desc">Allow display mode changes to match the video resolution</string>
+    <!-- Spec 62 H1 -->
+    <string name="playback_afr_settle_hold">Wait after display switch</string>
+    <string name="playback_afr_settle_hold_sub">Hold playback while the TV and receiver re-sync after a mode change</string>
+    <string name="playback_needs_frame_rate_matching">Turn on Frame rate matching first</string>
     <string name="playback_dv_handling">Dolby Vision handling</string>
     <string name="playback_preferred_audio_lang">Preferred audio language</string>
     <string name="playback_section_general">General</string>
@@ -745,6 +791,16 @@
     <string name="sub_colour_charcoal">Charcoal</string>
     <string name="sub_colour_dark_grey">Dark grey</string>
     <string name="sub_preview_tag">Preview</string>
+    <string name="sub_preview_tag_hdr">Preview · HDR</string>
+    <string name="sub_hdr_section">HDR and Dolby Vision</string>
+    <string name="sub_hdr_style">Separate HDR / Dolby Vision style</string>
+    <string name="sub_hdr_style_sub">A different colour and dimmer text on HDR and Dolby Vision video. Image (PGS) and styled ASS subtitles keep their own colours</string>
+    <string name="sub_hdr_text_colour">HDR text colour</string>
+    <string name="sub_hdr_brightness">HDR brightness</string>
+    <string name="sub_hdr_brightness_sub">How bright subtitles are on HDR video</string>
+    <string name="sub_hdr_dim_controls">Dim player controls on HDR</string>
+    <string name="sub_hdr_dim_controls_sub">Apply the HDR brightness to the controls and panels over the video</string>
+    <string name="playback_needs_hdr_subtitle_style">Turn on Separate HDR / Dolby Vision style first</string>
     <string name="sub_preview_line">I never wanted to leave Amsterdam.</string>
 
     <string name="autoplay_last_link_cache">Last Link Cache Duration</string>
@@ -962,6 +1018,9 @@
     </plurals>
     <string name="profiles_remember_last_title">Remember last profile</string>
     <string name="profiles_remember_last_subtitle">Skip the picker at startup for profiles without a PIN</string>
+    <!-- Spec 62 H3 -->
+    <string name="profiles_return_to_picker_title">Return to Who\'s watching</string>
+    <string name="profiles_return_to_picker_subtitle">After 30 minutes without use, and when the TV wakes</string>
     <string name="profile_name_placeholder">Profile name</string>
     <string name="profile_create_btn">Create</string>
     <string name="profile_choose_avatar">Choose Avatar</string>
@@ -1193,6 +1252,42 @@
     <string name="addon_mark_on_enter">On Enter</string>
     <string name="addon_action_search_as_you_type">Search: as you type</string>
     <string name="addon_action_search_on_enter">Search: on Enter</string>
+    <!-- Spec 68 X7: addon server certificates (sandbox s068-x7-tls-confirm v1). %1$s = host, with :port when not 443. -->
+    <string name="addon_mark_certificate">Certificate</string>
+    <string name="addon_cert_paused">Paused</string>
+    <string name="addon_cert_row_line">Nuvio can\'t verify %1$s, so nothing is sent to this addon. Review its certificate to use it again.</string>
+    <!-- Spec 68 D11 Q8: read-only profile row, no action strip. -->
+    <string name="addon_cert_row_line_read_only">Nuvio can\'t verify %1$s, so nothing is sent to this addon.</string>
+    <string name="addon_action_review_certificate">Review certificate</string>
+    <string name="addon_cert_trust_eyebrow">Trust this addon server?</string>
+    <string name="addon_cert_reason_self_signed">Its certificate is self-signed, so Nuvio can\'t check that this really is %1$s. If it isn\'t, whoever sits in between can read what Nuvio sends this addon, including the keys in its address.</string>
+    <!-- Spec 68 D11 Q11: a certificate from an issuer Nuvio doesn't know (not self-signed). -->
+    <string name="addon_cert_reason_unknown_issuer">Its certificate comes from an issuer Nuvio doesn\'t know, so Nuvio can\'t check that this really is %1$s. If it isn\'t, whoever sits in between can read what Nuvio sends this addon, including the keys in its address.</string>
+    <!-- %2$s = the name the certificate was issued for. -->
+    <string name="addon_cert_reason_wrong_name">Its certificate was issued for a different name (%2$s), so Nuvio can\'t check that this really is %1$s. If it isn\'t, whoever sits in between can read what Nuvio sends this addon, including the keys in its address.</string>
+    <!-- %2$s = the date it expired. -->
+    <string name="addon_cert_reason_expired">Its certificate expired on %2$s, so Nuvio can\'t check that this really is %1$s. If it isn\'t, whoever sits in between can read what Nuvio sends this addon, including the keys in its address.</string>
+    <string name="addon_cert_trust_note">Trust it only if this is your own server. Nuvio then accepts this one certificate for %1$s and asks again if it ever changes.</string>
+    <string name="addon_cert_fingerprint_label">Certificate SHA-256 · valid until %1$s</string>
+    <string name="addon_cert_trust">Trust this server</string>
+    <string name="addon_cert_changed_eyebrow">This server\'s certificate changed</string>
+    <!-- %2$s = the date it was trusted, %3$s = the addon\'s name. -->
+    <string name="addon_cert_changed_body">%1$s now shows a different certificate from the one you trusted on %2$s. %3$s stays paused until you decide.</string>
+    <!-- Spec 68 D11 Q5: the changed panel on Install, where nothing is paused. -->
+    <string name="addon_cert_changed_body_install">%1$s now shows a different certificate from the one you trusted on %2$s.</string>
+    <string name="addon_cert_changed_note">That is expected if you renewed or reinstalled the certificate yourself. If you didn\'t, keep it paused: someone may be sitting in between.</string>
+    <string name="addon_cert_trusted_on">Trusted %1$s</string>
+    <string name="addon_cert_now_valid_until">Now · valid until %1$s</string>
+    <string name="addon_cert_trust_new">Trust the new certificate</string>
+    <string name="addon_cert_keep_paused">Keep paused</string>
+    <!-- Spec 68 D11 Q1: the probe found the certificate passes now. -->
+    <string name="addon_cert_verifies_now">%1$s checks out now. If the addon still fails, it sends Nuvio on to a server that can\'t be verified.</string>
+    <!-- Spec 68 D11 Q2: no certificate came back. -->
+    <string name="addon_cert_unreachable">Couldn\'t reach %1$s over https, so there\'s no certificate to check. Make sure the server is on, then try again.</string>
+    <!-- Spec 68 D11 Q3: different certificates on different addresses. -->
+    <string name="addon_cert_inconsistent">%1$s shows different certificates on different addresses, so Nuvio can\'t trust one of them. Fix the server\'s certificate, then try again.</string>
+    <!-- Spec 68 D11 Q4: install by link failed on a certificate. -->
+    <string name="addon_install_link_certificate">Couldn\'t install: Nuvio can\'t verify %1$s. Install it from Settings &gt; Addons to review its certificate.</string>
     <string name="addon_pending_collections_updated">Collections updated</string>
     <string name="addon_pending_collections_replace">%1$d collection(s) will replace current collections</string>
     <string name="addon_confirm_total_addons">Total addons: %1$d</string>
@@ -1329,6 +1424,9 @@
     <string name="subtitle_style_bold">Bold</string>
     <string name="subtitle_style_text_color">Text Color</string>
     <string name="subtitle_style_text_opacity">Text Opacity</string>
+    <string name="subtitle_style_text_color_hdr">Text Color (HDR)</string>
+    <string name="subtitle_style_text_opacity_hdr">Text Opacity (HDR)</string>
+    <string name="subtitle_style_brightness_hdr">Brightness (HDR)</string>
     <string name="subtitle_style_outline">Outline</string>
     <string name="subtitle_edge_style">Text edge</string>
     <string name="subtitle_edge_drop_shadow">Drop shadow</string>
@@ -1700,6 +1798,20 @@
     <string name="live_tv_picker_yours">YOUR CHANNELS</string>
     <string name="live_tv_picker_all_section">ALL</string>
     <string name="live_tv_sources">Sources</string>
+    <string name="live_tv_view">View</string>
+    <string name="live_tv_view_list">List</string>
+    <string name="live_tv_view_guide">Guide</string>
+    <string name="live_tv_view_compact">Compact</string>
+    <string name="live_tv_view_list_detail">Channels + preview</string>
+    <string name="live_tv_view_guide_detail">Channels down, time across</string>
+    <string name="live_tv_view_compact_detail">Guide with smaller rows</string>
+    <string name="live_tv_hint_watch">Watch</string>
+    <string name="live_tv_guide_ends_cell">%1$s\'s guide ends at %2$s</string>
+    <string name="live_tv_guide_starts_in">starts in %1$s</string>
+    <string name="live_tv_guide_ended">ended</string>
+    <string name="live_tv_guide_hours_minutes">%1$d h %2$d min</string>
+    <string name="live_tv_guide_hours">%1$d h</string>
+    <string name="live_tv_guide_midnight">%1$s %2$s</string>
     <string name="live_tv_live">LIVE</string>
     <string name="live_tv_tag_unavailable">UNAVAILABLE</string>
     <string name="live_tv_tag_source_lost">SOURCE LOST</string>
@@ -1737,6 +1849,15 @@
     <string name="live_tv_hint_channel_list">Channel list</string>
     <string name="live_tv_hint_back">BACK</string>
     <string name="live_tv_hint_hold_back">HOLD BACK</string>
+    <string name="live_tv_hint_right">►</string>
+    <string name="live_tv_hint_schedule">Schedule</string>
+    <string name="live_tv_schedule">Schedule</string>
+    <string name="live_tv_schedule_today">Today</string>
+    <plurals name="live_tv_schedule_minutes">
+        <item quantity="one">%d min</item>
+        <item quantity="other">%d min</item>
+    </plurals>
+    <string name="live_tv_schedule_guide_ends">The %1$s guide ends at %2$s. It refreshes when you open Live TV.</string>
     <string name="live_tv_last_channel">Last channel: %1$s</string>
     <string name="live_tv_list_hides">Hides after 8 s</string>
     <string name="live_tv_tuning">Tuning %1$s</string>
@@ -1749,23 +1870,121 @@
     <string name="live_tv_streams_tried">%1$d of %2$d streams failed</string>
     <string name="live_tv_no_streams">no streams found</string>
     <string name="live_tv_lookup_failed">stream lookup failed</string>
-    <plurals name="live_tv_all_streams_drm">
-        <item quantity="one">its stream is DRM-protected</item>
-        <item quantity="other">all %d streams are DRM-protected</item>
+    <plurals name="live_tv_all_streams_need_licence">
+        <item quantity="one">its stream needs a DRM licence</item>
+        <item quantity="other">all %d streams need a DRM licence</item>
+    </plurals>
+    <plurals name="live_tv_streams_need_licence">
+        <item quantity="one">%d needs a licence</item>
+        <item quantity="other">%d need a licence</item>
     </plurals>
     <string name="live_tv_last_error">Last error: %1$s · tried %2$s</string>
     <string name="live_tv_error_network">network error</string>
     <string name="live_tv_error_stall">stream stalled</string>
     <string name="live_tv_error_parse">unreadable stream</string>
-    <string name="live_tv_error_drm">DRM-protected</string>
+    <string name="live_tv_error_licence_refused">licence refused (%1$s)</string>
+    <string name="live_tv_error_no_drm">this TV has no %1$s DRM</string>
+    <string name="live_tv_error_no_drm_unknown">this TV has no DRM for this stream</string>
+    <string name="live_tv_error_licence_not_accepted">licence not accepted by this TV</string>
+    <string name="live_tv_error_no_licence">needs a DRM licence the playlist does not give</string>
     <string name="live_tv_error_http">HTTP %1$d</string>
     <string name="live_tv_unavailable_note">Skipped for 24 h when you zap past it; Retry tries again now</string>
     <string name="live_tv_retry">Retry</string>
     <string name="live_tv_next_channel">Next channel</string>
     <string name="live_tv_empty_title">Add a channel source</string>
-    <string name="live_tv_empty_body">Start with the broadcasters\' own free streams: DW, France 24, NHK World, Al Jazeera English and the Doordarshan channels. You can add playlists, guides and Stremio TV addons by URL any time.</string>
     <string name="live_tv_add_broadcasters">Add broadcasters · 7 channels</string>
     <string name="live_tv_add_source_url">Add source URL</string>
+    <string name="live_tv_add_pack">Add channel pack</string>
+    <string name="live_tv_empty_body_pack">The channel pack lists %1$s free channels from %2$s countries, checked twice a day. Nuvio then tries them from this TV and keeps the ones that play here. You can also add the broadcasters\' own streams, or playlists, guides and Stremio TV addons by URL.</string>
+    <!-- Spec 73 D11 (Q1): the approved body minus its figures, when monitor/pack.json cannot be read. -->
+    <string name="live_tv_empty_body_pack_unknown">The channel pack lists free channels from many countries, checked twice a day. Nuvio then tries them from this TV and keeps the ones that play here. You can also add the broadcasters\' own streams, or playlists, guides and Stremio TV addons by URL.</string>
+    <string name="live_tv_pack_facts">Channel pack: %1$s channels · %2$s download · refreshed daily from GitHub</string>
+    <string name="live_tv_pack_name">Channel pack</string>
+    <string name="live_tv_pack_offer">%1$s free channels from %2$s countries, checked twice a day</string>
+    <!-- Spec 73 D11 (Q2): the SUGGESTED row's line minus its figures, when monitor/pack.json cannot be read. -->
+    <string name="live_tv_pack_offer_unknown">Free channels from many countries, checked twice a day</string>
+    <string name="live_tv_pack_home">Nuvio-KE-channels on GitHub</string>
+    <string name="live_tv_pack_add">Add pack</string>
+    <!-- Spec 73 D11 (Q3): a failed pack add on Sources (the guide suggestions' toast pattern). -->
+    <string name="live_tv_pack_add_failed">Could not add the channel pack: %1$s</string>
+    <!-- Spec 73 S3b: the channel pack scan (stages 3-9). Open cases decided in D12, D13. -->
+    <string name="live_tv_scan_eyebrow">Scan the channel pack</string>
+    <string name="live_tv_scan_note">Nuvio tries each channel from this TV and hides the ones that don\'t play here. Tick the countries you watch.</string>
+    <string name="live_tv_scan_this_tv">THIS TV</string>
+    <string name="live_tv_scan_all_countries">ALL COUNTRIES</string>
+    <string name="live_tv_scan_no_country">No country listed</string>
+    <plurals name="live_tv_scan_channels">
+        <item quantity="one">%1$s channel</item>
+        <item quantity="other">%1$s channels</item>
+    </plurals>
+    <string name="live_tv_scan_estimate">%1$s · about %2$d min</string>
+    <string name="live_tv_scan_whole_world">Whole world</string>
+    <string name="live_tv_scan_go_one">Scan %1$s</string>
+    <string name="live_tv_scan_go_none">Scan</string>
+    <plurals name="live_tv_scan_go_several">
+        <item quantity="one">Scan %1$d country</item>
+        <item quantity="other">Scan %1$d countries</item>
+    </plurals>
+    <!-- D12 Q1: how a scan's countries are named -->
+    <plurals name="live_tv_scan_name_several">
+        <item quantity="one">%1$d country</item>
+        <item quantity="other">%1$d countries</item>
+    </plurals>
+    <string name="live_tv_scan_name_world">the whole world</string>
+    <string name="live_tv_scan_name_no_country">channels with no country</string>
+    <string name="live_tv_scan_world_eyebrow">Scan the whole world?</string>
+    <string name="live_tv_scan_world_big">%1$s channels in %2$s countries</string>
+    <string name="live_tv_scan_world_body">That takes about %1$d minutes on this TV and uses about %2$d MB of data. Playing a channel pauses the scan. You can cancel any time and keep what was checked.</string>
+    <string name="live_tv_scan_world_go">Scan whole world</string>
+    <string name="live_tv_scan_progress_eyebrow">Scanning %1$s</string>
+    <string name="live_tv_scan_percent">%1$d%%</string>
+    <string name="live_tv_scan_checked">%1$s of %2$s checked</string>
+    <string name="live_tv_scan_play_here">%1$s play here</string>
+    <string name="live_tv_scan_dont">%1$s don\'t</string>
+    <string name="live_tv_scan_minutes_left">about %1$d min left</string>
+    <string name="live_tv_scan_under_minute">less than a minute left</string>
+    <string name="live_tv_scan_paused_line">Paused while a channel plays</string>
+    <string name="live_tv_scan_progress_note">Hide keeps the scan going while you use the app; Sources shows how far it got. Playing a channel pauses it.</string>
+    <string name="live_tv_scan_hide">Hide</string>
+    <string name="live_tv_scan_cancel">Cancel scan</string>
+    <string name="live_tv_scan_done_eyebrow">Scan done · %1$s</string>
+    <string name="live_tv_scan_done_big">%1$s of %2$s channels play on this TV</string>
+    <plurals name="live_tv_scan_done_hidden">
+        <item quantity="one">%1$s doesn\'t play from here. It stays hidden until the next scan.</item>
+        <item quantity="other">%1$s don\'t play from here. They stay hidden until the next scan.</item>
+    </plurals>
+    <string name="live_tv_scan_done_more">%1$s more</string>
+    <string name="live_tv_scan_done_added">\u0020now in Live TV: the monitor can\'t reach them from the US, but they play here.</string>
+    <string name="live_tv_scan_done_among">Among them %1$s.</string>
+    <string name="live_tv_scan_done_among_two">%1$s and %2$s</string>
+    <string name="live_tv_scan_open_live">Open Live TV</string>
+    <string name="live_tv_scan_close">Done</string>
+    <string name="live_tv_scan_cancelled_eyebrow">Scan cancelled · %1$s</string>
+    <string name="live_tv_scan_cancelled_big">%1$s of %2$s channels checked</string>
+    <string name="live_tv_scan_cancelled_hidden">. %1$s don\'t and stay hidden until the next scan.</string>
+    <plurals name="live_tv_scan_cancelled_rest">
+        <item quantity="one">The other %1$s keeps the monitor\'s result: shown if it reached it, waiting if not. Scan again in Sources to finish.</item>
+        <item quantity="other">The other %1$s keep the monitor\'s result: shown if it reached them, waiting if not. Scan again in Sources to finish.</item>
+    </plurals>
+    <string name="live_tv_scan_cancelled_hidden_only">%1$s don\'t play here and stay hidden until the next scan.</string>
+    <string name="live_tv_scan_again">Scan again</string>
+    <string name="live_tv_scan_row_never">not scanned yet</string>
+    <string name="live_tv_scan_row_running">scanning %1$s, %2$s of %3$s checked</string>
+    <string name="live_tv_scan_row_done">scanned %1$s %2$s</string>
+    <!-- D12 Q8: also a scan the app closed during -->
+    <string name="live_tv_scan_row_cancelled">scan of %1$s cancelled %2$s</string>
+    <string name="live_tv_scan_status">SCANNING %1$d%%</string>
+    <string name="live_tv_scan_paused">PAUSED</string>
+    <string name="live_tv_scan_summary">%1$s: %2$s play here, %3$s hidden until the next scan</string>
+    <plurals name="live_tv_scan_waiting_elsewhere">
+        <item quantity="one">%1$s channel elsewhere waits for a scan of its country</item>
+        <item quantity="other">%1$s channels elsewhere wait for a scan of their country</item>
+    </plurals>
+    <!-- D13: the waiting count before any scan -->
+    <plurals name="live_tv_scan_waiting">
+        <item quantity="one">%1$s channel waits for a scan of its country</item>
+        <item quantity="other">%1$s channels wait for a scan of their country</item>
+    </plurals>
     <string name="live_tv_empty_note">Sources and channels stay on this TV and are not synced.</string>
     <string name="live_tv_choose_guide">Choose guide</string>
     <plurals name="live_tv_guide_none_yet">
@@ -1807,6 +2026,7 @@
     <string name="live_tv_type_addon">ADDON</string>
     <string name="live_tv_type_guide">GUIDE</string>
     <string name="live_tv_type_data">DATA</string>
+    <string name="live_tv_type_pack">PACK</string>
     <string name="live_tv_src_built_in">Built in</string>
     <string name="live_tv_src_m3u" translatable="false">M3U</string>
     <string name="live_tv_src_xmltv" translatable="false">XMLTV</string>
@@ -1846,38 +2066,80 @@
     <string name="live_tv_hidden_note">OK shows a channel in Live TV again.</string>
     <string name="live_tv_rename_failed">Could not rename the source</string>
     <string name="live_tv_type_suggested">SUGGESTED</string>
-    <string name="live_tv_pluto_title">Pluto TV guide</string>
-    <plurals name="live_tv_pluto_in_source">
-        <item quantity="one">%2$s has %1$s Pluto TV channel</item>
-        <item quantity="other">%2$s has %1$s Pluto TV channels</item>
+    <string name="live_tv_preset_service_title">%1$s guide</string>
+    <plurals name="live_tv_preset_country_title">
+        <item quantity="one">%1$s TV guide</item>
+        <item quantity="other">%1$s TV guides</item>
     </plurals>
-    <plurals name="live_tv_pluto_in_sources">
-        <item quantity="one">Your playlists have %1$s Pluto TV channel</item>
-        <item quantity="other">Your playlists have %1$s Pluto TV channels</item>
+    <string name="live_tv_service_pluto" translatable="false">Pluto TV</string>
+    <string name="live_tv_service_plex" translatable="false">Plex TV</string>
+    <string name="live_tv_service_samsung" translatable="false">Samsung TV Plus</string>
+    <string name="live_tv_service_plex_channels" translatable="false">Plex</string>
+    <string name="live_tv_preset_place_uk">the United Kingdom</string>
+    <plurals name="live_tv_preset_service_in_source">
+        <item quantity="one">%2$s has %1$s %3$s channel</item>
+        <item quantity="other">%2$s has %1$s %3$s channels</item>
     </plurals>
-    <plurals name="live_tv_pluto_covers">
+    <plurals name="live_tv_preset_service_in_sources">
+        <item quantity="one">Your playlists have %1$s %2$s channel</item>
+        <item quantity="other">Your playlists have %1$s %2$s channels</item>
+    </plurals>
+    <plurals name="live_tv_preset_country_in_source">
+        <item quantity="one">%2$s has %1$s channel from %3$s</item>
+        <item quantity="other">%2$s has %1$s channels from %3$s</item>
+    </plurals>
+    <plurals name="live_tv_preset_country_in_sources">
+        <item quantity="one">Your playlists have %1$s channel from %2$s</item>
+        <item quantity="other">Your playlists have %1$s channels from %2$s</item>
+    </plurals>
+    <plurals name="live_tv_preset_covers">
         <item quantity="one">this guide covers it</item>
         <item quantity="other">this guide covers all of them</item>
     </plurals>
-    <string name="live_tv_pluto_host" translatable="false">i.mjh.nz</string>
-    <string name="live_tv_pluto_add">Add guide</string>
-    <string name="live_tv_pluto_add_failed">Could not add the Pluto TV guide</string>
-    <string name="live_tv_india_title">India TV guides</string>
-    <plurals name="live_tv_india_in_source">
-        <item quantity="one">%2$s has %1$s channel from India</item>
-        <item quantity="other">%2$s has %1$s channels from India</item>
+    <plurals name="live_tv_preset_add">
+        <item quantity="one">Add guide</item>
+        <item quantity="other">Add guides</item>
     </plurals>
-    <plurals name="live_tv_india_in_sources">
-        <item quantity="one">Your playlists have %1$s channel from India</item>
-        <item quantity="other">Your playlists have %1$s channels from India</item>
+    <string name="live_tv_presets_title">Guides for your channels</string>
+    <plurals name="live_tv_presets_fit">
+        <item quantity="one">%1$s guide fits your channels</item>
+        <item quantity="other">%1$s guides fit your channels</item>
     </plurals>
-    <plurals name="live_tv_india_covers">
-        <item quantity="one">these 2 guides cover it</item>
-        <item quantity="other">these 2 guides cover them</item>
+    <plurals name="live_tv_presets_more">
+        <item quantity="one">%1$s and %2$s more</item>
+        <item quantity="other">%1$s and %2$s more</item>
     </plurals>
-    <string name="live_tv_india_hosts" translatable="false">epg.pw, free-epg.de</string>
-    <string name="live_tv_india_add">Add guides</string>
-    <string name="live_tv_india_add_failed">Could not add the India TV guides</string>
+    <plurals name="live_tv_presets_more_countries">
+        <item quantity="one">%1$s and %2$s more country</item>
+        <item quantity="other">%1$s and %2$s more countries</item>
+    </plurals>
+    <string name="live_tv_presets_pick_note">Most channels first. Tick the ones you watch.</string>
+    <string name="live_tv_header_title">Guides from %1$s</string>
+    <string name="live_tv_header_few">%1$s names %2$s for its %3$s</string>
+    <plurals name="live_tv_header_guides">
+        <item quantity="one">%1$s guide</item>
+        <item quantity="other">%1$s guides</item>
+    </plurals>
+    <plurals name="live_tv_header_channels">
+        <item quantity="one">%1$s channel</item>
+        <item quantity="other">%1$s channels</item>
+    </plurals>
+    <string name="live_tv_header_by_country">%1$s names guides for %2$s of its %3$s</string>
+    <plurals name="live_tv_header_countries">
+        <item quantity="one">%1$s country</item>
+        <item quantity="other">%1$s countries</item>
+    </plurals>
+    <string name="live_tv_header_per_country">one guide per country</string>
+    <string name="live_tv_header_add">Add guides</string>
+    <string name="live_tv_header_choose">Choose guides</string>
+    <string name="live_tv_header_pick_note_country">One guide per country, largest first. Tick the countries you watch.</string>
+    <string name="live_tv_header_pick_note">Tick the guides you want.</string>
+    <string name="live_tv_header_ticked">%1$d ticked</string>
+    <plurals name="live_tv_header_add_n">
+        <item quantity="one">Add %1$d guide</item>
+        <item quantity="other">Add %1$d guides</item>
+    </plurals>
+    <string name="live_tv_header_add_failed">Could not add the guides</string>
     <string name="live_tv_remove_failed">Could not remove the source</string>
     <string name="live_tv_unhide_failed">Could not show the channel again</string>
     <string name="nav_settings">Settings</string>
@@ -2287,11 +2549,9 @@
     <!-- Player runtime: error recovery -->
     <string name="player_error_stream_blocked">\n\nThe stream source is blocked or restricted. Try a different source.</string>
     <string name="player_error_stream_removed">\n\nThe stream link has expired or been removed. Try a different source.</string>
-    <string name="player_source_unavailable_next">That source was unavailable — playing the next best</string>
     <string name="player_error_stream_expired">\n\nThe stream link has expired. Try a different source.</string>
     <string name="player_error_stream_rate_limited">\n\nToo many requests to the stream source. Wait a moment and try again.</string>
     <string name="player_error_stream_unavailable">\n\nThe stream server is currently unavailable. Try a different source.</string>
-    <string name="player_dead_source_failover">Source unavailable \u2014 trying next source (%1$d/%2$d)</string>
     <string name="player_error_source_invalid_content">Source error: The stream source returned invalid or unplayable content. The link may have expired or the server returned an error page instead of video.\n\nTry a different source. [%1$s]</string>
     <string name="player_error_decoder">Decoder error</string>
     <string name="player_error_unsupported_format">This stream uses a format your device may not support. Try a different source. [%1$s]</string>
@@ -2303,6 +2563,184 @@
     <string name="player_error_startup_timeout">Playback did not start — the video decoder may not be responding. A device restart usually clears this. Press back to return and try again, or pick a different stream.</string>
     <string name="player_error_startup_video_track_unsupported">Playback did not start — this device cannot play the video format of this stream. Press back and pick a different stream.</string>
     <string name="player_error_startup_no_stream_data">Playback did not start — the stream did not deliver data in time. The source may be slow or unavailable. Press back to try again, or pick a different stream.</string>
+    <!-- Spec 75 S4: the playback error box (approved copy: Spec 75 § Plan table + mockup spec-75-failure-reasons v2).
+         %1$s in a body = the service that served the link ("Real-Debrid"), or failure_service_fallback. -->
+    <string name="failure_eyebrow">Playback error</string>
+    <string name="failure_details">Details</string>
+    <string name="failure_hide_details">Hide details</string>
+    <!-- Spec 86 R3: the error box's fix buttons (mockup spec-86-failure-box-actions v1); Retry and External player
+         reuse action_retry and player_tray_external_player. -->
+    <string name="failure_action_next_source">Next source</string>
+    <string name="failure_action_play_with_mpv">Play with Libmpv</string>
+    <string name="failure_action_play_with_exoplayer">Play with ExoPlayer</string>
+    <string name="failure_service_fallback">The server</string>
+    <string name="failure_body_pick_another">Go back and pick another source.</string>
+    <string name="failure_title_link_expired">This link has expired</string>
+    <string name="failure_body_link_expired">%1$s no longer serves this file at that address. Go back and pick another source.</string>
+    <string name="failure_title_blocked">The server refused this link</string>
+    <string name="failure_body_blocked">%1$s would not send this file. Go back and pick another source.</string>
+    <string name="failure_title_removed">This file is no longer there</string>
+    <string name="failure_body_removed">%1$s has no file at that address any more. Go back and pick another source.</string>
+    <string name="failure_title_rate_limited">The server is busy</string>
+    <string name="failure_body_rate_limited">%1$s asked the app to slow down. Wait a minute and try again, or pick another source.</string>
+    <string name="failure_title_server_down">The server is not working right now</string>
+    <string name="failure_body_server_down">%1$s answered with an error. Try again later, or pick another source.</string>
+    <string name="failure_title_other_http">The server would not send this file</string>
+    <!-- %1$s = the HTTP status code ("418") -->
+    <string name="failure_body_other_http">It answered HTTP %1$s. Go back and pick another source.</string>
+    <string name="failure_title_no_connection">Could not reach the server</string>
+    <string name="failure_body_no_connection">Check this TV\'s connection, then try again or pick another source.</string>
+    <string name="failure_title_web_page">The server sent a web page, not video</string>
+    <!-- %1$s = the page's title, plain text -->
+    <string name="failure_body_web_page">The page says “%1$s”. The debrid account may be out of traffic for today; pick a source from another service or try later.</string>
+    <!-- %1$s = what arrived ("2 KB"), %2$s = the file's listed size ("6.1 GB") -->
+    <string name="failure_title_tiny_file">The server sent a %1$s file, not a %2$s video</string>
+    <string name="failure_title_tiny_file_unsized">The server sent a %1$s file, not video</string>
+    <string name="failure_title_tiny_file_plain">The server sent a tiny file, not video</string>
+    <!-- %1$s = the content type ("text/plain") -->
+    <string name="failure_title_text_typed">The server sent text, not video (%1$s)</string>
+    <string name="failure_title_text">The server sent text, not video</string>
+    <!-- %1$s = the sign-in page, host and path ("real-debrid.com/login") -->
+    <string name="failure_title_login_at">The link sent you to a sign-in page (%1$s)</string>
+    <string name="failure_title_login">The link sent you to a sign-in page</string>
+    <string name="failure_title_unreadable">This file could not be read</string>
+    <string name="failure_body_unreadable">The file\'s start did not look like any video format the player knows. Go back and pick another source.</string>
+    <string name="failure_title_too_slow">The connection is too slow for this file</string>
+    <!-- %1$s = measured Mbit/s ("18"), %2$s = what the file needs ("70") -->
+    <string name="failure_body_too_slow">It arrived at %1$s Mbit/s; this file needs about %2$s. A 1080p or web copy should play.</string>
+    <string name="failure_title_no_data">The file did not start arriving</string>
+    <string name="failure_body_no_data">The server took the request but sent nothing in time. Go back and try again, or pick another source.</string>
+    <string name="failure_title_placeholder">This is not the film</string>
+    <string name="failure_body_placeholder">The source sent a short placeholder clip instead of the file (often: not cached yet). Pick another source.</string>
+    <string name="failure_title_video_unsupported">This TV cannot play this video format</string>
+    <string name="failure_body_video_unsupported">Pick a source with a different format (for example HEVC or H.264).</string>
+    <string name="failure_title_decoder_stuck">This TV’s video decoder did not answer</string>
+    <string name="failure_body_decoder_stuck">The source answered and the file opened, then the decoder stopped responding. Restarting the TV usually clears this. Go back and try again.</string>
+    <string name="failure_title_corrupt">This file is damaged</string>
+    <string name="failure_body_corrupt">Playback stopped at a broken part of the file. Pick another source.</string>
+    <string name="failure_title_frozen">The picture froze</string>
+    <string name="failure_body_frozen">The file kept playing but the picture stopped moving. Pick another source.</string>
+    <string name="failure_title_audio_failed">The sound could not start</string>
+    <string name="failure_body_audio_failed">This TV\'s audio output would not take this track, even as plain stereo. Try another source or restart the receiver.</string>
+    <string name="failure_title_torrent">The torrent could not start</string>
+    <!-- %1$s = the torrent engine's message, plain text, no final full stop -->
+    <string name="failure_body_torrent">%1$s. Pick a debrid or direct source.</string>
+    <string name="failure_body_torrent_plain">Pick a debrid or direct source.</string>
+    <string name="failure_title_engine">The player could not start</string>
+    <string name="failure_body_engine">Something inside the player failed (Details has the error). Go back and try again.</string>
+    <string name="failure_title_no_url">This source has no link</string>
+    <string name="failure_body_no_url">The addon listed it without an address. Pick another source.</string>
+    <string name="failure_title_unknown">Playback stopped</string>
+    <string name="failure_body_unknown">Go back and try again, or pick another source.</string>
+    <!-- The step line (Spec 75 D2): six steps, a time under each. -->
+    <string name="failure_step_sources">Finding sources</string>
+    <string name="failure_step_link">Getting the link</string>
+    <string name="failure_step_connect">Connecting</string>
+    <string name="failure_step_read">Reading the file</string>
+    <string name="failure_step_picture">Picture</string>
+    <string name="failure_step_sound">Sound</string>
+    <!-- %1$s = seconds, one decimal ("1.4") -->
+    <string name="failure_time_seconds">%1$s s</string>
+    <string name="failure_time_minutes">%1$d min</string>
+    <!-- Details lines: runs shown joined by spaces; a run starting "·" is the muted note. -->
+    <string name="failure_detail_server_answered">Server answered</string>
+    <string name="failure_detail_player">Player:</string>
+    <string name="failure_detail_probe">Probe:</string>
+    <!-- %1$s = the web page's title, plain text -->
+    <string name="failure_detail_probe_title">page title “%1$s”</string>
+    <string name="failure_detail_probe_login">sign-in page %1$s</string>
+    <string name="failure_detail_measured">Measured</string>
+    <string name="failure_detail_mbps">%1$s Mbit/s</string>
+    <string name="failure_detail_over">over %1$s</string>
+    <string name="failure_detail_needs">· needs</string>
+    <string name="failure_detail_about_mbps">~%1$s Mbit/s</string>
+    <!-- %1$s = file size ("6.3 GB"), %2$d = runtime in minutes -->
+    <string name="failure_detail_size_over_runtime">(%1$s over %2$d min)</string>
+    <string name="failure_detail_host">Host</string>
+    <string name="failure_detail_via">· via %1$s</string>
+    <string name="failure_detail_file">File</string>
+    <!-- %1$s = how long the startup watchdog waited ("20.0 s") -->
+    <string name="failure_detail_watchdog_no_data">no data in %1$s</string>
+    <string name="failure_detail_watchdog_no_picture">no picture in %1$s</string>
+    <string name="failure_detail_watchdog_video_refused">video format refused, %1$s</string>
+    <!-- Spec 86 R9 (D3): data kept arriving until the watchdog's ceiling, but no picture came -->
+    <string name="failure_detail_watchdog_still_loading">still loading after %1$s</string>
+    <string name="failure_detail_watchdog_note">· startup watchdog</string>
+    <string name="failure_detail_frozen_for">picture still for %1$s</string>
+    <!-- Spec 75 S5-S6: a failed source's mark, two to four words (§ Plan table "Row mark"): the failover line,
+         its toast, and the Sources marking. -->
+    <string name="failure_mark_link_expired">Link expired</string>
+    <string name="failure_mark_blocked">Link refused</string>
+    <string name="failure_mark_removed">File gone</string>
+    <string name="failure_mark_rate_limited">Server busy</string>
+    <string name="failure_mark_server_down">Server down</string>
+    <string name="failure_mark_other_http">Server refused</string>
+    <string name="failure_mark_no_connection">Unreachable</string>
+    <string name="failure_mark_web_page">Sent a web page, not video</string>
+    <string name="failure_mark_tiny_file">Sent a tiny file</string>
+    <string name="failure_mark_text">Sent text, not video</string>
+    <string name="failure_mark_login">Sent a sign-in page</string>
+    <string name="failure_mark_unreadable">File unreadable</string>
+    <string name="failure_mark_too_slow">Too slow</string>
+    <!-- %1$s = measured Mbit/s ("18"), %2$s = what the file needs ("70") -->
+    <string name="failure_mark_too_slow_speeds">Too slow: %1$s of %2$s Mbit/s</string>
+    <string name="failure_mark_no_data">No data</string>
+    <string name="failure_mark_placeholder">Not cached</string>
+    <string name="failure_mark_video_unsupported">Format not supported</string>
+    <string name="failure_mark_decoder_stuck">Decoder stuck</string>
+    <string name="failure_mark_corrupt">Damaged file</string>
+    <string name="failure_mark_frozen">Picture froze</string>
+    <string name="failure_mark_audio_failed">Sound failed</string>
+    <string name="failure_mark_torrent">Torrent failed</string>
+    <string name="failure_mark_engine">Player failed</string>
+    <string name="failure_mark_no_url">No link</string>
+    <string name="failure_mark_unknown">Failed</string>
+    <string name="failure_ago_just_now">just now</string>
+    <string name="failure_ago_minutes">%1$d min ago</string>
+    <string name="failure_ago_hours">%1$d h ago</string>
+    <!-- After a source's mark in the Sources list; %1$s = its age ("2 min ago"). -->
+    <string name="failure_mark_age">· %1$s</string>
+    <!-- Spec 75 S5 failover (mockup stage 8): %1$s = the failed source's mark ("Link expired"),
+         %2$d/%3$d = this failover of the most allowed. -->
+    <string name="failure_failover_trying">%1$s, trying next source (%2$d/%3$d)</string>
+    <!-- The failover toast; %1$s = the failed source's mark. -->
+    <string name="failure_failover_toast">%1$s, playing the next source</string>
+    <string name="failure_previous_source">Previous source</string>
+    <!-- Spec 75 S5 every source tried (mockup stage 6; wording: Spec 75 D7).
+         %1$d = how many sources were tried, the last included. -->
+    <string name="failure_eyebrow_tried">Playback error · %1$d sources tried</string>
+    <!-- The expired body when every source was tried; %1$s = the service. -->
+    <string name="failure_body_link_expired_tried">%1$s no longer serves this file at that address. Pick a source from another service, or refresh the list for fresh links.</string>
+    <!-- %1$s = the counts by reason ("2 expired links, 1 web page, 1 too slow"). -->
+    <plurals name="failure_tried_before">
+        <item quantity="one">The source before it failed too: %1$s.</item>
+        <item quantity="other">The %2$d sources before it failed too: %1$s.</item>
+    </plurals>
+    <!-- One count per reason, %d = how many sources failed for it. -->
+    <plurals name="failure_count_link_expired"><item quantity="one">%d expired link</item><item quantity="other">%d expired links</item></plurals>
+    <plurals name="failure_count_blocked"><item quantity="one">%d refused link</item><item quantity="other">%d refused links</item></plurals>
+    <plurals name="failure_count_removed"><item quantity="one">%d missing file</item><item quantity="other">%d missing files</item></plurals>
+    <plurals name="failure_count_rate_limited"><item quantity="one">%d busy server</item><item quantity="other">%d busy servers</item></plurals>
+    <plurals name="failure_count_server_down"><item quantity="one">%d server down</item><item quantity="other">%d servers down</item></plurals>
+    <plurals name="failure_count_other_http"><item quantity="one">%d server refusal</item><item quantity="other">%d server refusals</item></plurals>
+    <plurals name="failure_count_no_connection"><item quantity="one">%d unreachable server</item><item quantity="other">%d unreachable servers</item></plurals>
+    <plurals name="failure_count_web_page"><item quantity="one">%d web page</item><item quantity="other">%d web pages</item></plurals>
+    <plurals name="failure_count_tiny_file"><item quantity="one">%d tiny file</item><item quantity="other">%d tiny files</item></plurals>
+    <plurals name="failure_count_text"><item quantity="one">%d text reply</item><item quantity="other">%d text replies</item></plurals>
+    <plurals name="failure_count_login"><item quantity="one">%d sign-in page</item><item quantity="other">%d sign-in pages</item></plurals>
+    <plurals name="failure_count_unreadable"><item quantity="one">%d unreadable file</item><item quantity="other">%d unreadable files</item></plurals>
+    <plurals name="failure_count_too_slow"><item quantity="one">%d too slow</item><item quantity="other">%d too slow</item></plurals>
+    <plurals name="failure_count_no_data"><item quantity="one">%d no data</item><item quantity="other">%d no data</item></plurals>
+    <plurals name="failure_count_placeholder"><item quantity="one">%d placeholder</item><item quantity="other">%d placeholders</item></plurals>
+    <plurals name="failure_count_video_unsupported"><item quantity="one">%d unsupported format</item><item quantity="other">%d unsupported formats</item></plurals>
+    <plurals name="failure_count_decoder_stuck"><item quantity="one">%d stuck decoder</item><item quantity="other">%d stuck decoders</item></plurals>
+    <plurals name="failure_count_corrupt"><item quantity="one">%d damaged file</item><item quantity="other">%d damaged files</item></plurals>
+    <plurals name="failure_count_frozen"><item quantity="one">%d frozen picture</item><item quantity="other">%d frozen pictures</item></plurals>
+    <plurals name="failure_count_audio_failed"><item quantity="one">%d sound failure</item><item quantity="other">%d sound failures</item></plurals>
+    <plurals name="failure_count_torrent"><item quantity="one">%d torrent failure</item><item quantity="other">%d torrent failures</item></plurals>
+    <plurals name="failure_count_engine"><item quantity="one">%d player failure</item><item quantity="other">%d player failures</item></plurals>
+    <plurals name="failure_count_no_url"><item quantity="one">%d missing link</item><item quantity="other">%d missing links</item></plurals>
+    <plurals name="failure_count_unknown"><item quantity="one">%d other failure</item><item quantity="other">%d other failures</item></plurals>
     <!-- Subtitle timing recovery -->
     <string name="subtitle_timing_file_no_lines">No subtitle lines were found in this file.</string>
     <string name="subtitle_timing_load_lines_failed">Failed to load subtitle lines.</string>
@@ -2343,6 +2781,18 @@
     <string name="stream_unknown">Unknown Stream</string>
     <string name="stream_cached">Cached</string>
     <string name="stream_last_played">Last played</string>
+    <string name="stream_preferred">Preferred</string>
+    <!-- Under a source row's file name: no hardware decoder here. %1$s = codec ("AV1"), %2$s = resolution ("4K") -->
+    <string name="stream_decode_software">Software %1$s decode at %2$s: expect stutter on this device</string>
+    <!-- Under a source row's file name: a Dolby Vision stream on a TV without it -->
+    <string name="stream_decode_reduced">This TV has no Dolby Vision: plays as HDR10</string>
+    <string name="stream_row_menu_play">Play</string>
+    <string name="stream_prefer_source">Prefer this source for the show</string>
+    <!-- Under "Prefer this source for the show": what will be matched, e.g. "AIOStreams · 1080p · NTb release, every episode" -->
+    <string name="stream_prefer_source_detail">%1$s, every episode</string>
+    <string name="stream_prefer_source_release">%1$s release</string>
+    <string name="stream_stop_preferring">Stop preferring this source</string>
+    <string name="stream_stop_preferring_detail">The list goes back to the usual order</string>
     <string name="stream_embedded_group">Embedded Streams</string>
     <string name="stream_embedded_fallback_name">Embed Stream</string>
     <string name="stream_quality_unknown">Unknown</string>
@@ -2356,6 +2806,8 @@
     <string name="network_error_malformed_json">Malformed response from source</string>
     <string name="network_error_unknown">Unknown error occurred</string>
     <string name="network_error_addon_timeout">Addon request timed out</string>
+    <!-- Spec 68 D11 Q6: an addon call refused on its certificate. -->
+    <string name="network_error_addon_certificate">Can\'t verify this addon server\'s certificate</string>
 
     <!-- Torrent service / TorrServer binary errors -->
     <string name="torrent_error_add_failed">Failed to add torrent</string>
@@ -2388,11 +2840,8 @@
     <string name="stream_upstreams_missing_list">%1$s and %2$s didn\'t answer</string>
     <string name="stream_upstreams_missing_more">%1$s and %2$d more didn\'t answer</string>
     <string name="stream_upstreams_missing_suffix">results without them</string>
-    <!-- Spec 51 P6: the stream limit on the Sources panel. %1$d = the limit in Mbps -->
-    <string name="stream_limit_chip">Over %1$d Mbps</string>
-    <!-- Spec 58 D3: the Hidden chip when streams are hidden for bitrate and for resolution -->
-    <string name="stream_limit_chip_both">Hidden</string>
-    <!-- %1$s = a resolution ("1080p", "4K"): the chip with resolution hiding only, and a hidden row -->
+    <!-- Spec 51 P6: the stream limit on the Sources panel -->
+    <!-- %1$s = a resolution ("1080p", "4K"): a row hidden for its resolution -->
     <string name="stream_limit_over_resolution">Over %1$s</string>
     <!-- A hidden row over both limits: %1$s = stream_limit_over_resolution, %2$s = its bitrate ("109 Mbps") -->
     <string name="stream_limit_row_both">%1$s · %2$s</string>
@@ -2450,6 +2899,73 @@
     <string name="resolution_limit_note">A stream\'s resolution comes from its name or the addon; streams that don\'t say always show. Pick a fixed limit if this TV box reports less than your screen can show.</string>
     <!-- The Sources eyebrow while streams are hidden: "19 of 23" (shown of all) -->
     <string name="stream_sources_shown_of_total">%1$d of %2$d</string>
+    <!-- Spec 65 P1: the Sources panel's circles and their sheets (sandbox spec-65-stream-filters v5) -->
+    <string name="cd_stream_sources">Sources</string>
+    <string name="cd_stream_sources_asking">Sources, addons still answering</string>
+    <string name="cd_stream_filters">Filters</string>
+    <!-- %1$d = filter values switched on -->
+    <string name="cd_stream_filters_on">Filters, %1$d on</string>
+    <!-- %1$d = streams the limits hide -->
+    <plurals name="cd_stream_hidden">
+        <item quantity="one">%1$d hidden stream</item>
+        <item quantity="other">%1$d hidden streams</item>
+    </plurals>
+    <!-- The eyebrow while the hidden streams are listed: "SOURCES · 2 HIDDEN" -->
+    <string name="stream_eyebrow_hidden">%1$d hidden</string>
+    <!-- The sources sheet's eyebrow: "SOURCES · 2 OF 3 ADDONS ANSWERED" -->
+    <string name="stream_sheet_sources_eyebrow">Sources · %1$d of %2$d addons answered</string>
+    <!-- A sources sheet row whose addon gave no stream for this title -->
+    <string name="stream_sheet_addon_no_streams">no streams</string>
+    <!-- The filters sheet's eyebrow: "FILTERS · 4 OF 14 STREAMS" -->
+    <string name="stream_sheet_filters_eyebrow">Filters · %1$d of %2$d streams</string>
+    <string name="stream_sheet_filters_none">These streams share every detail the filters read, so there is nothing to narrow.</string>
+    <string name="stream_sheet_filters_hidden">Filters do not apply to hidden streams.</string>
+    <string name="stream_sheet_filters_clear">Clear all</string>
+    <!-- Spec 65 P2: saved filters and pins. The heading over the saved filters in the filters sheet -->
+    <string name="stream_sheet_filters_saved">Saved</string>
+    <!-- Saves the values that are on as a saved filter -->
+    <string name="stream_sheet_filters_save">Save as filter</string>
+    <!-- Spec 65 S9: the filters sheet's phone button, its QR dialog and the phone page (sandbox spec-65-stream-filters stages 7-9). -->
+    <string name="stream_sheet_filters_phone">Edit saved filters on your phone</string>
+    <string name="stream_filters_phone_body">Rename, reorder or delete them. Your phone must be on the same Wi-Fi as this TV.</string>
+    <string name="web_filters_title">Saved filters</string>
+    <string name="web_filters_intro">The Stream screen lists them in this order. Pins stay on the TV.</string>
+    <string name="web_filters_empty">No saved filters yet. On the TV, switch filter values on and choose Save as filter.</string>
+    <string name="web_filters_rename">Rename</string>
+    <string name="web_filters_done">Done</string>
+    <string name="web_filters_reorder">Drag to reorder</string>
+    <string name="web_filters_name">Name</string>
+    <string name="web_filters_save">Save to TV</string>
+    <string name="web_filters_saving">Saving…</string>
+    <string name="web_filters_saved">Saved. The TV has the new list.</string>
+    <string name="web_filters_error_save">Could not save. Keep the QR open on the TV, or scan it again.</string>
+    <string name="web_filters_error_load">Could not load the saved filters. Scan the QR on the TV again.</string>
+    <!-- The sources sheet's foot: holding OK on an addon pins it to the Sources row as a chip -->
+    <string name="stream_sheet_pin_hint">Hold OK to pin it to the row</string>
+    <string name="cd_stream_pinned">Pinned</string>
+    <!-- The list's message when the filters on list none of the view's streams -->
+    <string name="stream_no_streams_filtered">No stream here matches the filters that are on. Switch one off, or clear them all, in the filters sheet.</string>
+    <string name="stream_facet_group_resolution">Resolution</string>
+    <string name="stream_facet_group_hdr">HDR</string>
+    <string name="stream_facet_group_audio">Audio</string>
+    <string name="stream_facet_group_source">Source</string>
+    <string name="stream_facet_group_codec">Codec</string>
+    <string name="stream_facet_unknown">Unknown</string>
+    <!-- A filter value for screen readers: %1$s = the value ("4K"), %2$d = streams it would list -->
+    <string name="cd_stream_facet_on">%1$s, on, %2$d</string>
+    <string name="cd_stream_facet_off">%1$s, off, %2$d</string>
+    <!-- The hidden sheet's eyebrow: "HIDDEN · 2 STREAMS" -->
+    <plurals name="stream_sheet_hidden_eyebrow">
+        <item quantity="one">Hidden · %1$d stream</item>
+        <item quantity="other">Hidden · %1$d streams</item>
+    </plurals>
+    <string name="stream_sheet_hidden_network">Too fast to seek smoothly</string>
+    <!-- %1$d = the limit in Mbps, %2$d = streams over it -->
+    <string name="stream_sheet_hidden_network_detail">over %1$d Mbps · %2$d</string>
+    <string name="stream_sheet_hidden_manual">Over your %1$d Mbps limit</string>
+    <string name="stream_sheet_hidden_resolution">Over your %1$s limit</string>
+    <string name="stream_sheet_hidden_resolution_tv">Over this TV\'s %1$s screen</string>
+    <string name="stream_sheet_hidden_note">Change the limits in Settings › Playback › Buffer &amp; network.</string>
     <string name="stream_error_upstreams_failed">%1$s.</string>
 
 
@@ -2670,6 +3186,7 @@
     <!-- Size and speed units -->
     <string name="unit_size_mb">%1$s MB</string>
     <string name="unit_size_gb">%1$s GB</string>
+    <string name="unit_size_kb">%1$s KB</string>
     <string name="unit_speed_b_s">%1$d B/s</string>
     <string name="unit_speed_kb_s">%1$s KB/s</string>
     <string name="unit_speed_mb_s">%1$s MB/s</string>
@@ -2935,4 +3452,64 @@
     <string name="episode_options_style_rich_desc">Full-screen backdrop with rating and season actions</string>
     <string name="episode_options_style_classic">Classic</string>
     <string name="episode_options_style_classic_desc">Simple action dialog</string>
+    <!-- Spec 64 K2: the profile Rating limit -->
+    <string name="profile_rating_limit_label">Rating limit</string>
+    <string name="rating_limit_none">No limit</string>
+    <string name="rating_limit_none_sub">Every title, rated or not</string>
+    <string name="rating_limit_all_ages">Little kids</string>
+    <string name="rating_limit_older_kids">Older kids</string>
+    <string name="rating_limit_teens">Teens</string>
+    <string name="rating_limit_mature">Mature</string>
+    <string name="rating_limit_adults_only">Adults</string>
+    <string name="rating_limit_up_to">Up to %1$s and %2$s</string>
+    <string name="rating_limit_adds">adds</string>
+    <string name="rating_limit_this_tv">Set on this TV only</string>
+    <string name="rating_limit_note">Any limit also hides titles with no US rating, and turns off cast and studio pages.</string>
+    <plurals name="rating_limit_open_profiles">
+        <item quantity="one">%1$s has no PIN, so %2$s can still switch to that profile.</item>
+        <item quantity="other">%1$s have no PIN, so %2$s can still switch to them.</item>
+    </plurals>
+    <string name="rating_limit_note_set">Rating limit: %1$s, up to %2$s and %3$s. Only the primary profile can change it.</string>
+    <string name="rating_limit_note_none">Rating limit: none. Only the primary profile can change it.</string>
+    <string name="rating_limit_save_failed">Profile saved, but its rating limit was not. Try again.</string>
+    <string name="rating_limit_profile_fallback">this profile</string>
+    <string name="detail_rating_limit_links_off">Cast and studio pages are off for %1$s</string>
+    <string name="detail_rating_block_title">Not on %1$s\'s profile</string>
+    <string name="detail_rating_block_rated">Rated %1$s. %2$s\'s rating limit allows up to %3$s and %4$s.</string>
+    <string name="detail_rating_block_unrated">No US age rating. %1$s\'s rating limit hides unrated titles.</string>
+    <string name="detail_rating_block_switch_profile">Switch profile</string>
+    <string name="pin_relock_title">Ask for PIN again</string>
+    <string name="pin_relock_subtitle">PIN profiles, after this long off screen</string>
+    <string name="pin_relock_off">Off</string>
+    <string name="pin_relock_after_minutes">After %1$d min</string>
+    <string name="pin_relock_after_hour">After 1 hour</string>
+    <string name="pin_relock_off_sub">Only when Nuvio starts</string>
+    <string name="pin_relock_default_sub">Default</string>
+    <string name="pin_relock_note">For profiles with a PIN. Counted from when Nuvio leaves the screen; a film on screen is never interrupted.</string>
+    <!-- Spec 81: tip the developer (sandbox spec-81-donate v3) -->
+    <string name="tip_button">Tip</string>
+    <string name="tip_section">Support</string>
+    <string name="tip_row_title">Tip the developer</string>
+    <string name="tip_row_subtitle">Nuvio KE is free. Scan a code with your phone to send a tip</string>
+    <string name="tip_eyebrow">Support the developer</string>
+    <string name="tip_title">Tip the developer</string>
+    <string name="tip_pitch">Nuvio KE is free and open source, and one person builds it in his spare time. If it makes your evenings better, a tip helps keep it going.</string>
+    <string name="tip_suggested">SUGGESTED</string>
+    <string name="tip_any_amount">or any amount</string>
+    <!-- %1$s is drawn bold: tip_pay_methods / tip_pay_upi_method -->
+    <string name="tip_pay_line">Pay by %1$s, in your own currency. Local options such as iDEAL, BLIK and UPI show up where they work.</string>
+    <string name="tip_pay_methods">card, Apple Pay or Google Pay</string>
+    <string name="tip_pay_upi_line">Pay with %1$s from any UPI app, or by card, in rupees.</string>
+    <string name="tip_pay_upi_method">UPI</string>
+    <string name="tip_scan_eyebrow">Scan to tip</string>
+    <string name="tip_scan_line">You pay on your phone, never on this TV.</string>
+    <string name="tip_message_line">Add a message on the next page, if you like</string>
+    <string name="tip_sent">I sent a tip</string>
+    <string name="tip_done">Done</string>
+    <string name="tip_terms">Payments by Stripe. Your tip and message are private: only the developer sees them, with the email you enter.</string>
+    <string name="tip_terms_sponsors">Payments through GitHub Sponsors. Only the developer sees your tip and message.</string>
+    <string name="cd_tip_qr">QR code for the tip page</string>
+    <string name="tip_thanks_title">Thank you</string>
+    <string name="tip_thanks_line">Your tip keeps Nuvio KE free for everyone, and it honestly makes my day.</string>
+    <string name="tip_thanks_signature">Arshad · Nuvio KE</string>
 </resources>

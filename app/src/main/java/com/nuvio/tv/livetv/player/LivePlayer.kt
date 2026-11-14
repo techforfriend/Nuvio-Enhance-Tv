@@ -28,6 +28,7 @@ import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
 import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.LiveStream
+import com.nuvio.tv.livetv.resolve.StreamResolver
 import com.nuvio.tv.livetv.source.LiveSourceManager
 import com.nuvio.tv.livetv.source.SourceFetchException
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -42,7 +43,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.IOException
 import javax.inject.Inject
@@ -58,22 +61,30 @@ sealed interface LiveTuneState {
 
     /**
      * Trying stream [stream] (1-based, the channel's source order, as [LiveStreamPick.position]) of
-     * [streams]; both 0 while the addon lookup runs.
+     * [streams]; both 0 while the addon lookup runs. [keySystem] = the stream's licence key system
+     * (a `LiveDrm` id, Spec 74 D6), null for a clear stream.
      */
-    data class Tuning(override val channel: Channel, val stream: Int, val streams: Int) : LiveTuneState
+    data class Tuning(
+        override val channel: Channel,
+        val stream: Int,
+        val streams: Int,
+        val keySystem: String? = null
+    ) : LiveTuneState
 
     data class Playing(override val channel: Channel) : LiveTuneState
 
     /**
      * The channel gave up: [tried] of [streams] were attempted (fewer when the 30 s budget ran out,
      * 0 when the lookup failed or none exist); [failure] is the last one, [atMs] wall-clock.
+     * [licensed] of the [streams] need a DRM licence (Spec 74 D4).
      */
     data class Unavailable(
         override val channel: Channel,
         val tried: Int,
         val streams: Int,
         val failure: LiveFailure,
-        val atMs: Long
+        val atMs: Long,
+        val licensed: Int = 0
     ) : LiveTuneState
 }
 
@@ -106,12 +117,23 @@ class LivePlayer @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val sources: LiveSourceManager,
     private val health: StreamHealthStore,
-    private val playerSettingsDataStore: PlayerSettingsDataStore
+    private val playerSettingsDataStore: PlayerSettingsDataStore,
+    private val resolver: StreamResolver,
+    private val playbackActivity: PlaybackActivity
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _state = MutableStateFlow<LiveTuneState>(LiveTuneState.Idle)
     val state: StateFlow<LiveTuneState> = _state.asStateFlow()
+
+    init {
+        // A tuning or playing channel pauses the channel pack scan (Spec 73 S3a); release clears it.
+        scope.launch {
+            _state.map { it is LiveTuneState.Tuning || it is LiveTuneState.Playing }
+                .distinctUntilChanged()
+                .collect { playbackActivity.setLive(this@LivePlayer, it) }
+        }
+    }
 
     private val _player = MutableStateFlow<Player?>(null)
 
@@ -137,6 +159,9 @@ class LivePlayer @Inject constructor(
     ) {
         /** Try-order [index] as its 1-based place in [playable] (what the screen numbers). */
         fun position(index: Int): Int = playable.indexOfFirst { it === streams[index] } + 1
+
+        fun tuning(index: Int): LiveTuneState.Tuning =
+            LiveTuneState.Tuning(channel, position(index), streams.size, LiveDrm.from(streams[index].kodiProps)?.keySystem)
     }
 
     private var session: Session? = null
@@ -150,7 +175,7 @@ class LivePlayer @Inject constructor(
     /** The stream of the last tune being tried or played, the last one tried once it gave up; null while idle or looking up. */
     val stream: StateFlow<LiveStreamPick?> = _stream.asStateFlow()
 
-    /** Stream lookup, then each stream's mime sniff; cancelled by the next tune or [stop]. */
+    /** Stream lookup, then each stream's resolve and mime sniff; cancelled by the next tune or [stop]. */
     private var tuneJob: Job? = null
     private var loadJob: Job? = null
     private var timerJob: Job? = null
@@ -176,7 +201,15 @@ class LivePlayer @Inject constructor(
 
         override fun onPlayerError(error: PlaybackException) {
             val s = session ?: return
-            val (failure, behindLiveWindow) = LiveTuneLadder.classify(error)
+            val (classified, behindLiveWindow) = LiveTuneLadder.classify(error)
+            // The words of a licence failure name the stream's key system (Spec 74 D5).
+            val failure = if (classified.kind == FailureKind.DRM) {
+                val drm = LiveDrm.from(s.streams[s.ladder.index].kodiProps)
+                // Media3 answers an encrypted stream the playlist gave no licence for with 6001 too.
+                if (drm == null) classified.copy(drm = DrmFailure.NO_LICENCE) else classified.copy(keySystem = drm.keySystem)
+            } else {
+                classified
+            }
             apply(s, s.ladder.onError(failure, behindLiveWindow, SystemClock.elapsedRealtime()))
         }
     }
@@ -200,14 +233,10 @@ class LivePlayer @Inject constructor(
                 unavailable(channel, 0, 0, LiveFailure(FailureKind.NETWORK, detail = (e as? SourceFetchException)?.message))
                 return@launch
             }
-            val playable = streams.filterNot { it.drm }
-            if (playable.isEmpty() && streams.isNotEmpty()) {
-                unavailable(channel, 0, streams.size, LiveFailure(FailureKind.DRM))
-                return@launch
-            }
+            // Licensed streams are tried like any other (73/D10, Spec 74 S2b): the licence server answers.
             health.load()
-            val ordered = StreamHealth.order(playable, health.records.value, System.currentTimeMillis())
-            startSession(channel, playable, ordered, tunedAtMs)
+            val ordered = StreamHealth.order(streams, health.records.value, System.currentTimeMillis())
+            startSession(channel, streams, ordered, tunedAtMs)
         }
     }
 
@@ -252,6 +281,7 @@ class LivePlayer @Inject constructor(
         _stream.value = null
         _state.value = LiveTuneState.Idle
         scope.cancel()
+        playbackActivity.setLive(this, false)
     }
 
     private fun startSession(channel: Channel, playable: List<LiveStream>, ordered: List<LiveStream>, tunedAtMs: Long) {
@@ -284,9 +314,9 @@ class LivePlayer @Inject constructor(
         val player = exo ?: return
         when (val action = step.action) {
             is LadderAction.Play -> load(s, action.index)
-            LadderAction.Reload -> load(s, s.ladder.index)
+            LadderAction.Reload -> load(s, s.ladder.index, fresh = true)
             LadderAction.SeekToDefault -> {
-                _state.value = LiveTuneState.Tuning(s.channel, s.position(s.ladder.index), s.streams.size)
+                _state.value = s.tuning(s.ladder.index)
                 player.seekToDefaultPosition()
                 player.prepare()
             }
@@ -294,33 +324,52 @@ class LivePlayer @Inject constructor(
                 player.stop()
                 session = null
                 val tried = if (s.streams.isEmpty()) 0 else s.ladder.index + 1
-                unavailable(s.channel, tried, s.streams.size, action.failure)
+                unavailable(s.channel, tried, s.streams.size, action.failure, licensed = s.streams.count { it.drm })
             }
             LadderAction.None -> Unit
         }
         armTimer(s)
     }
 
-    /** Stream [index] from a fresh source at the live edge (a Play and a Reload alike). */
-    private fun load(s: Session, index: Int) {
+    /**
+     * Stream [index] from a fresh source at the live edge (a Play and a Reload alike). The stored
+     * stream stays the identity (pick, health); what plays is its [StreamResolver] answer, resolved
+     * inside the ladder's watchdog; [fresh] (a Reload) skips cached tokens (Spec 72 D1).
+     */
+    private fun load(s: Session, index: Int, fresh: Boolean = false) {
         val player = exo ?: return
         val stream = s.streams[index]
         val position = s.position(index)
-        _state.value = LiveTuneState.Tuning(s.channel, position, s.streams.size)
+        _state.value = s.tuning(index)
         val pick = LiveStreamPick(s.channel.key, stream, position, s.playable.size)
         _stream.value = pick
         player.stop()
         loadJob?.cancel()
-        loadJob = scope.launch {
-            val request = LiveMediaSources.normalize(stream)
+        // Assigned before the body runs: on Main.immediate it can run inline and reach apply() (an
+        // unsupported key system), whose next load must find this job to cancel, not lose its own.
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val resolution = resolver.resolve(stream, fresh)
+            if (session !== s) return@launch
+            s.ladder.onResolved(resolution.fromCache)
+            val request = LiveMediaSources.normalize(resolution.stream)
+            // Licence details from the stored stream: a resolve (Pluto/Plex) answers with a bare URL.
+            val drm = LiveDrm.from(stream.kodiProps)
+            if (drm != null && !LiveMediaSources.supported(drm)) {
+                val failure = LiveFailure(FailureKind.DRM, drm = DrmFailure.UNSUPPORTED, keySystem = drm.keySystem)
+                apply(s, s.ladder.onError(failure, false, SystemClock.elapsedRealtime()))
+                return@launch
+            }
             val client = LiveMediaSources.client(request.headers)
             val mime = LiveMediaSources.resolveMimeType(request, client)
             if (session !== s) return@launch
             _stream.value = pick.copy(mimeType = mime)
-            player.setMediaSource(LiveMediaSources.create(request, mime, client, s.channel.key))
+            val drmManager = drm?.let { LiveMediaSources.drmSessionManager(it, request) }
+            player.setMediaSource(LiveMediaSources.create(request, mime, client, s.channel.key, drmManager))
             player.prepare()
             player.playWhenReady = true
         }
+        loadJob = job
+        job.start()
     }
 
     /** One timer at the ladder's next deadline (watchdog or budget); none while playing. */
@@ -335,8 +384,8 @@ class LivePlayer @Inject constructor(
         }
     }
 
-    private fun unavailable(channel: Channel, tried: Int, streams: Int, failure: LiveFailure) {
-        _state.value = LiveTuneState.Unavailable(channel, tried, streams, failure, System.currentTimeMillis())
+    private fun unavailable(channel: Channel, tried: Int, streams: Int, failure: LiveFailure, licensed: Int = 0) {
+        _state.value = LiveTuneState.Unavailable(channel, tried, streams, failure, System.currentTimeMillis(), licensed)
     }
 
     /**

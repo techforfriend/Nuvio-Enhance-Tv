@@ -1,10 +1,6 @@
 package com.nuvio.tv.ui.screens.profile
 
 import android.text.format.DateFormat
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -12,14 +8,11 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.data.local.MyPhoto
 import com.nuvio.tv.data.local.MyPhotoKind
@@ -30,7 +23,6 @@ import com.nuvio.tv.ui.components.PhotoBackgroundImage
 import com.nuvio.tv.ui.components.PlayerPanelRow
 import com.nuvio.tv.ui.components.ProfileAvatarCircle
 import com.nuvio.tv.ui.components.marquee.MarqueeSidePanel
-import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
 import java.util.Date
 import java.util.Locale
@@ -69,15 +61,13 @@ internal fun MyPhotoPanel(
         width = tokens.optionsPanelWidth
     ) {
         PanelEyebrow(text = stringResource(R.string.my_photo_panel_title))
-        Row(
-            modifier = Modifier.padding(
-                start = tokens.optionsHeadPaddingHorizontal,
-                end = tokens.optionsHeadPaddingHorizontal,
-                top = tokens.optionsHeadPaddingTop,
-                bottom = tokens.optionsHeadPaddingBottom
-            ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(tokens.optionsHeadGap)
+        ProfilePanelHead(
+            title = stringResource(R.string.my_photo_added, formatPhotoDate(photo.addedAt)),
+            subtitle = if (usedBy.isEmpty()) {
+                stringResource(R.string.my_photo_unused)
+            } else {
+                stringResource(R.string.my_photo_used_by, users)
+            }
         ) {
             when (photo.kind) {
                 MyPhotoKind.Avatar -> ProfileAvatarCircle(
@@ -92,26 +82,6 @@ internal fun MyPhotoPanel(
                     modifier = Modifier
                         .size(BACKGROUND_THUMB_WIDTH, tokens.optionsAvatarSize)
                         .clip(RoundedCornerShape(BACKGROUND_THUMB_RADIUS))
-                )
-            }
-            Column {
-                Text(
-                    text = stringResource(R.string.my_photo_added, formatPhotoDate(photo.addedAt)),
-                    style = NuvioTheme.textStyles.panelHeadName,
-                    color = NuvioPrimitives.white,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = if (usedBy.isEmpty()) {
-                        stringResource(R.string.my_photo_unused)
-                    } else {
-                        stringResource(R.string.my_photo_used_by, users)
-                    },
-                    style = NuvioTheme.textStyles.caption,
-                    color = NuvioTheme.marquee.onImage3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

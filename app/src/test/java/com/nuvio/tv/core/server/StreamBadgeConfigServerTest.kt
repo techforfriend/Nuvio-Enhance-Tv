@@ -58,12 +58,13 @@ class StreamBadgeConfigServerTest {
     fun `imports badge rules fetched from the source url`() {
         val rules = AtomicReference(StreamBadgeRules())
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { rules.get() },
             onRulesChanged = { rules.set(it) }
         )
 
         val response = withBadgeSource(BadgeSourceServer(NanoHTTPD.Response.Status.OK, fusionPayload)) { url ->
-            server.serve(FakePostSession(importBody(url), "/api/badges/import"))
+            server.serve(FakePostSession(importBody(url), "/b/$TOKEN/api/badges/import"))
         }
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
@@ -76,6 +77,7 @@ class StreamBadgeConfigServerTest {
     fun `import keeps rule changes made while the fetch was in flight`() {
         val rules = AtomicReference(StreamBadgeRules())
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { rules.get() },
             onRulesChanged = { rules.set(it) }
         )
@@ -89,7 +91,7 @@ class StreamBadgeConfigServerTest {
         }
 
         val response = withBadgeSource(source) { url ->
-            server.serve(FakePostSession(importBody(url), "/api/badges/import"))
+            server.serve(FakePostSession(importBody(url), "/b/$TOKEN/api/badges/import"))
         }
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
@@ -101,6 +103,7 @@ class StreamBadgeConfigServerTest {
     fun `import failures return only the generic message`() {
         var saved = false
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { StreamBadgeRules() },
             onRulesChanged = { saved = true }
         )
@@ -111,7 +114,7 @@ class StreamBadgeConfigServerTest {
 
         sources.forEach { source ->
             val response = withBadgeSource(source) { url ->
-                server.serve(FakePostSession(importBody(url), "/api/badges/import"))
+                server.serve(FakePostSession(importBody(url), "/b/$TOKEN/api/badges/import"))
             }
             assertEquals(NanoHTTPD.Response.Status.BAD_REQUEST, response.status)
             assertEquals("""{"error":"Badge import failed."}""", response.bodyText())
@@ -123,12 +126,13 @@ class StreamBadgeConfigServerTest {
     fun `import rejects blank and non-http urls before fetching`() {
         var saved = false
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { StreamBadgeRules() },
             onRulesChanged = { saved = true }
         )
 
-        val blank = server.serve(FakePostSession(importBody("  "), "/api/badges/import"))
-        val ftp = server.serve(FakePostSession(importBody("ftp://x.example/b.json"), "/api/badges/import"))
+        val blank = server.serve(FakePostSession(importBody("  "), "/b/$TOKEN/api/badges/import"))
+        val ftp = server.serve(FakePostSession(importBody("ftp://x.example/b.json"), "/b/$TOKEN/api/badges/import"))
 
         assertEquals(NanoHTTPD.Response.Status.BAD_REQUEST, blank.status)
         assertEquals("""{"error":"Enter a badge JSON URL."}""", blank.bodyText())
@@ -151,13 +155,14 @@ class StreamBadgeConfigServerTest {
         )
         val rules = AtomicReference(StreamBadgeRules(imports = listOf(one, two)))
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { rules.get() },
             onRulesChanged = { rules.set(it) }
         )
 
-        val active = server.serve(FakePostSession(importBody(two.sourceUrl), "/api/badges/active"))
+        val active = server.serve(FakePostSession(importBody(two.sourceUrl), "/b/$TOKEN/api/badges/active"))
         val activeRules = rules.get()
-        val delete = server.serve(FakePostSession(importBody(one.sourceUrl), "/api/badges/delete"))
+        val delete = server.serve(FakePostSession(importBody(one.sourceUrl), "/b/$TOKEN/api/badges/delete"))
         val deletedRules = rules.get()
 
         fun expectedBody(status: String, rules: StreamBadgeRules) =
@@ -174,11 +179,12 @@ class StreamBadgeConfigServerTest {
     fun `settings POST is gone and saves nothing`() {
         var saved: StreamBadgeRules? = null
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { StreamBadgeRules() },
             onRulesChanged = { saved = it }
         )
 
-        val response = server.serve(FakePostSession("""{"badgePlacement":"TOP"}""", "/api/settings"))
+        val response = server.serve(FakePostSession("""{"badgePlacement":"TOP"}""", "/b/$TOKEN/api/settings"))
 
         assertEquals(NanoHTTPD.Response.Status.NOT_FOUND, response.status)
         assertNull(saved)
@@ -188,15 +194,16 @@ class StreamBadgeConfigServerTest {
     fun `malformed or oversized body is rejected without saving`() {
         var saved: StreamBadgeRules? = null
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { StreamBadgeRules() },
             onRulesChanged = { saved = it }
         )
 
-        val malformed = server.serve(FakePostSession("{oops", "/api/badges/active"))
+        val malformed = server.serve(FakePostSession("{oops", "/b/$TOKEN/api/badges/active"))
         val oversized = server.serve(
             FakePostSession(
                 importBody("https://example.com/one.json"),
-                "/api/badges/active",
+                "/b/$TOKEN/api/badges/active",
                 declaredLength = MAX_POST_BODY_BYTES + 1
             )
         )
@@ -209,11 +216,12 @@ class StreamBadgeConfigServerTest {
     @Test
     fun `foreign host header is rejected`() {
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { StreamBadgeRules() },
             onRulesChanged = {}
         )
 
-        val response = server.serve(FakeGetSession(host = "attacker.example:8091"))
+        val response = server.serve(FakeGetSession("/b/$TOKEN/api/settings", host = "attacker.example:8091"))
 
         assertEquals(NanoHTTPD.Response.Status.FORBIDDEN, response.status)
     }
@@ -235,11 +243,12 @@ class StreamBadgeConfigServerTest {
             )
         )
         val server = StreamBadgeConfigServer(
+            token = TOKEN,
             currentRulesProvider = { rules },
             onRulesChanged = {}
         )
 
-        val response = server.serve(FakeGetSession())
+        val response = server.serve(FakeGetSession("/b/$TOKEN/api/settings"))
         val body = response.bodyText()
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
@@ -247,5 +256,49 @@ class StreamBadgeConfigServerTest {
         assertTrue(body.contains("\"isActive\":false"))
         assertFalse(body.contains("badgePlacement"))
         assertFalse(body.contains("showFileSizeBadges"))
+    }
+
+    @Test
+    fun `routes answer only under this session's token`() {
+        val rules = AtomicReference(StreamBadgeRules())
+        val server = StreamBadgeConfigServer(
+            token = TOKEN,
+            currentRulesProvider = { rules.get() },
+            onRulesChanged = { rules.set(it) }
+        )
+        val stale = FakeUploadSession(
+            "/b/${"0".repeat(32)}/api/badges/delete",
+            kind = null,
+            body = importBody("https://example.com/one.json").toByteArray()
+        )
+
+        val open = server.serve(FakeGetSession("/b/$TOKEN/api/settings"))
+        val noToken = server.serve(FakeGetSession("/api/settings"))
+        val staleAnswer = server.serve(stale)
+
+        assertEquals(NanoHTTPD.Response.Status.OK, open.status)
+        assertEquals("no-referrer", open.getHeader("Referrer-Policy"))
+        assertEquals(NanoHTTPD.Response.Status.NOT_FOUND, noToken.status)
+        assertEquals(NanoHTTPD.Response.Status.NOT_FOUND, staleAnswer.status)
+        assertEquals(0, stale.stream.available())
+        assertTrue(server.url("192.0.2.1").endsWith("/b/$TOKEN/"))
+    }
+
+    @Test
+    fun `page is served under the token and calls only relative paths`() {
+        val server = StreamBadgeConfigServer(
+            token = TOKEN,
+            currentRulesProvider = { StreamBadgeRules() },
+            onRulesChanged = {}
+        )
+
+        val page = server.serve(FakeGetSession("/b/$TOKEN/"))
+
+        assertEquals(NanoHTTPD.Response.Status.OK, page.status)
+        assertNoAbsoluteSameOriginPath(page.bodyText())
+    }
+
+    private companion object {
+        const val TOKEN = "0123456789abcdef0123456789abcdef"
     }
 }

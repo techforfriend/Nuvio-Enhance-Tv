@@ -20,10 +20,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -42,7 +44,13 @@ import com.nuvio.tv.ui.components.marquee.MarqueeScrims
 import com.nuvio.tv.ui.components.marquee.MarqueeTitleBlock
 import com.nuvio.tv.ui.components.marquee.formatRatingScore
 import com.nuvio.tv.ui.components.rememberAmbientAccentProvider
+import com.nuvio.tv.ui.components.sources.SavedFiltersQrDialog
+import com.nuvio.tv.ui.components.sources.SourceFailureMark
+import com.nuvio.tv.ui.components.sources.SourceFailureMarks
+import com.nuvio.tv.ui.screens.player.contextFailureStrings
+import com.nuvio.tv.domain.model.Stream
 import com.nuvio.tv.ui.components.sources.SourceRowMarker
+import com.nuvio.tv.ui.components.sources.SourcesPanelSheet
 import com.nuvio.tv.ui.components.sources.StreamSourcesPanel
 import com.nuvio.tv.ui.components.sources.lastPlayedIndex
 import com.nuvio.tv.ui.theme.NuvioPrimitives
@@ -144,6 +152,37 @@ fun StreamScreen(
     BackHandler {
         onBackPress()
     }
+    // The Sources panel's open sheet (Spec 65 P1): Back closes it before it leaves the screen.
+    var sourcesSheet by remember { mutableStateOf<SourcesPanelSheet?>(null) }
+    val savedStreamFilters by viewModel.savedStreamFilters.collectAsStateWithLifecycle(
+        initialValue = com.nuvio.tv.core.stream.SavedStreamFilters.NONE
+    )
+    val sourcesPanelShown = uiState.autoPlayDecided && !uiState.showDirectAutoPlayOverlay
+    BackHandler(enabled = sourcesSheet != null && sourcesPanelShown) {
+        sourcesSheet = null
+    }
+    // A sheet never outlives its panel (the direct auto-play overlay replaces it).
+    LaunchedEffect(sourcesPanelShown) {
+        if (!sourcesPanelShown) sourcesSheet = null
+    }
+    // The saved filters' phone page (Spec 65 S9) runs only while its QR shows, here in the foreground.
+    val savedFiltersPhone by viewModel.savedFiltersPhone.collectAsStateWithLifecycle()
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.closeSavedFiltersPhonePage() }
+    when (val phone = savedFiltersPhone) {
+        null -> Unit
+        is SavedFiltersPhoneState.Open -> SavedFiltersQrDialog(
+            url = phone.url,
+            hostLabel = phone.host,
+            error = null,
+            onDismiss = viewModel::closeSavedFiltersPhonePage
+        )
+        is SavedFiltersPhoneState.Failed -> SavedFiltersQrDialog(
+            url = null,
+            hostLabel = null,
+            error = stringResource(phone.message),
+            onDismiss = viewModel::closeSavedFiltersPhonePage
+        )
+    }
 
     LaunchedEffect(uiState.autoPlayStream) {
         val stream = uiState.autoPlayStream ?: return@LaunchedEffect
@@ -160,9 +199,13 @@ fun StreamScreen(
             .prewarmPlaybackConnection(playbackInfo.url, playbackInfo.headers)
         // Torrent streams have url == null but carry an infoHash; navigation
         // builds a torrent:// sentinel URL downstream.
-        if (playbackInfo.url != null || (playbackInfo.isTorrent && playbackInfo.infoHash != null)) {
+        if (playbackInfo.hasTarget) {
             viewModel.awaitStreamLinkCacheSave()
             routeAutoPlay(playbackInfo)
+        } else {
+            // A pick that opens nothing (a torrent whose hash cannot be read): show the list
+            // instead of leaving the direct auto-play overlay up.
+            viewModel.onEvent(StreamScreenEvent.OnAutoPlayConsumed)
         }
     }
 
@@ -182,7 +225,7 @@ fun StreamScreen(
             viewModel.onEvent(StreamScreenEvent.OnAutoPlayConsumed)
             return@LaunchedEffect
         }
-        if (playbackInfo.url != null || (playbackInfo.isTorrent && playbackInfo.infoHash != null)) {
+        if (playbackInfo.hasTarget) {
             // Torrent cached links still need P2P consent
             if (playbackInfo.isTorrent && !p2pEnabled) {
                 pendingTorrentPlaybackInfo = playbackInfo
@@ -261,6 +304,23 @@ fun StreamScreen(
                 }
             }
             if (!showOverlay) {
+                // An open sheet dims the title block too (sandbox spec-65-stream-filters stages 4, 6, 7).
+                if (sourcesSheet != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(marquee.stream.sheetDim)
+                    )
+                }
+                // Spec 75 S6: a source that failed in the last day says why (store marks, read on resume).
+                val recentFailures = uiState.recentFailures
+                val failureMarkFor = remember(recentFailures, context) {
+                    val strings = contextFailureStrings(context)
+                    val markFor: (Stream) -> SourceFailureMark? = { stream ->
+                        SourceFailureMarks.forRow(stream, recentFailures, emptySet(), strings)
+                    }
+                    markFor
+                }
                 StreamSourcesPanel(
                     isLoading = uiState.isLoading,
                     error = uiState.error,
@@ -272,20 +332,32 @@ fun StreamScreen(
                     marker = SourceRowMarker.LAST_PLAYED,
                     markedIndex = lastPlayedRow,
                     focusMarkedRow = false,
+                    failureMarkFor = failureMarkFor,
                     missingUpstreams = uiState.addonStreams.missingUpstreams(),
                     accent = accent,
+                    sheet = sourcesSheet,
+                    onSheetChange = { sourcesSheet = it },
                     onListSelected = { viewModel.onEvent(StreamScreenEvent.OnListSelected(it)) },
+                    onFilterChange = { viewModel.onEvent(StreamScreenEvent.OnFilterChanged(it)) },
+                    saved = savedStreamFilters,
+                    onSaveFilter = viewModel::saveStreamFilter,
+                    onTogglePin = viewModel::toggleStreamPin,
+                    onEditFiltersOnPhone = viewModel::openSavedFiltersPhonePage,
+                    onPreferSource = if (viewModel.canPreferSource) viewModel::preferSource else null,
                     onRefresh = { viewModel.onEvent(StreamScreenEvent.OnRefresh) },
                     onStreamSelected = { stream ->
                         TtffTrace.begin("press_manual")
                         focusedStreamKey = stream.limitKey()
                         val playbackInfo = viewModel.playbackInfoFor(stream)
-                        // S1g: warm the connection while the player is built.
-                        com.nuvio.tv.core.player.PlayerPlaybackNetworking
-                            .prewarmPlaybackConnection(playbackInfo.url, playbackInfo.headers)
-                        pendingRestoreOnResume = true
-                        routePlayback(playbackInfo)
-                        viewModel.onEvent(StreamScreenEvent.OnAutoPlayConsumed)
+                        // An addon's info row opens nothing: the press does nothing and the search goes on.
+                        if (playbackInfo.hasTarget) {
+                            // S1g: warm the connection while the player is built.
+                            com.nuvio.tv.core.player.PlayerPlaybackNetworking
+                                .prewarmPlaybackConnection(playbackInfo.url, playbackInfo.headers)
+                            pendingRestoreOnResume = true
+                            routePlayback(playbackInfo)
+                            viewModel.onEvent(StreamScreenEvent.OnAutoPlayConsumed)
+                        }
                     },
                     focusedStreamKey = focusedStreamKey,
                     shouldRestoreFocusedStream = restoreFocusedStream || restoreOnEntry,

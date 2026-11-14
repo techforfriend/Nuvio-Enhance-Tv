@@ -69,6 +69,23 @@ class LegacyFeatureDataCleanupTest {
     }
 
     @Test
+    fun `deletes the pre-X7 api cache by exact name and keeps the others`() {
+        val cacheDir = tmpFolder.newFolder("cache")
+        cacheDir.write("http_cache/journal", 10)
+        cacheDir.write("http_cache/abc.0", 30)
+        val kept = listOf(
+            cacheDir.write("http_cache_validated/journal", 1),
+            cacheDir.write("http_cache_addon/journal", 1),
+            cacheDir.write("image_cache/x", 1)
+        )
+
+        assertEquals(40L, deletePreX7HttpCache(cacheDir))
+        assertFalse(File(cacheDir, "http_cache").exists())
+        kept.forEach { assertTrue("${it.path} should survive", it.exists()) }
+        assertEquals(0L, deletePreX7HttpCache(cacheDir))
+    }
+
+    @Test
     fun `missing directories free nothing`() {
         val root = tmpFolder.root
         assertEquals(

@@ -58,8 +58,10 @@ docs/reviews/
 # Subagent run outputs (Arshad 2026-10-11): generated local records like reviews; load-bearing
 # facts are copied into the owning spec before it closes
 docs/subagents/
-# Sayl design sandboxes: same class as design/mockups (local approval artifacts)
-.sayl/
+# Sayl design sandboxes: same class as design/mockups (local approval artifacts), at any depth;
+# the root .sayl/lead.md is tracked (AGENTS.md § Design sandboxes)
+**/.sayl/*
+!/.sayl/lead.md
 # Stray local artefacts (never track)
 /Player/
 /build-error.txt

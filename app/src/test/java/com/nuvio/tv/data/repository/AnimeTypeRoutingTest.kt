@@ -40,6 +40,62 @@ class AnimeTypeRoutingTest {
     }
 
     @Test
+    fun `plain anime tries series for an episode id and movie otherwise`() {
+        assertEquals(listOf("anime", "series"), addonRequestTypeCandidates("anime", "tt2560140:1:3"))
+        assertEquals(listOf("anime", "series"), addonRequestTypeCandidates("anime", "kitsu:1376:5"))
+        assertEquals(listOf("anime", "movie"), addonRequestTypeCandidates("anime", "kitsu:1376"))
+        assertEquals(listOf("anime", "movie"), addonRequestTypeCandidates("anime", "tt0245429"))
+        // No video id (the subtitle path): unchanged.
+        assertEquals(listOf("anime"), addonRequestTypeCandidates("anime"))
+    }
+
+    @Test
+    fun `meta id drops season and episode but never the id itself`() {
+        assertEquals("tt1234567", addonMetaIdOf("tt1234567:1:5"))
+        assertEquals("mal:63375", addonMetaIdOf("mal:63375:1:5"))
+        assertEquals("kitsu:12345", addonMetaIdOf("kitsu:12345:2"))
+        assertEquals("kitsu:12345", addonMetaIdOf("kitsu:12345"))
+        assertEquals("tt1234567", addonMetaIdOf("tt1234567"))
+        assertEquals("yt_id:UC123", addonMetaIdOf("yt_id:UC123"))
+        assertEquals("12345", addonMetaIdOf("12345:1:2"))
+        assertEquals("tmdb:1399", addonMetaIdOf("tmdb:1399:3:9"))
+        // A Kitsu movie listing its one video plays as kitsu:ID:1: an episode id, so plain anime routes it as series.
+        assertEquals("kitsu:1376", addonMetaIdOf("kitsu:1376:1"))
+    }
+
+    @Test
+    fun `plain anime subtitles still reach only an anime addon`() = runBlocking {
+        // The subtitle path passes no video id to the candidates (Spec 84 A3 left it unchanged).
+        val urls = subtitleRequestUrls(
+            type = "anime",
+            addons = listOf(
+                addon("https://series.example", "subtitles", listOf("series")),
+                addon("https://anime.example", "subtitles", listOf("anime"))
+            )
+        )
+        assertEquals(listOf("https://anime.example/subtitles/anime/kitsu%3A1376%3A5.json"), urls)
+    }
+
+    @Test
+    fun `plain anime episode reaches an addon declaring movie and series as series`() = runBlocking {
+        // NuvioMedia/NuvioTV#2983: AIOMetadata types anime `anime`; AIOStreams declares
+        // ["movie","series","tv","events"] and answers /stream/series/ with the streams.
+        val aio = addon("https://aio.example", "stream", listOf("movie", "series", "tv", "events"), idPrefixes = listOf("tt"))
+        val anime = addon("https://anime.example", "stream", listOf("anime"), idPrefixes = listOf("tt"))
+        assertEquals(
+            listOf(
+                "https://aio.example/stream/series/tt2560140%3A1%3A3.json",
+                "https://anime.example/stream/anime/tt2560140%3A1%3A3.json"
+            ),
+            streamRequestUrls(type = "anime", addons = listOf(aio, anime), videoId = "tt2560140:1:3").sorted()
+        )
+        assertEquals(
+            listOf("https://aio.example/stream/movie/tt0245429.json"),
+            streamRequestUrls(type = "anime", addons = listOf(aio), videoId = "tt0245429")
+        )
+    }
+
+    @Test
     fun `anime series stream request reaches series and anime addons with the matched type`() = runBlocking {
         val urls = streamRequestUrls(
             type = "anime.series",
@@ -137,7 +193,7 @@ class AnimeTypeRoutingTest {
         assertEquals("movie", topLevel.streamRequestType("movie", "tt1"))
     }
 
-    private suspend fun streamRequestUrls(type: String, addons: List<Addon>): List<String> {
+    private suspend fun streamRequestUrls(type: String, addons: List<Addon>, videoId: String = VIDEO_ID): List<String> {
         val urls = Collections.synchronizedList(mutableListOf<String>())
         val api = mockk<AddonApi>()
         coEvery { api.getStreams(capture(urls), any()) } returns Response.success(
@@ -157,7 +213,7 @@ class AnimeTypeRoutingTest {
         )
 
         withTimeout(5_000) {
-            repository.getStreamsFromAllAddons(type = type, videoId = VIDEO_ID).toList()
+            repository.getStreamsFromAllAddons(type = type, videoId = videoId).toList()
         }
         return urls.toList()
     }

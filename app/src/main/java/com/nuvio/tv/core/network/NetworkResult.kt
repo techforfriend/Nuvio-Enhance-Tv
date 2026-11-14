@@ -2,8 +2,17 @@ package com.nuvio.tv.core.network
 
 sealed class NetworkResult<out T> {
     data class Success<T>(val data: T) : NetworkResult<T>()
-    /** [garbage] = the untrusted host served wrong-shape/malformed JSON (W2.3): not retryable. */
-    data class Error(val message: String, val code: Int? = null, val garbage: Boolean = false) : NetworkResult<Nothing>()
+    /**
+     * [garbage] = the untrusted host served wrong-shape/malformed JSON (W2.3): not retryable.
+     * [certificate] = the addon server's certificate was refused, or the guard skipped a host whose
+     * last failure was one (Spec 68 P6); the message is fixed.
+     */
+    data class Error(
+        val message: String,
+        val code: Int? = null,
+        val garbage: Boolean = false,
+        val certificate: Boolean = false
+    ) : NetworkResult<Nothing>()
     data object Loading : NetworkResult<Nothing>()
 
     companion object {

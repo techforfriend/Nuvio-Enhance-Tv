@@ -1,11 +1,17 @@
 package com.nuvio.tv.core.player
 
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.container.NalUnitUtil
 
 /**
  * Reads the transfer characteristics straight out of an HEVC SPS.
+ *
+ * Callers: the Stats panel's HDR row, and (Spec 62 D12) the track snapshot's
+ * `currentVideoTrackColorTransfer`, which decides the HDR output type, the OSD HDR badge,
+ * Diagnostics, the DV fallback notice and the HDR subtitle style. A parse miss falls back to
+ * "no transfer" (normal style, no badge); PlaybackVideoColorTransferTest pins the parse.
  *
  * Why this exists. `MatroskaExtractor` builds `Format.colorInfo` only when the MKV
  * `Colour` master element is present (`if (hasColorInfo)`), and the fork's vendored
@@ -44,6 +50,8 @@ internal object PlaybackVideoColorTransfer {
         val declared = format.colorInfo?.colorTransfer ?: Format.NO_VALUE
         if (declared != Format.NO_VALUE) return declared
 
+        val mime = format.sampleMimeType
+        if (mime != MimeTypes.VIDEO_H265 && mime != MimeTypes.VIDEO_DOLBY_VISION) return Format.NO_VALUE
         val initData = format.initializationData.firstOrNull() ?: return Format.NO_VALUE
         val cached = cachedInitData
         if (cached != null && cached.contentEquals(initData)) return cachedTransfer

@@ -16,16 +16,19 @@ import com.nuvio.tv.data.local.MyPhoto
 import com.nuvio.tv.data.local.MyPhotosStore
 import com.nuvio.tv.data.local.ProfileLockStateDataStore
 import com.nuvio.tv.data.local.ProfileLookStore
+import com.nuvio.tv.data.local.ProfileRatingCapStore
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
 import com.nuvio.tv.data.remote.supabase.AvatarRepository
 import com.nuvio.tv.data.remote.supabase.ProfileBackgroundCatalogItem
 import com.nuvio.tv.data.remote.supabase.ProfileBackgroundRepository
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.ProfileLookEntry
 import com.nuvio.tv.domain.model.ProfileLookPick
 import com.nuvio.tv.domain.model.UserProfile
 import com.nuvio.tv.livetv.data.LiveTvUserStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +40,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
@@ -51,6 +55,7 @@ class ProfileSelectionViewModel @Inject constructor(
     private val liveTvUserStore: LiveTvUserStore,
     private val profileLookStore: ProfileLookStore,
     private val myPhotosStore: MyPhotosStore,
+    private val ratingCapStore: ProfileRatingCapStore,
     photoUploadStarter: PhotoUploadStarter
 ) : ViewModel() {
     val activeProfileId: StateFlow<Int> = profileManager.activeProfileId
@@ -101,6 +106,22 @@ class ProfileSelectionViewModel @Inject constructor(
             }
         }
         .stateIn<Map<Int, ProfileLookEntry>?>(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Profile id -> its rating cap (Spec 64 K2; a null value is no limit). Null until loaded, and a
+     * profile is missing until its own cap has loaded: Edit waits for it (an editor opened on the
+     * wrong cap would show it) and, outside primary-managed Manage profiles, Add stays hidden (D10,
+     * [showAddProfile]).
+     */
+    val ratingCapById: StateFlow<Map<Int, ContentRatingCap?>?> = profileManager.profiles
+        .flatMapLatest { list ->
+            if (list.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                combine(list.map { p -> ratingCapStore.capFor(p.id).map { p.id to it } }) { it.toMap() }
+            }
+        }
+        .stateIn<Map<Int, ContentRatingCap?>?>(viewModelScope, SharingStarted.Eagerly, null)
 
     /** My photos, newest first (Spec 44); null until read, and Edit waits for it as for [lookEntriesById]. */
     val myPhotos: StateFlow<List<MyPhoto>?> = myPhotosStore.photos
@@ -162,7 +183,9 @@ class ProfileSelectionViewModel @Inject constructor(
      * without deletion); a failed write calls [onLiveTvNotSaved], the profile stays saved. The look
      * entry (Spec 44) is likewise always written for the new id before [onResult]: [localAvatar]
      * over the saved profile, or a clear (a reused id may hold a deleted profile's entry); a failed
-     * write calls [onLookNotSaved].
+     * write calls [onLookNotSaved]. The rating cap (Spec 64) is likewise always written for the new
+     * id before [onResult] ([ratingCap] null clears a reused id's stale cap); a failed write calls
+     * [onRatingCapNotSaved], and the profile keeps whatever the file held (none for a fresh id).
      */
     fun createProfile(
         name: String,
@@ -172,22 +195,30 @@ class ProfileSelectionViewModel @Inject constructor(
         onLiveTvNotSaved: () -> Unit = {},
         localAvatar: ProfileLookPick? = null,
         onLookNotSaved: () -> Unit = {},
+        ratingCap: ContentRatingCap? = null,
+        onRatingCapNotSaved: () -> Unit = {},
         onResult: (Boolean) -> Unit = {}
     ) {
+        // NonCancellable: the first saved non-primary makes MainActivity show Who's watching in place
+        // of the main UI, which clears this VM; the cap and look writes must still land (Spec 64 D14).
         viewModelScope.launch {
-            val created = profileManager.createProfile(
-                name = name,
-                avatarColorHex = avatarColorHex,
-                avatarId = avatarId
-            )
-            val lookSaved = created == null ||
-                profileLookStore.write(created.id, ProfileLookEntry.of(created, localAvatar, null))
-            onResult(created != null)
-            if (!lookSaved) onLookNotSaved()
-            if (created != null && !liveTvUserStore.setEnabled(created.id, liveTvEnabled)) onLiveTvNotSaved()
-            if (created != null) {
-                profileSyncService.pushToRemote()
-                refreshProfilePinStates()
+            withContext(NonCancellable) {
+                val created = profileManager.createProfile(
+                    name = name,
+                    avatarColorHex = avatarColorHex,
+                    avatarId = avatarId
+                )
+                val lookSaved = created == null ||
+                    profileLookStore.write(created.id, ProfileLookEntry.of(created, localAvatar, null))
+                val capSaved = created == null || ratingCapStore.write(created.id, ratingCap)
+                onResult(created != null)
+                if (!lookSaved) onLookNotSaved()
+                if (!capSaved) onRatingCapNotSaved()
+                if (created != null && !liveTvUserStore.setEnabled(created.id, liveTvEnabled)) onLiveTvNotSaved()
+                if (created != null) {
+                    profileSyncService.pushToRemote()
+                    refreshProfilePinStates()
+                }
             }
         }
     }
@@ -197,7 +228,9 @@ class ProfileSelectionViewModel @Inject constructor(
      * non-null writes the profile's Live TV switch after a successful save (the editor passes it
      * only when changed). After a successful save the look entry is rewritten before [onResult]:
      * [localAvatar] / [localBackground] over [profile]'s synced key, or a clear when both are null;
-     * a failed write calls [onLookNotSaved].
+     * a failed write calls [onLookNotSaved]. [ratingCap] non-null (the editor passes it on every
+     * save where the limit is editable, [ratingCapEditFor]) writes its cap after a successful save,
+     * also before [onResult]; a failed write calls [onRatingCapNotSaved].
      */
     fun updateProfile(
         profile: UserProfile,
@@ -206,14 +239,18 @@ class ProfileSelectionViewModel @Inject constructor(
         localAvatar: ProfileLookPick? = null,
         localBackground: ProfileLookPick? = null,
         onLookNotSaved: () -> Unit = {},
+        ratingCap: RatingCapEdit? = null,
+        onRatingCapNotSaved: () -> Unit = {},
         onResult: (Boolean) -> Unit = {}
     ) {
         viewModelScope.launch {
             val success = profileManager.updateProfile(profile)
             val lookSaved = !success ||
                 profileLookStore.write(profile.id, ProfileLookEntry.of(profile, localAvatar, localBackground))
+            val capSaved = !success || ratingCap == null || ratingCapStore.write(profile.id, ratingCap.cap)
             onResult(success)
             if (!lookSaved) onLookNotSaved()
+            if (!capSaved) onRatingCapNotSaved()
             if (success && liveTvEnabled != null && !liveTvUserStore.setEnabled(profile.id, liveTvEnabled)) {
                 onLiveTvNotSaved()
             }
@@ -225,11 +262,15 @@ class ProfileSelectionViewModel @Inject constructor(
     }
 
     fun deleteProfile(id: Int) {
+        // NonCancellable: deleting the active profile returns the app to Who's watching (Spec 64 D14),
+        // which clears this VM; the remote delete and push must still run or sync restores the profile.
         viewModelScope.launch {
-            profileManager.deleteProfile(id)
-            profileSyncService.deleteProfileData(id)
-            profileSyncService.pushToRemote()
-            refreshProfilePinStates()
+            withContext(NonCancellable) {
+                profileManager.deleteProfile(id)
+                profileSyncService.deleteProfileData(id)
+                profileSyncService.pushToRemote()
+                refreshProfilePinStates()
+            }
         }
     }
 

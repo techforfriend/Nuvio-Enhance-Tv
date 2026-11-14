@@ -10,6 +10,8 @@ import com.nuvio.tv.data.local.DpadUnlockState
 import com.nuvio.tv.data.local.MyPhotosStore
 import com.nuvio.tv.data.local.ProfileLockStateDataStore
 import com.nuvio.tv.data.local.ProfileLookStore
+import com.nuvio.tv.data.local.ProfileRatingCapStore
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.ProfileLookChoice
 import com.nuvio.tv.domain.model.ProfileLookEntry
 import com.nuvio.tv.domain.model.ProfileLookPick
@@ -22,13 +24,18 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.coVerifyOrder
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -47,6 +54,7 @@ class ProfileSelectionViewModelTest {
     private val liveTvUserStore = mockk<LiveTvUserStore>(relaxed = true)
     private val profileLookStore = mockk<ProfileLookStore>(relaxed = true)
     private val myPhotosStore = mockk<MyPhotosStore>(relaxed = true)
+    private val ratingCapStore = mockk<ProfileRatingCapStore>(relaxed = true)
 
     private val sequence = listOf(
         DpadDirection.UP, DpadDirection.DOWN, DpadDirection.LEFT,
@@ -55,12 +63,13 @@ class ProfileSelectionViewModelTest {
 
     private fun viewModelWith(
         state: DpadUnlockState,
-        profiles: List<UserProfile> = emptyList()
+        profiles: List<UserProfile> = emptyList(),
+        profileList: MutableStateFlow<List<UserProfile>> = MutableStateFlow(profiles)
     ): ProfileSelectionViewModel {
         every { profileLockStateDataStore.dpadUnlockState } returns flowOf(state)
         every { profileLockStateDataStore.pinEnabled } returns flowOf(emptyMap())
         every { profileManager.activeProfileId } returns MutableStateFlow(0)
-        every { profileManager.profiles } returns MutableStateFlow(profiles)
+        every { profileManager.profiles } returns profileList
         return ProfileSelectionViewModel(
             profileManager = profileManager,
             profileSyncService = profileSyncService,
@@ -71,6 +80,7 @@ class ProfileSelectionViewModelTest {
             liveTvUserStore = liveTvUserStore,
             profileLookStore = profileLookStore,
             myPhotosStore = myPhotosStore,
+            ratingCapStore = ratingCapStore,
             photoUploadStarter = mockk(relaxed = true)
         )
     }
@@ -261,15 +271,23 @@ class ProfileSelectionViewModelTest {
         val sara = UserProfile(id = 2, name = "Sara", avatarColorHex = "#C2185B")
         coEvery { profileManager.updateProfile(sara) } returns true
         coEvery { profileLookStore.write(any(), any()) } returns false
+        coEvery { ratingCapStore.write(any(), any()) } returns true
         val viewModel = viewModelWith(DpadUnlockState())
         val results = mutableListOf<Boolean>()
         var notSaved = 0
-        viewModel.createProfile("Kids", "#1E88E5", null, onLookNotSaved = { notSaved++ }) { results += it }
+        var capNotSaved = 0
+        val onCapNotSaved: () -> Unit = { capNotSaved++ }
+        viewModel.createProfile("Kids", "#1E88E5", null, onLookNotSaved = { notSaved++ }, onRatingCapNotSaved = onCapNotSaved) {
+            results += it
+        }
         advanceUntilIdle()
-        viewModel.updateProfile(sara, onLookNotSaved = { notSaved++ }) { results += it }
+        viewModel.updateProfile(
+            sara, ratingCap = RatingCapEdit(null), onLookNotSaved = { notSaved++ }, onRatingCapNotSaved = onCapNotSaved
+        ) { results += it }
         advanceUntilIdle()
         assertEquals(listOf(true, true), results)
         assertEquals(2, notSaved)
+        assertEquals(0, capNotSaved)
         coVerify(exactly = 2) { profileSyncService.pushToRemote() }
     }
 
@@ -292,6 +310,144 @@ class ProfileSelectionViewModelTest {
         kidsFlow.value = null
         advanceUntilIdle()
         assertEquals(emptyMap<Int, ProfileLookEntry>(), viewModel.lookEntriesById.value)
+    }
+
+    @Test
+    fun `the cap map is null until loaded, holds a null for no limit, and follows a change (Spec 64)`() = runTest {
+        val zaynCap = MutableStateFlow<ContentRatingCap?>(ContentRatingCap.OLDER_KIDS)
+        every { ratingCapStore.capFor(1) } returns flowOf(null)
+        every { ratingCapStore.capFor(2) } returns zaynCap
+        val viewModel = viewModelWith(
+            DpadUnlockState(),
+            profiles = listOf(
+                UserProfile(id = 1, name = "Arshad", avatarColorHex = "#1E88E5"),
+                UserProfile(id = 2, name = "Zayn", avatarColorHex = "#E8743B")
+            )
+        )
+        assertEquals(null, viewModel.ratingCapById.value)
+        advanceUntilIdle()
+        assertEquals(mapOf(1 to null, 2 to ContentRatingCap.OLDER_KIDS), viewModel.ratingCapById.value)
+        zaynCap.value = null
+        advanceUntilIdle()
+        assertEquals(mapOf<Int, ContentRatingCap?>(1 to null, 2 to null), viewModel.ratingCapById.value)
+    }
+
+    @Test
+    fun `a newly listed profile has no cap entry until its own cap loads, keeping Add and Edit closed`() = runTest {
+        every { ratingCapStore.capFor(1) } returns flowOf(null)
+        every { ratingCapStore.capFor(2) } returns flowOf(ContentRatingCap.OLDER_KIDS)
+        val noorCap = MutableSharedFlow<ContentRatingCap?>()
+        every { ratingCapStore.capFor(3) } returns noorCap
+        val arshad = UserProfile(id = 1, name = "Arshad", avatarColorHex = "#1E88E5")
+        val zayn = UserProfile(id = 2, name = "Zayn", avatarColorHex = "#E8743B")
+        val noor = UserProfile(id = 3, name = "Noor", avatarColorHex = "#43A047")
+        val list = MutableStateFlow(listOf(arshad, zayn))
+        val viewModel = viewModelWith(DpadUnlockState(), profileList = list)
+        advanceUntilIdle()
+        list.value = listOf(arshad, zayn, noor)
+        advanceUntilIdle()
+        val pending = viewModel.ratingCapById.value
+        assertFalse(ratingCapLoaded(3, pending))
+        assertFalse(showAddProfile(true, managedByPrimary = false, profiles = list.value, caps = pending))
+        noorCap.emit(null)
+        advanceUntilIdle()
+        assertTrue(ratingCapLoaded(3, viewModel.ratingCapById.value))
+    }
+
+    @Test
+    fun `create always writes the cap for the new id before the result, and none when the create fails`() = runTest {
+        coEvery { profileManager.createProfile(any(), any(), any(), any()) } returnsMany listOf(created(4), created(5), null)
+        val events = mutableListOf<String>()
+        coEvery { ratingCapStore.write(any(), any()) } coAnswers { events += "cap ${firstArg<Int>()} ${secondArg<ContentRatingCap?>()}"; true }
+        val viewModel = viewModelWith(DpadUnlockState())
+        // No limit is written too: it clears a reused id's stale cap.
+        viewModel.createProfile("Kids", "#1E88E5", null) { events += "result $it" }
+        advanceUntilIdle()
+        viewModel.createProfile("Zayn", "#1E88E5", null, ratingCap = ContentRatingCap.OLDER_KIDS) { events += "result $it" }
+        advanceUntilIdle()
+        viewModel.createProfile("Guest", "#1E88E5", null, ratingCap = ContentRatingCap.TEENS) { events += "result $it" }
+        advanceUntilIdle()
+        assertEquals(
+            listOf("cap 4 null", "result true", "cap 5 OLDER_KIDS", "result true", "result false"),
+            events
+        )
+    }
+
+    @Test
+    fun `update writes the cap only when an edit is passed, after a save and before the result`() = runTest {
+        val zayn = UserProfile(id = 3, name = "Zayn", avatarColorHex = "#E8743B")
+        coEvery { profileManager.updateProfile(zayn) } returnsMany listOf(true, true, true, false)
+        val events = mutableListOf<String>()
+        coEvery { ratingCapStore.write(any(), any()) } coAnswers { events += "cap ${secondArg<ContentRatingCap?>()}"; true }
+        val viewModel = viewModelWith(DpadUnlockState())
+        viewModel.updateProfile(zayn) { events += "result $it" }
+        advanceUntilIdle()
+        viewModel.updateProfile(zayn, ratingCap = RatingCapEdit(ContentRatingCap.ALL_AGES)) { events += "result $it" }
+        advanceUntilIdle()
+        // Removing the limit is a write of null, not a skipped write.
+        viewModel.updateProfile(zayn, ratingCap = RatingCapEdit(null)) { events += "result $it" }
+        advanceUntilIdle()
+        // The profile is gone: no cap write.
+        viewModel.updateProfile(zayn, ratingCap = RatingCapEdit(ContentRatingCap.TEENS)) { events += "result $it" }
+        advanceUntilIdle()
+        assertEquals(
+            listOf("result true", "cap ALL_AGES", "result true", "cap null", "result true", "result false"),
+            events
+        )
+        coVerify(exactly = 2) { ratingCapStore.write(3, any()) }
+    }
+
+    @Test
+    fun `a failed cap write keeps the profile saved, reports it apart and still pushes`() = runTest {
+        coEvery { profileManager.createProfile(any(), any(), any(), any()) } returns created(4)
+        val zayn = UserProfile(id = 3, name = "Zayn", avatarColorHex = "#E8743B")
+        coEvery { profileManager.updateProfile(zayn) } returns true
+        coEvery { ratingCapStore.write(any(), any()) } returns false
+        coEvery { profileLookStore.write(any(), any()) } returns true
+        val viewModel = viewModelWith(DpadUnlockState())
+        val results = mutableListOf<Boolean>()
+        var notSaved = 0
+        viewModel.createProfile("Kids", "#1E88E5", null, onRatingCapNotSaved = { notSaved++ }) { results += it }
+        advanceUntilIdle()
+        viewModel.updateProfile(zayn, ratingCap = RatingCapEdit(ContentRatingCap.ALL_AGES), onRatingCapNotSaved = { notSaved++ }) {
+            results += it
+        }
+        advanceUntilIdle()
+        assertEquals(listOf(true, true), results)
+        assertEquals(2, notSaved)
+        coVerify(exactly = 2) { profileSyncService.pushToRemote() }
+    }
+
+    @Test
+    fun `deleting keeps going after the screen's scope is cancelled, so the remote delete and push run (D14)`() = runTest {
+        val viewModel = viewModelWith(DpadUnlockState())
+        // Deleting the active profile returns the app to Who's watching, which clears this VM.
+        coEvery { profileManager.deleteProfile(3) } coAnswers { viewModel.viewModelScope.cancel(); true }
+        // Suspends like the real RPC: without NonCancellable the cancelled coroutine stops here.
+        coEvery { profileSyncService.deleteProfileData(3) } coAnswers { delay(1); Result.success(Unit) }
+        viewModel.deleteProfile(3)
+        advanceUntilIdle()
+        coVerifyOrder {
+            profileSyncService.deleteProfileData(3)
+            profileSyncService.pushToRemote()
+        }
+    }
+
+    @Test
+    fun `creating keeps going after the screen's scope is cancelled, so the cap still lands (D14)`() = runTest {
+        val viewModel = viewModelWith(DpadUnlockState())
+        // The first non-primary makes MainActivity show Who's watching, which clears this VM.
+        coEvery { profileManager.createProfile(any(), any(), any(), any()) } coAnswers {
+            viewModel.viewModelScope.cancel()
+            created(2)
+        }
+        // Suspends like the real DataStore writes: without NonCancellable the cancelled coroutine stops at the first.
+        coEvery { profileLookStore.write(any(), any()) } coAnswers { delay(1); true }
+        coEvery { ratingCapStore.write(any(), any()) } coAnswers { delay(1); true }
+        viewModel.createProfile("Zayn", "#E8743B", null, ratingCap = ContentRatingCap.OLDER_KIDS)
+        advanceUntilIdle()
+        coVerify { ratingCapStore.write(2, ContentRatingCap.OLDER_KIDS) }
+        coVerify { profileSyncService.pushToRemote() }
     }
 
     private companion object {

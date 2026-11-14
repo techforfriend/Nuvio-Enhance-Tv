@@ -21,7 +21,7 @@ enum class FailureKind {
     /** The container or playlist cannot be read. */
     PARSE,
 
-    /** DRM-protected (out of v1 scope). */
+    /** A licensed stream failed: refused, a key system this TV lacks, or a licence it rejected (Spec 74 D5). */
     DRM
 }
 
@@ -75,7 +75,9 @@ object StreamHealth {
             FailureKind.NETWORK, FailureKind.STALL -> if (playedRecently) StreamState.FLAKY else StreamState.UNREACHABLE
             FailureKind.BLOCKED -> if (playedRecently) StreamState.DISPUTED else StreamState.BLOCKED
             FailureKind.DEAD -> if (playedRecently) StreamState.DISPUTED else StreamState.DEAD
-            FailureKind.PARSE, FailureKind.DRM -> StreamState.DEAD
+            // A licence refused after a recent play is likely an expired token (a refresh brings a new one).
+            FailureKind.DRM -> if (playedRecently) StreamState.DISPUTED else StreamState.DEAD
+            FailureKind.PARSE -> StreamState.DEAD
         }
     }
 

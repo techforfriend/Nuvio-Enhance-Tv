@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.nuvio.tv.core.di.Download
 import com.nuvio.tv.core.network.executeCancellable
+import com.nuvio.tv.core.network.tls.isAddonCertificateFailure
 import com.nuvio.tv.core.util.safeHost
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -106,7 +107,12 @@ class SubtitleFileCache @Inject constructor(
             // The partial file is removed by the next cacheSubtitles' clearCache.
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to download subtitle file from host=${input.url.safeHost()}", e)
+            if (e.isAddonCertificateFailure()) {
+                // Spec 68 P9: the @Download client refused the host's certificate (trustable only for addon hosts until X8).
+                Log.w(TAG, "Subtitle host certificate not trusted host=${input.url.safeHost()}")
+            } else {
+                Log.w(TAG, "Failed to download subtitle file from host=${input.url.safeHost()}", e)
+            }
             file.delete()
             null
         }

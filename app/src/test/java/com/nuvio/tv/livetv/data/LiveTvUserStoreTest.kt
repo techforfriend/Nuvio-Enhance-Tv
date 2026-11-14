@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/** Spec 34 L8-D1/D2: per-profile favorites, recents and last filter; caps, junk, profile switch. */
+/** Spec 34 L8-D1/D2: per-profile favorites, recents, last filter and last view (Spec 67 D7); caps, junk, profile switch. */
 class LiveTvUserStoreTest {
 
     private val activeProfile = MutableStateFlow(1)
@@ -42,10 +42,12 @@ class LiveTvUserStoreTest {
         store.recordWatched("y", 2)
         store.recordWatched("x", 3)
         store.setLastFilter("sports")
+        assertTrue(store.setLastView("guide"))
         val state = store.state.first()
         assertEquals(listOf("a"), state.favorites)
         assertEquals(listOf(RecentChannel("x", 3), RecentChannel("y", 2)), state.recents)
         assertEquals("sports", state.lastFilter)
+        assertEquals("guide", state.lastView)
     }
 
     @Test

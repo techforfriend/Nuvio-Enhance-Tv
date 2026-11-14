@@ -237,16 +237,39 @@ private fun StreamDto.streamDataString(key: String): String? =
 private val ERROR_TITLE_MARK = Regex("^(\\s*\\[\\s*❌\\s*]\\s*)+")
 
 /**
- * Drops clientResolve-only entries (no HTTP url, torrent or YouTube id; an
- * http externalUrl counts as a url via getStreamUrl): they targeted the in-app
- * debrid resolver this app no longer has. Other target-less rows (addon
- * info/status rows) are left as they were.
+ * One home for turning an addon's stream rows into the streams the app lists: the stream
+ * resource, the meta-inline fallback and a meta's own videos all come through here. Rows the
+ * app cannot play are left out ([isUnplayable], [withoutResolverOnlyStreams]).
+ */
+internal fun List<StreamDto>.toListedStreams(addonName: String, addonLogo: String?): List<Stream> =
+    filterNot { it.isUnplayable() }
+        .map { it.toDomain(addonName, addonLogo) }
+        .withoutResolverOnlyStreams()
+
+/**
+ * A row the app cannot play (Spec 84 A4, A11): its only targets are a YouTube id (the in-app
+ * extractor's split video and audio fit the trailer player only), a Usenet NZB or archive URLs;
+ * or it is a disc image (`.iso` url or filename), which neither engine opens. Rows with no
+ * target at all (addon info rows) are kept.
+ */
+internal fun StreamDto.isUnplayable(): Boolean {
+    val unsupportedOnly = url == null && externalUrl == null && infoHash == null &&
+        (ytId != null || nzbUrl != null || rarUrls != null || zipUrls != null ||
+            sevenZipUrls != null || tgzUrls != null || tarUrls != null)
+    return unsupportedOnly || listOfNotNull(url?.substringBefore('?')?.substringBefore('#'), behaviorHints?.filename)
+        .any { it.trimEnd().endsWith(".iso", ignoreCase = true) }
+}
+
+/**
+ * Drops clientResolve-only entries (no HTTP url or torrent; an http externalUrl
+ * counts as a url via getStreamUrl): they targeted the in-app debrid resolver this
+ * app no longer has. Other target-less rows (addon info/status rows) are left as
+ * they were.
  */
 internal fun List<Stream>.withoutResolverOnlyStreams(): List<Stream> = filter { stream ->
     stream.clientResolve == null ||
         stream.getStreamUrl() != null ||
-        stream.isTorrent() ||
-        stream.ytId != null
+        stream.isTorrent()
 }
 
 fun StreamClientResolveDto.toDomain(): StreamClientResolve = StreamClientResolve(

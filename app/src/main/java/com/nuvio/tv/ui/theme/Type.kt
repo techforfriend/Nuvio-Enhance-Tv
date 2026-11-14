@@ -145,7 +145,13 @@ data class NuvioTextStyleTokens(
      *  SemiBold; row value and the device line 12/17 Medium (the note uses [settingsNote]). */
     val welcomeDevice: TextStyle,
     val welcomeRowLabel: TextStyle,
-    val welcomeRowValue: TextStyle
+    val welcomeRowValue: TextStyle,
+    /** Addon certificate panel (Spec 68 X7, sandbox `s068-x7-tls-confirm` v1): host 17/22 SemiBold;
+     *  fingerprint caption 10/14 Medium +1.4 (uppercased by the caller); fingerprint 12/17 Medium
+     *  monospace +0.3 (the mockup's DM Mono falls back to the platform monospace). */
+    val certHost: TextStyle,
+    val certCaption: TextStyle,
+    val certFingerprint: TextStyle
 )
 
 @OptIn(ExperimentalTvMaterial3Api::class)
@@ -603,6 +609,25 @@ fun buildNuvioTextStyles(typography: Typography): NuvioTextStyleTokens = NuvioTe
         lineHeight = 17.sp,
         fontWeight = FontWeight.Medium,
         letterSpacing = 0.sp
+    ),
+    certHost = typography.titleSmall.copy(
+        fontSize = 17.sp,
+        lineHeight = 22.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.sp
+    ),
+    certCaption = typography.labelSmall.copy(
+        fontSize = 10.sp,
+        lineHeight = 14.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 1.4.sp
+    ),
+    certFingerprint = typography.bodySmall.copy(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.3.sp
     )
 )
 

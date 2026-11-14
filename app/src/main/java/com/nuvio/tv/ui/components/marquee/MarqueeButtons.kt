@@ -1,6 +1,8 @@
 package com.nuvio.tv.ui.components.marquee
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -38,6 +42,7 @@ import androidx.tv.material3.Glow
 import androidx.tv.material3.Icon
 import androidx.tv.material3.IconButton
 import androidx.tv.material3.IconButtonDefaults
+import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Text
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -160,7 +165,9 @@ private val NEUTRAL_GLOW: () -> Color = { NuvioPrimitives.neutral600 }
  * [height] tall pill in `glassFill`, padded [horizontalPadding], a [restingLabelColor] label (white
  * by default, red for a destructive confirm, Spec 28 stage 7); focused = white fill, black label,
  * no scale. [highlighted] paints the focused look without focus (the subtitle delay strip tracks
- * its own focus target). [icon]: a leading icon in the label colour (Spec 28 `.l8add`). Callers put `focusRequester`/`onFocusChanged` in [modifier].
+ * its own focus target). [icon]: a leading icon in the label colour (Spec 28 `.l8add`), or in
+ * [iconTint] resting and [focusedIconTint] focused when given (Spec 81's coral Tip heart). Callers put
+ * `focusRequester`/`onFocusChanged` in [modifier].
  */
 @Composable
 internal fun MarqueeGlassTextButton(
@@ -172,14 +179,19 @@ internal fun MarqueeGlassTextButton(
     textStyle: TextStyle = NuvioTheme.textStyles.button,
     highlighted: Boolean = false,
     restingLabelColor: Color = NuvioPrimitives.white,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    iconTint: Color? = null,
+    focusedIconTint: Color? = null
 ) {
     val marquee = NuvioTheme.marquee
     val white = NuvioPrimitives.white
     val black = NuvioPrimitives.black
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
     Button(
         onClick = onClick,
         modifier = modifier.height(height),
+        interactionSource = interaction,
         shape = ButtonDefaults.shape(shape = CircleShape),
         colors = ButtonDefaults.colors(
             containerColor = if (highlighted) white else marquee.glassFill,
@@ -194,7 +206,13 @@ internal fun MarqueeGlassTextButton(
     ) {
         PillContentRow {
             if (icon != null) {
-                Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(marquee.glassButton.textIconSize))
+                val tint = (if (focused || highlighted) focusedIconTint else iconTint) ?: LocalContentColor.current
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(marquee.glassButton.textIconSize)
+                )
                 Spacer(modifier = Modifier.width(marquee.glassButton.textIconGap))
             }
             Text(text = label, style = textStyle, maxLines = 1)
@@ -254,6 +272,9 @@ internal fun MarqueeGlassButton(
  * Without the button there is no focus grab (focus stays where it is, e.g. on a Discover filter
  * pill). With [backdropUrl] (the player's playback error, u6 stage 15) the black gains that backdrop
  * under `message.backdropVeil` and the block sits `message.bottomAnchor` above the bottom instead.
+ * [leading]: drawn above the eyebrow (Detail's rating-limit lock disc, Spec 64 D13). [content]: drawn
+ * between the body and the buttons, free of the block's `message.width` cap by its
+ * own modifier if it needs to (the playback error's step line and Details, Spec 75 D4).
  */
 @Composable
 internal fun MarqueeMessage(
@@ -268,7 +289,9 @@ internal fun MarqueeMessage(
     actionGlow: () -> Color = NEUTRAL_GLOW,
     backdropUrl: String? = null,
     secondaryLabel: String? = null,
-    onSecondary: (() -> Unit)? = null
+    onSecondary: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
+    content: (@Composable () -> Unit)? = null
 ) {
     val marquee = NuvioTheme.marquee
     val tokens = marquee.message
@@ -300,6 +323,7 @@ internal fun MarqueeMessage(
                 .width(tokens.width),
             verticalArrangement = Arrangement.spacedBy(tokens.gap)
         ) {
+            leading?.invoke()
             if (eyebrow != null) {
                 Text(
                     text = eyebrow.uppercase(),
@@ -320,6 +344,7 @@ internal fun MarqueeMessage(
                     modifier = Modifier.widthIn(max = tokens.bodyWidth)
                 )
             }
+            content?.invoke()
             if (showAction || showSecondary) {
                 // A wrapper, not button padding, so the focus scale and glow stay centred on the pill.
                 Row(

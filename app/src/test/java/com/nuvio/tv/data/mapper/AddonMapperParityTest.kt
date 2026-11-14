@@ -137,6 +137,18 @@ class AddonMapperParityTest {
     }
 
     @Test
+    fun `a catalog without a name is labelled with its addon's name`() {
+        // Spec 84 A2: Stremio's YouTube addon (v3-channels.strem.io) names neither catalog.
+        val addon = json.decodeFromString<AddonManifestDto>(
+            """{"id":"com.linvo.stremiochannels","version":"1.30.7","name":"YouTube",
+                "resources":["catalog","meta"],"types":["channel"],"idPrefixes":["yt_id:"],
+                "catalogs":[{"type":"channel","id":"top"},{"type":"channel","id":"videos","name":"Videos"}]}"""
+        ).toDomain(baseUrl = "https://v3-channels.strem.io")
+        assertEquals(listOf("YouTube", "Videos"), addon.catalogs.map { it.name })
+        assertEquals(listOf("top", "videos"), addon.catalogs.map { it.id })
+    }
+
+    @Test
     fun `manifest cache written before p2p and adult still decodes`() {
         val cached = """{"https://a.example":{"id":"a","name":"A","version":"1","description":null,"logo":null,
             "baseUrl":"https://a.example","catalogs":[],"types":[],"resources":[],

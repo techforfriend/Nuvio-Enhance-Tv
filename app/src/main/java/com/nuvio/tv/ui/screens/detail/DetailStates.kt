@@ -5,22 +5,30 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.tv.material3.Icon
 import com.nuvio.tv.R
 import com.nuvio.tv.ui.components.errorStateText
 import com.nuvio.tv.ui.components.marquee.MarqueeBackdropImage
@@ -28,6 +36,7 @@ import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.marquee.MarqueeScrims
 import com.nuvio.tv.ui.components.marquee.marqueeSkeletonBar
 import com.nuvio.tv.ui.components.marquee.marqueeSkeletonTextBar
+import com.nuvio.tv.ui.screens.profile.ceiling
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
 
@@ -179,4 +188,64 @@ internal fun DetailErrorState(message: String, onRetry: () -> Unit, modifier: Mo
         focusRequester = focusRequester,
         modifier = modifier
     )
+}
+
+// Lock disc (sandbox spec-64-k2-rating-cap stages 7-8, `.lockic`), dp.
+private val LOCK_DISC_SIZE = 44.dp
+private val LOCK_ICON_SIZE = 22.dp
+private val LOCK_DISC_BOTTOM = 4.dp
+private const val LOCK_DISC_FILL_ALPHA = 0.10f
+
+/**
+ * Spec 64 D13 block, instead of the page for a title outside the active profile's rating limit:
+ * Home's message block on black (no artwork) under a lock disc, the title's name as the eyebrow,
+ * why it is out (its rating against the limit's ceiling, or unrated), Back focused, and Switch
+ * profile to Who's watching (the PIN stays the way out).
+ */
+@Composable
+internal fun DetailRatingBlockState(
+    block: DetailRatingBlock,
+    onBack: () -> Unit,
+    onSwitchProfile: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val focusRequester = remember { FocusRequester() }
+    val name = block.limit.profileName ?: stringResource(R.string.rating_limit_profile_fallback)
+    val body = if (block.rating != null) {
+        val (movieCeiling, tvCeiling) = block.limit.cap.ceiling()
+        stringResource(R.string.detail_rating_block_rated, block.rating, name, movieCeiling, tvCeiling)
+    } else {
+        stringResource(R.string.detail_rating_block_unrated, name)
+    }
+    MarqueeMessage(
+        eyebrow = block.title,
+        title = stringResource(R.string.detail_rating_block_title, name),
+        body = AnnotatedString(body),
+        actionLabel = stringResource(R.string.action_back),
+        actionIcon = Icons.AutoMirrored.Filled.ArrowBack,
+        onAction = onBack,
+        focusRequester = focusRequester,
+        secondaryLabel = stringResource(R.string.detail_rating_block_switch_profile),
+        onSecondary = onSwitchProfile,
+        leading = { RatingLockDisc() },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun RatingLockDisc() {
+    Box(
+        modifier = Modifier
+            .padding(bottom = LOCK_DISC_BOTTOM)
+            .size(LOCK_DISC_SIZE)
+            .background(NuvioPrimitives.white.copy(alpha = LOCK_DISC_FILL_ALPHA), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Lock,
+            contentDescription = null,
+            tint = NuvioPrimitives.warning,
+            modifier = Modifier.size(LOCK_ICON_SIZE)
+        )
+    }
 }

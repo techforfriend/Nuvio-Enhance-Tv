@@ -471,6 +471,9 @@ private fun ModernHomeRoute(
         onRequestTrailerPreview = requestTrailerPreview,
         onLoadMoreCatalog = loadMoreCatalog,
         onRemoveContinueWatching = removeContinueWatching,
+        onMarkContinueWatchingWatched = remember(viewModel) {
+            { item: ContinueWatchingItem -> viewModel.onEvent(HomeEvent.OnMarkContinueWatchingWatched(item)) }
+        },
         isCatalogItemWatched = isCatalogItemWatched,
         onCatalogItemLongPress = onCatalogItemLongPress,
         onNavigateToFolderDetail = onNavigateToFolderDetail,

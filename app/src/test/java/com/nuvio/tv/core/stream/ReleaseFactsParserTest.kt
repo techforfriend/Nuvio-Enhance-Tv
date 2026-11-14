@@ -172,6 +172,7 @@ class ReleaseFactsParserTest {
 
         assertEquals(22, streams.size)
         assertEquals(22, streams.countPassing(noExclusions))
+        assertEquals("a real response carries no suspect stream (Spec 65 P4)", 0, streams.count { facts(it).suspect })
         assertEquals(
             listOf(104_700_022_239L, 96_867_354_460L, 92_910_562_472L),
             streams.sortedByDescending { facts(it).size ?: -1L }.take(3).map { it.streamSize() }

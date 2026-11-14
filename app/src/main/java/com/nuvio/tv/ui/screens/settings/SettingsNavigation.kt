@@ -65,7 +65,14 @@ internal enum class SettingsEntry(
     TMDB_KEY(SettingsReturnTarget(SettingsCategory.INTEGRATION, TMDB_KEY_ROW_KEY), null, opensPanel = true),
 
     /** About › Update available with the update panel open: the top bar's Update pill (Spec 52 T2). */
-    UPDATE(SettingsReturnTarget(SettingsCategory.ABOUT, ABOUT_UPDATE_ROW_KEY), null, opensPanel = true);
+    UPDATE(SettingsReturnTarget(SettingsCategory.ABOUT, ABOUT_UPDATE_ROW_KEY), null, opensPanel = true),
+
+    /**
+     * About › Changelog with the list open (Spec 80): the What's new card's Read notes, which also
+     * names the release whose page opens ([openSettingsAt]'s release), and the Welcome card's
+     * Changelog (D15), which names none.
+     */
+    CHANGELOG(SettingsReturnTarget(SettingsCategory.ABOUT, ABOUT_CHANGELOG_ROW_KEY), null);
 
     companion object {
         fun fromName(name: String?): SettingsEntry? = entries.firstOrNull { it.name == name }
@@ -75,12 +82,19 @@ internal enum class SettingsEntry(
 /**
  * Opens Settings at [entry]. [navigate] puts the Settings destination on top (tab-style from
  * Home, pushed over the player or a no-key page); the entry then rides that back-stack entry's SavedStateHandle
- * ([Screen.Settings.ENTRY_KEY]), so it also reaches a Settings screen already composed.
+ * ([Screen.Settings.ENTRY_KEY]), so it also reaches a Settings screen already composed. [release]
+ * (a versionCode, [SettingsEntry.CHANGELOG] only) rides beside it ([Screen.Settings.ENTRY_RELEASE_KEY]),
+ * written first so it is there when the entry is read.
  */
-internal fun NavController.openSettingsAt(entry: SettingsEntry, navigate: NavController.() -> Unit) {
+internal fun NavController.openSettingsAt(
+    entry: SettingsEntry,
+    release: Int? = null,
+    navigate: NavController.() -> Unit
+) {
     navigate()
     val top = currentBackStackEntry ?: return
     if (top.destination.route == Screen.Settings.route) {
+        top.savedStateHandle[Screen.Settings.ENTRY_RELEASE_KEY] = release
         top.savedStateHandle[Screen.Settings.ENTRY_KEY] = entry.name
     }
 }

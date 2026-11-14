@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
@@ -35,31 +38,47 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import com.nuvio.tv.core.player.DecodeCapability
+import com.nuvio.tv.core.player.DecodeVerdict
+import com.nuvio.tv.core.stream.ReleaseFacts
 import com.nuvio.tv.core.stream.ReleaseFactsParser
 import com.nuvio.tv.domain.model.AioStreamData
 import com.nuvio.tv.domain.model.Stream
 import com.nuvio.tv.ui.components.formatStreamSizeLabel
 import com.nuvio.tv.ui.components.rememberRawSvgPainter
 import com.nuvio.tv.ui.components.marquee.MarqueeSourceBadges
+import com.nuvio.tv.ui.components.marquee.rememberMarqueeLongPress
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 private const val DETAIL_MAX_LINES = 2
 private const val ADDON_TEXT_MAX_LINES = 4
 
+// Spec 75 S6 mark line (sandbox `spec-75-failure-reasons` `.p75ln`, `.sr.p75dim`).
+private const val FAILED_ROW_ALPHA = 0.55f
+private val FAILURE_MARK_TEXT_SIZE = 11.5.sp
+private val FAILURE_MARK_LINE_HEIGHT = 15.sp
+private val FAILURE_MARK_ICON_SIZE = 13.dp
+private val FAILURE_MARK_GAP = 5.dp
+
 /**
  * One source row (approved sandbox `u5-stream-screen-marquee` stages 1-2 +
  * `data-additions-marquee` stage 6). Badges mode: the shared source badges, the stream name, then
- * [streamRowDetailText]; the side column holds the [marker] ("Last played", or the player's
- * "Playing" with a play icon, u6 stage 1) in the ambient [accent], the addon (for AIOStreams the
+ * [streamRowDetailText]; the side column holds the [marker] ("Last played", "Preferred", or the
+ * player's "Playing" with a play icon, u6 stage 1) in the ambient [accent], the addon (for AIOStreams the
  * upstream that found the stream, Spec 42 D6), the size ([showSize], the "Size badges" setting), and
  * the languages + the stream kind ("EN · PM") with a bolt when the debrid file is cached. [useAddonFormatting]: the name and the addon's own
  * description (line breaks kept, up to 4 lines); the side column keeps the marker and the
- * addon only (QU5-11). [dimmed] (a source that failed this session) fades the whole row.
+ * addon only (QU5-11).
  * [overLimitMbps] / [overResolutionCap] (a stream the limits hide, listed in a hidden view, Spec 51
  * P6, Spec 58 D3): the side column ends on why, in amber behind a warning icon ("109 Mbps", "Over
- * 1080p", or both), in place of the languages line. Focus =
- * glass fill + inset ring, no scale. Callers put `focusRequester`/`onFocusChanged`/key handling
+ * 1080p", or both), in place of the languages line. [decode] (Spec 65 P8, D15): a stream this
+ * device cannot play as released gets a sentence under the file name, in either formatting; one it
+ * would decode in software has the rest of its row faded. Focus =
+ * glass fill + inset ring, no scale. [failureMark] (Spec 75 S6, sandbox `spec-75-failure-reasons` stages 9-10): a
+ * source that failed in the last day gets a red line under its file name (the reason and its age)
+ * and the rest of the row faded. [onLongPress] (hold OK, or MENU; Spec 65 P6's row menu): the
+ * release that follows does not click. Callers put `focusRequester`/`onFocusChanged`/key handling
  * in [modifier].
  */
 @Composable
@@ -71,9 +90,11 @@ internal fun StreamSourceRow(
     accent: () -> Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    dimmed: Boolean = false,
     overLimitMbps: Int? = null,
-    overResolutionCap: ReleaseResolution? = null
+    overResolutionCap: ReleaseResolution? = null,
+    decode: DecodeCapability = DecodeCapability.UNKNOWN,
+    onLongPress: (() -> Unit)? = null,
+    failureMark: SourceFailureMark? = null
 ) {
     val marquee = NuvioTheme.marquee
     val tokens = marquee.stream
@@ -86,6 +107,19 @@ internal fun StreamSourceRow(
     val facts = remember(stream, useAddonFormatting) {
         if (useAddonFormatting) null else ReleaseFactsParser.factsFor(stream)
     }
+    // Its own parse only with addon formatting, and only on a device with something to say.
+    val decodeFacts = remember(stream, facts, decode) {
+        when {
+            decode.saysNothing -> null
+            facts != null -> facts
+            else -> ReleaseFactsParser.factsFor(stream)
+        }
+    }
+    val verdict = decodeFacts?.let(decode::verdict)
+    // The mockup fades everything but the sentence itself.
+    val softwareFade = if (verdict == DecodeVerdict.SOFTWARE) Modifier.alpha(tokens.rowSoftwareAlpha) else Modifier
+    // Spec 75: a marked row fades all but its mark line (`.sr.p75dim`).
+    val fade = if (failureMark != null) softwareFade.alpha(FAILED_ROW_ALPHA) else softwareFade
     val name = stream.getDisplayNameOrNull() ?: unknownName
     val detailText = streamRowDetailText(stream, name, useAddonFormatting)
     val sizeLabel = if (showSize) {
@@ -97,17 +131,18 @@ internal fun StreamSourceRow(
     val languageLine = facts?.let { streamRowLanguageLine(streamRowLanguages(it.languages), kind) }
     val cached = !useAddonFormatting && stream.streamData?.cached == true
     var focused by remember { mutableStateOf(false) }
+    val longPress = rememberMarqueeLongPress()
     val shape = RoundedCornerShape(tokens.rowRadius)
     // tv-material centres the stroke on the outline; half the width inwards keeps the whole
     // ring inside the row (the mockup's inset ring), so the list never clips it.
     val ring = Border(BorderStroke(marquee.ringWidth, marquee.ring), inset = -(marquee.ringWidth / 2), shape = shape)
 
     Card(
-        onClick = onClick,
+        onClick = { longPress.click(onClick) },
         modifier = modifier
-            .then(if (dimmed) Modifier.alpha(tokens.rowDeadAlpha) else Modifier)
             .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused },
+            .onFocusChanged { focused = it.isFocused }
+            .then(longPress.modifier(onLongPress)),
         shape = CardDefaults.shape(shape = shape),
         colors = CardDefaults.colors(
             containerColor = tokens.rowFill,
@@ -137,7 +172,8 @@ internal fun StreamSourceRow(
                     MarqueeSourceBadges(
                         facts = facts,
                         fusionBadges = stream.badges,
-                        gap = tokens.badgeGap
+                        gap = tokens.badgeGap,
+                        modifier = fade
                     )
                 }
                 Text(
@@ -146,7 +182,8 @@ internal fun StreamSourceRow(
                     style = styles.rowTitle,
                     color = NuvioPrimitives.white,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = fade
                 )
                 if (detailText != null) {
                     Text(
@@ -154,15 +191,18 @@ internal fun StreamSourceRow(
                         style = if (useAddonFormatting) styles.addonText else styles.caption,
                         color = if (focused) marquee.onImage2 else marquee.onImage3,
                         maxLines = if (useAddonFormatting) ADDON_TEXT_MAX_LINES else DETAIL_MAX_LINES,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = fade
                     )
                 }
+                if (failureMark != null) FailureMarkLine(failureMark)
+                if (verdict != null) DecodeLine(verdict, decodeFacts)
             }
             // The width cap sits on the two open-ended lines (addon name, languages), not the column:
             // the over-limit label is bounded copy ("Over 1080p · 109 Mbps") wider than the cap
             // (Spec 58 L6, 12/S67 N-9: a column cap wrapped its "Mbps" out of view).
             Column(
-                modifier = Modifier.padding(top = tokens.rowSideTop),
+                modifier = Modifier.padding(top = tokens.rowSideTop).then(fade),
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(tokens.sideGap)
             ) {
@@ -217,6 +257,78 @@ internal fun StreamSourceRow(
 }
 
 /**
+ * What this device does to the stream (Spec 65 P8, sandbox `spec-65-stream-filters` stage 11): amber
+ * behind a warning icon for a software decode ("Software AV1 decode at 4K: ..."), grey behind an
+ * info icon for Dolby Vision on a TV without it.
+ */
+@Composable
+private fun DecodeLine(verdict: DecodeVerdict, facts: ReleaseFacts) {
+    val marquee = NuvioTheme.marquee
+    val tokens = marquee.stream
+    val software = verdict == DecodeVerdict.SOFTWARE
+    val color = if (software) tokens.limitWarn else marquee.onImage2
+    val text = when (verdict) {
+        DecodeVerdict.SOFTWARE ->
+            stringResource(R.string.stream_decode_software, facts.encode.label, resolutionLabel(facts.resolution))
+        DecodeVerdict.REDUCED -> stringResource(R.string.stream_decode_reduced)
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(tokens.decodeLineIconGap),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = if (software) Icons.Filled.Warning else Icons.Filled.Info,
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(tokens.decodeLineIconSize)
+        )
+        Text(
+            text = text,
+            style = NuvioTheme.textStyles.panelHelper.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** Spec 75 S6 (`.p75ln`): a history icon, the reason in red, then "· 2 min ago" muted. */
+@Composable
+private fun FailureMarkLine(mark: SourceFailureMark) {
+    val style = NuvioTheme.textStyles.caption.copy(
+        fontSize = FAILURE_MARK_TEXT_SIZE,
+        lineHeight = FAILURE_MARK_LINE_HEIGHT,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.sp
+    )
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(FAILURE_MARK_GAP),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.History,
+            contentDescription = null,
+            tint = NuvioPrimitives.errorOnImage,
+            modifier = Modifier.size(FAILURE_MARK_ICON_SIZE)
+        )
+        Text(
+            text = mark.reason,
+            style = style,
+            color = NuvioPrimitives.errorOnImage,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        Text(
+            text = stringResource(R.string.failure_mark_age, mark.age),
+            style = style,
+            color = NuvioTheme.marquee.onImage3,
+            maxLines = 1
+        )
+    }
+}
+
+/**
  * Why a stream is hidden (sandbox `spec-51-network-stream-limit` `.s51mb`, Spec 58 stage b-mixed), in
  * amber behind a warning icon: "109 Mbps", "Over 1080p", or "Over 1080p · 109 Mbps".
  */
@@ -250,7 +362,27 @@ private fun OverLimitLabel(mbps: Int?, cap: ReleaseResolution?) {
 }
 
 /** The accent label above a row's addon name. */
-internal enum class SourceRowMarker { LAST_PLAYED, PLAYING }
+internal enum class SourceRowMarker { LAST_PLAYED, PLAYING, PREFERRED }
+
+/**
+ * The marker of the row at [index] (Spec 65 D16): the panel's [marker] on its [markedIndex] row,
+ * and "Preferred" on the first row while the view leads with the show's preferred source
+ * ([preferredCount] > 0). On one row Preferred wins over Last played; the player's Playing wins
+ * over Preferred (it says what is on screen now).
+ */
+internal fun sourceRowMarker(
+    index: Int,
+    marker: SourceRowMarker?,
+    markedIndex: Int,
+    preferredCount: Int
+): SourceRowMarker? {
+    val marked = marker.takeIf { index == markedIndex }
+    return when {
+        marked == SourceRowMarker.PLAYING -> marked
+        index == 0 && preferredCount > 0 -> SourceRowMarker.PREFERRED
+        else -> marked
+    }
+}
 
 @Composable
 private fun SourceRowMarkerLabel(marker: SourceRowMarker, accent: () -> Color) {
@@ -259,6 +391,7 @@ private fun SourceRowMarkerLabel(marker: SourceRowMarker, accent: () -> Color) {
     val label = when (marker) {
         SourceRowMarker.LAST_PLAYED -> stringResource(R.string.stream_last_played)
         SourceRowMarker.PLAYING -> stringResource(R.string.player_now_playing)
+        SourceRowMarker.PREFERRED -> stringResource(R.string.stream_preferred)
     }
     Row(
         horizontalArrangement = Arrangement.spacedBy(tokens.markerIconGap),

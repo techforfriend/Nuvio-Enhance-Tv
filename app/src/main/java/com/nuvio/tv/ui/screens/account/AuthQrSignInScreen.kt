@@ -58,7 +58,7 @@ import kotlinx.coroutines.delay
 /**
  * QR sign-in (sandbox u11-settings-marquee v6, stages `qr` / `qr-expired`; also the first-launch
  * screen when [onContinue] is set). Settings' field, the wordmark top-left, the Server pill
- * top-right; the tagline on the left; one glass card on the right with the QR, its code, the
+ * top-right; the tagline on the left; one opaque card on the right with the QR, its code, the
  * countdown, the status line, Refresh QR / Back and the Terms line. Onboarding has no Back: its
  * Continue (without account) sits under the intro instead, where every translation fits (sandbox
  * spec-49-sign-in-buttons v2; beside Refresh QR it clipped in the card). A dead code dims (expired:
@@ -246,7 +246,7 @@ private fun SignInIntro(useEmailLogin: Boolean, modifier: Modifier, action: @Com
     }
 }
 
-/** `.l11qc`: the glass card, ACCOUNT LOGIN at its top. */
+/** `.l11qc`: the opaque card (Spec 80 D9), ACCOUNT LOGIN at its top. */
 @Composable
 private fun SignInCard(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
     val tokens = NuvioTheme.marquee.settings

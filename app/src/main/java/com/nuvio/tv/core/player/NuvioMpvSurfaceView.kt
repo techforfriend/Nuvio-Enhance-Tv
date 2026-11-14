@@ -7,8 +7,12 @@ import android.view.SurfaceHolder
 import com.nuvio.tv.data.local.MpvHardwareDecodeMode
 import com.nuvio.tv.data.local.SubtitleStyleSettings
 import `is`.xyz.mpv.BaseMPVView
+import `is`.xyz.mpv.MPV
+import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.pow
 import kotlin.math.roundToLong
 
@@ -30,6 +34,36 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
     private var chapterCache: List<PlaybackChapter> = emptyList()
     private val aspectReapplyRunnable = Runnable {
         applyAspectModeInternal(currentAspectMode, allowRetry = true)
+    }
+    // Spec 85 D3: this core's failed load (END_FILE reason=error) and whether its playback has
+    // started (PLAYBACK_RESTART), written on mpv's event thread and read by the controller. One
+    // core per start (initializeMpvPlayer releases a live core first), so per-core slots are enough.
+    private val loadFailure = AtomicReference<String?>(null)
+    private val playbackRestarted = AtomicBoolean(false)
+    // Set by stopPlayback (main thread): this core's file was ended on purpose.
+    private var stopped = false
+    // Runs on mpv's native event thread, holding the observer list's lock that releasePlayer's
+    // removeObserver waits on: it must never block or throw.
+    private val endFileObserver = object : MPV.EventObserver {
+        override fun eventProperty(property: String) = Unit
+        override fun eventProperty(property: String, value: Long) = Unit
+        override fun eventProperty(property: String, value: Boolean) = Unit
+        override fun eventProperty(property: String, value: String) = Unit
+        override fun eventProperty(property: String, value: Double) = Unit
+        override fun eventProperty(property: String, value: MPVNode) = Unit
+        override fun event(eventId: Int, data: MPVNode) {
+            when (eventId) {
+                MPV.mpvEvent.MPV_EVENT_PLAYBACK_RESTART -> playbackRestarted.set(true)
+                MPV.mpvEvent.MPV_EVENT_END_FILE -> runCatching {
+                    mpvLoadFailureOf(
+                        reason = data.get("reason")?.asString(),
+                        fileError = data.get("file_error")?.asString()
+                    )
+                }.onFailure {
+                    Log.w(TAG, "END_FILE decode failed: ${it.message}")
+                }.getOrNull()?.let { loadFailure.set(it) }
+            }
+        }
     }
 
     fun ensureInitialized() {
@@ -141,6 +175,12 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         return mpv.getPropertyBoolean("pause") == false
     }
 
+    /** mpv's `pause` property is set (a user or app pause; a cache stall is [isPausedForCacheNow]). */
+    fun isPausedNow(): Boolean {
+        if (!initialized) return false
+        return mpv.getPropertyBoolean("pause") == true
+    }
+
     fun isPausedForCacheNow(): Boolean {
         if (!initialized) return false
         return mpv.getPropertyBoolean("paused-for-cache") == true
@@ -180,6 +220,50 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         if (!initialized) return false
         val vid = mpv.getPropertyString("vid")?.trim()
         return !vid.isNullOrBlank() && !vid.equals("no", ignoreCase = true)
+    }
+
+    /** False once [releasePlayer] destroyed the core (until the next load initializes a new one). */
+    fun isCoreAlive(): Boolean = initialized
+
+    /** Spec 85 D3: the failed load mpv reported for this core, once; null when none or stopped. */
+    fun takeLoadFailure(): String? = loadFailure.getAndSet(null)?.takeUnless { stopped }
+
+    /**
+     * Spec 85: mpv finished this core's first playback start (MPV_EVENT_PLAYBACK_RESTART): audio and
+     * video ready, the first frame decoded; it also fires on a paused start (mpv playloop.c
+     * handle_playback_restart, audio.c reaches READY on a full queue whether paused or not). Unlike
+     * `time-pos`, which reports the seek target of a resume start once the file opens.
+     */
+    fun hasStartedPlayback(): Boolean = playbackRestarted.get()
+
+    /**
+     * Spec 85 G9/E7: ends the file (mpv `stop`, which also cancels a stalled open), so nothing it
+     * loaded can play again and its demuxer cache stops filling. Its END_FILE is reason=stop, which
+     * [mpvLoadFailureOf] ignores. The core then quits (idle=once); the next start releases it.
+     */
+    fun stopPlayback() {
+        if (!initialized) return
+        stopped = true
+        loadFailure.set(null)
+        runCatching { mpv.command("stop") }
+            .onFailure { Log.w(TAG, "Failed to stop mpv playback: ${it.message}") }
+    }
+
+    /** [stopPlayback] ended this core's file: nothing here can play again until the next start. */
+    fun isStopped(): Boolean = stopped
+
+    /** mpv's `eof-reached`: with keep-open, a file that hit its end sits paused there (no END_FILE). */
+    fun isEofReachedNow(): Boolean {
+        if (!initialized) return false
+        return mpv.getPropertyBoolean("eof-reached") == true
+    }
+
+    /** Spec 85 G10: the startup watchdog's track facts on mpv ([mpvWatchdogFireInput]). */
+    fun startupWatchdogFireInput(): PlayerStartupWatchdogPolicy.FireInput {
+        if (!initialized) return mpvWatchdogFireInput(emptyList(), videoSelected = false)
+        val trackCount = runCatching { mpv.getPropertyInt("track-list/count") ?: 0 }.getOrDefault(0)
+        val types = (0 until trackCount).mapNotNull { i -> mpv.getPropertyString("track-list/$i/type") }
+        return mpvWatchdogFireInput(types, videoSelected = hasVideoTrackSelectedNow())
     }
 
     fun setPlaybackSpeed(speed: Float) {
@@ -360,6 +444,20 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         }.onFailure {
             Log.w(TAG, "Failed to apply subtitle style on mpv: ${it.message}")
         }
+    }
+
+    /**
+     * True when mpv renders to a PQ or HLG target (the TV receives HDR), false for any other
+     * target transfer, null until mpv has chosen one (Spec 62 D7: the output, not the file).
+     */
+    fun readOutputIsHdr(): Boolean? {
+        if (!initialized) return null
+        val gamma = runCatching { mpv.getPropertyString("video-target-params/gamma") }.getOrNull()
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        return gamma == "pq" || gamma == "hlg"
     }
 
     private fun isAssOrSsaSubtitleSelectedNow(): Boolean {
@@ -572,8 +670,14 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
     fun releasePlayer() {
         if (!initialized) return
         removeCallbacks(aspectReapplyRunnable)
+        // Before destroy: the MPV instance (and its observer list) outlives the core, and the
+        // teardown's own END_FILE belongs to no load.
+        runCatching { mpv.removeObserver(endFileObserver) }
         runCatching { destroy() }
             .onFailure { Log.w(TAG, "Failed to destroy libmpv view cleanly: ${it.message}") }
+        loadFailure.set(null)
+        playbackRestarted.set(false)
+        stopped = false
         initialized = false
         hasQueuedInitialMedia = false
         lastMediaRequestKey = null
@@ -612,7 +716,12 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
     }
 
     override fun observeProperties() {
-        // Progress is polled by PlayerRuntimeController.
+        // Progress is polled by PlayerRuntimeController; only END_FILE is observed (Spec 85 D3).
+        // Runs once per core, inside initialize(); releasePlayer removes the observer.
+        loadFailure.set(null)
+        playbackRestarted.set(false)
+        stopped = false
+        mpv.addObserver(endFileObserver)
     }
 
     private fun applyHeaders(headers: Map<String, String>) {
@@ -692,6 +801,33 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         private const val MPV_SUB_MARGIN_Y_MIN = 0
         private const val MPV_SUB_MARGIN_Y_MAX = 60
     }
+}
+
+/**
+ * Spec 85 D3: what an mpv END_FILE event says about the load: mpv's error text (`file_error`, an
+ * mpv_error_string such as "loading failed") when [reason] is `error`, null for eof, stop, quit
+ * and redirect.
+ */
+internal fun mpvLoadFailureOf(reason: String?, fileError: String?): String? {
+    if (reason != "error") return null
+    return fileError?.trim()?.takeIf { it.isNotEmpty() } ?: "unknown error"
+}
+
+/**
+ * Spec 85 G10: the startup watchdog's track facts from mpv's `track-list` types. Tracks count as
+ * read once the file has an audio or video track (an external subtitle added before the load does
+ * not count); [videoSelected] is mpv's `vid`.
+ */
+internal fun mpvWatchdogFireInput(
+    trackTypes: List<String>,
+    videoSelected: Boolean
+): PlayerStartupWatchdogPolicy.FireInput {
+    val types = trackTypes.map { it.lowercase(Locale.US) }
+    return PlayerStartupWatchdogPolicy.FireInput(
+        hasScannedTracksOnce = types.any { it == "video" || it == "audio" },
+        streamHasVideoTrack = "video" in types,
+        videoTrackSelected = videoSelected
+    )
 }
 
 data class MpvTrackSnapshot(

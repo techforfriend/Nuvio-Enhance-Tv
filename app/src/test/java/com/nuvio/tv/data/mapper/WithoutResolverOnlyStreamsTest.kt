@@ -8,7 +8,8 @@ import org.junit.Test
 
 /**
  * Pins withoutResolverOnlyStreams: only clientResolve entries with no playable
- * target (url, torrent, ytId, external link) are dropped.
+ * target (url, torrent, external link) are dropped. A YouTube id is no target
+ * (Spec 84 A4).
  */
 class WithoutResolverOnlyStreamsTest {
 
@@ -63,8 +64,9 @@ class WithoutResolverOnlyStreamsTest {
     }
 
     @Test
-    fun `youtube stream with debrid clientResolve is kept`() {
-        assertTrue(kept(stream("yt", ytId = "dQw4w9WgXcQ", clientResolve = debridResolve())))
+    fun `youtube stream with debrid clientResolve is dropped`() {
+        val yt = stream("yt", ytId = "dQw4w9WgXcQ", clientResolve = debridResolve())
+        assertEquals(emptyList<Stream>(), listOf(yt).withoutResolverOnlyStreams())
     }
 
     @Test

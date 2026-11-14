@@ -11,7 +11,13 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+/**
+ * LAN server behind the addon / catalog / collection QR page ([AddonWebPage]). One instance is one
+ * QR session: every route lives under `/a/<token>/` (Spec 68 X3), so only a phone that scanned this
+ * session's QR reaches the addon URLs (bearer credentials) in /api/state.
+ */
 class AddonConfigServer(
+    private val token: String,
     private val context: Context,
     private val webConfigMode: AddonWebConfigMode,
     private val currentPageStateProvider: () -> PageState,
@@ -32,21 +38,28 @@ class AddonConfigServer(
         pendingChanges[id]?.status = AddonChangeStatus.REJECTED
     }
 
-    override fun serve(session: IHTTPSession): Response {
+    /** The QR address on this device's [ip]. */
+    fun url(ip: String): String = "http://$ip:$listeningPort$PATH_PREFIX$token/"
+
+    override fun serve(session: IHTTPSession): Response =
+        route(session).withTokenPathHeaders(session.method)
+
+    private fun route(session: IHTTPSession): Response {
         session.rejectUntrustedRequest()?.let { return it }
-        val uri = session.uri
+        val path = pathAfterToken(session.uri, PATH_PREFIX, token)
+            ?: return session.notFoundOutsideSession()
         val method = session.method
 
         return when {
-            method == Method.GET && uri == "/" -> serveWebPage()
-            method == Method.GET && uri == "/logo.png" -> pngOrNotFound(logoProvider?.invoke())
-            method == Method.GET && uri == "/api/state" -> servePageState()
-            method == Method.GET && uri == "/api/addons" -> serveAddonList()
-            method == Method.POST && uri == "/api/addons" -> handleAddonUpdate(session)
-            method == Method.GET && uri == "/api/collections" -> serveCollections()
-            method == Method.GET && uri == "/api/tmdb/metadata" -> serveTmdbMetadata(session)
-            method == Method.GET && uri == "/api/tmdb/search" -> serveTmdbSearch(session)
-            method == Method.GET && uri.startsWith("/api/status/") -> serveChangeStatus(uri)
+            method == Method.GET && path.isEmpty() -> serveWebPage()
+            method == Method.GET && path == "logo.png" -> pngOrNotFound(logoProvider?.invoke())
+            method == Method.GET && path == "api/state" -> servePageState()
+            method == Method.GET && path == "api/addons" -> serveAddonList()
+            method == Method.POST && path == "api/addons" -> handleAddonUpdate(session)
+            method == Method.GET && path == "api/collections" -> serveCollections()
+            method == Method.GET && path == "api/tmdb/metadata" -> serveTmdbMetadata(session)
+            method == Method.GET && path == "api/tmdb/search" -> serveTmdbSearch(session)
+            method == Method.GET && path.startsWith(STATUS_PATH) -> serveChangeStatus(path)
             else -> notFoundResponse()
         }
     }
@@ -151,8 +164,8 @@ class AddonConfigServer(
         jsonResponse(Response.Status.OK, response)
     }
 
-    private fun serveChangeStatus(uri: String): Response {
-        val id = uri.removePrefix("/api/status/")
+    private fun serveChangeStatus(path: String): Response {
+        val id = path.removePrefix(STATUS_PATH)
         val change = pendingChanges[id]
         val status = change?.status?.name?.lowercase() ?: "not_found"
         return jsonResponse(Response.Status.OK, jsonMessage("status", status))
@@ -168,6 +181,9 @@ class AddonConfigServer(
     }
 
     companion object {
+        private const val PATH_PREFIX = "/a/"
+        private const val STATUS_PATH = "api/status/"
+
         fun startOnAvailablePort(
             context: Context,
             webConfigMode: AddonWebConfigMode = AddonWebConfigMode.FULL,
@@ -180,6 +196,7 @@ class AddonConfigServer(
             maxAttempts: Int = 10
         ): AddonConfigServer? = startOnFirstAvailablePort(startPort, maxAttempts) { port ->
             AddonConfigServer(
+                token = newSessionToken(),
                 context = context,
                 webConfigMode = webConfigMode,
                 currentPageStateProvider = currentPageStateProvider,

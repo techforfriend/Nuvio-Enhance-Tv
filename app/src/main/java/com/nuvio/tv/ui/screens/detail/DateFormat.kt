@@ -28,6 +28,9 @@ fun formatShortReleaseDate(isoDate: String?): String? =
 /** Day and month, "2 Oct" in the device locale's order (Library's "Added" eyebrow). */
 fun formatDayMonth(date: LocalDate): String = formatLocalDate(date, "dMMM")
 
+/** Weekday, day and month, "Mon 9 Nov" in the device locale's order (Live TV schedule's day chip). */
+fun formatWeekdayDayMonth(date: LocalDate): String = formatLocalDate(date, "EEEdMMM")
+
 /** Time of day, "21:14" or "9:14 PM" by the device locale (Library's History, today). */
 fun formatTimeOfDay(time: LocalDateTime): String = formatLocalDate(time, "jmm")
 

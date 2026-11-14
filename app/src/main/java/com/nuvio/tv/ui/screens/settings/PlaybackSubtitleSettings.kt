@@ -10,18 +10,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
 import com.nuvio.tv.core.util.languageCodeToName
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.local.SubtitleEdgeStyle
+import com.nuvio.tv.data.local.SubtitleStyleSettings
 import com.nuvio.tv.ui.components.PlayerPanelRow
 import com.nuvio.tv.ui.screens.player.subtitleEdgeLabel
 import com.nuvio.tv.ui.theme.NuvioTheme
 
-/** The Subtitles side panels: the two language pickers and the three colour panels. */
-internal enum class SubtitlePicker { PREFERRED_LANGUAGE, SECONDARY_LANGUAGE, TEXT_COLOR, BACKGROUND_COLOR, OUTLINE_COLOR }
+/** The Subtitles side panels: the two language pickers and the four colour panels (HDR text colour included). */
+internal enum class SubtitlePicker {
+    PREFERRED_LANGUAGE, SECONDARY_LANGUAGE, TEXT_COLOR, BACKGROUND_COLOR, OUTLINE_COLOR, HDR_TEXT_COLOR
+}
 
 internal const val GROUP_SUBTITLES = "playback_subtitles"
 
@@ -30,8 +34,11 @@ private const val NO_PREFERRED_LANGUAGE = "none"
 
 /**
  * Subtitles chip (stage playback-subs): languages, forced and addon subtitles, then Style (size,
- * offset, bold, text and background colour, text edge); Outline colour, libass and the language
+ * offset, bold, text and background colour, text edge), then HDR and Dolby Vision (Spec 62 H2,
+ * sandbox spec-62-h2-hdr-subtitles stages 1-2: the switch, HDR text colour, HDR brightness, Dim
+ * player controls; the three dim until the switch is on); Outline colour, libass and the language
  * filters in the Advanced options group. Outline colour dims unless the edge is Outline.
+ * [onHdrRowFocused] reports focus on the HDR rows, for the preview's HDR look.
  */
 internal fun LazyListScope.subtitleItems(
     settings: PlayerSettings,
@@ -42,6 +49,10 @@ internal fun LazyListScope.subtitleItems(
     onSetVerticalOffset: (Int) -> Unit,
     onSetBold: (Boolean) -> Unit,
     onSetEdgeStyle: (SubtitleEdgeStyle) -> Unit,
+    onSetHdrStyleEnabled: (Boolean) -> Unit,
+    onSetHdrBrightness: (Int) -> Unit,
+    onSetHdrDimPlayerControls: (Boolean) -> Unit,
+    onHdrRowFocused: (Boolean) -> Unit,
     onSetUseLibass: (Boolean) -> Unit,
     onSetShowOnlyPreferredLanguages: (Boolean) -> Unit,
     onSetStripSdh: (Boolean) -> Unit,
@@ -144,6 +155,55 @@ internal fun LazyListScope.subtitleItems(
             onSelect = { onSetEdgeStyle(edges[it]) }
         )
     }
+    item(key = "subs_hdr_section") {
+        SettingsSectionLabel(text = stringResource(R.string.sub_hdr_section))
+    }
+    val hdrFocus = Modifier.onFocusChanged { onHdrRowFocused(it.hasFocus) }
+    item(key = "subs_hdr_style") {
+        SettingsSwitchRow(
+            title = stringResource(R.string.sub_hdr_style),
+            subtitle = stringResource(R.string.sub_hdr_style_sub),
+            checked = style.hdrStyleEnabled,
+            onCheckedChange = onSetHdrStyleEnabled,
+            modifier = hdrFocus
+        )
+    }
+    item(key = "subs_hdr_text_colour") {
+        SubtitleColorRow(
+            title = R.string.sub_hdr_text_colour,
+            argb = style.hdrTextColor,
+            target = SubtitleColorTarget.TEXT,
+            onClick = { onOpenPicker(SubtitlePicker.HDR_TEXT_COLOR) },
+            dimReason = playbackRowDimReason(PlaybackRow.HDR_SUBTITLE_STYLE, settings),
+            modifier = hdrFocus
+        )
+    }
+    item(key = "subs_hdr_brightness") {
+        val reason = playbackRowDimReason(PlaybackRow.HDR_SUBTITLE_STYLE, settings)
+        SettingsStepperRow(
+            title = stringResource(R.string.sub_hdr_brightness),
+            subtitle = dimmedSubtitle(reason, stringResource(R.string.sub_hdr_brightness_sub)),
+            value = style.hdrBrightnessPercent,
+            min = SubtitleStyleSettings.HDR_BRIGHTNESS_MIN,
+            max = SubtitleStyleSettings.HDR_BRIGHTNESS_MAX,
+            step = SubtitleStyleSettings.HDR_BRIGHTNESS_STEP,
+            valueText = "${style.hdrBrightnessPercent}%",
+            onValueChange = onSetHdrBrightness,
+            enabled = reason == null,
+            modifier = hdrFocus
+        )
+    }
+    item(key = "subs_hdr_dim_controls") {
+        val reason = playbackRowDimReason(PlaybackRow.HDR_SUBTITLE_STYLE, settings)
+        SettingsSwitchRow(
+            title = stringResource(R.string.sub_hdr_dim_controls),
+            subtitle = dimmedSubtitle(reason, stringResource(R.string.sub_hdr_dim_controls_sub)),
+            checked = style.hdrDimPlayerControls,
+            onCheckedChange = onSetHdrDimPlayerControls,
+            enabled = reason == null,
+            modifier = hdrFocus
+        )
+    }
     settingsAdvancedGroup(key = GROUP_SUBTITLES, count = 4, open = groupOpen, onToggle = onToggleGroup) {
         item(key = "subs_outline_colour") {
             val reason = playbackRowDimReason(PlaybackRow.OUTLINE_COLOR, settings)
@@ -190,13 +250,15 @@ private fun SubtitleColorRow(
     argb: Int,
     target: SubtitleColorTarget,
     onClick: () -> Unit,
-    @StringRes dimReason: Int? = null
+    @StringRes dimReason: Int? = null,
+    modifier: Modifier = Modifier
 ) {
     SettingsColorRow(
         title = stringResource(title),
         color = Color(argb),
         value = subtitleColorLabel(argb, target),
         onClick = onClick,
+        modifier = modifier,
         subtitle = dimmedSubtitle(dimReason, null),
         enabled = dimReason == null
     )
@@ -223,6 +285,7 @@ internal fun SubtitlePickerPanel(
     onSetTextColor: (Int) -> Unit,
     onSetBackgroundColor: (Int) -> Unit,
     onSetOutlineColor: (Int) -> Unit,
+    onSetHdrTextColor: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val style = settings.subtitleStyle
@@ -260,6 +323,13 @@ internal fun SubtitlePickerPanel(
             target = SubtitleColorTarget.OUTLINE,
             stored = style.outlineColor,
             onSetColor = onSetOutlineColor,
+            onDismiss = onDismiss
+        )
+        SubtitlePicker.HDR_TEXT_COLOR -> SubtitleColorPanel(
+            title = stringResource(R.string.sub_hdr_text_colour),
+            target = SubtitleColorTarget.TEXT,
+            stored = style.hdrTextColor,
+            onSetColor = onSetHdrTextColor,
             onDismiss = onDismiss
         )
     }

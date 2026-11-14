@@ -3,6 +3,7 @@ package com.nuvio.tv.data.repository
 import android.content.Context
 import android.util.Log
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.profile.ActiveRatingCap
 import com.nuvio.tv.core.network.safeApiCall
 import com.nuvio.tv.core.health.AddonHealthStore
 import com.nuvio.tv.core.health.HealthOutcome
@@ -19,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.CancellationException
@@ -43,16 +45,25 @@ import javax.inject.Singleton
  * 2. Disk first-paint (first page only: skip == 0, no extra args; 128 entries, 7-day ceiling):
  *    stale-while-revalidate. A hit is served at once and the network ALWAYS revalidates; an
  *    identical fresh row is not re-emitted, and a network error keeps the served disk row.
- * 3. OkHttp `http_cache` (NetworkModule): standard Cache-Control from the addon.
+ * 3. OkHttp `http_cache_addon` (NetworkModule `ADDON_HTTP_CACHE_DIR`): standard Cache-Control from the addon.
  * [clearCaches] clears tiers 1 and 2; the Advanced "clear cache" action also evicts the OkHttp
  * caches and fires the Home refresh signal.
+ *
+ * Spec 64 K1b: tiers 1 and 2 hold the addon's full row; every emitted row passes
+ * [CatalogRatingFilter] for the active profile's cap, read once per collection. A disk row
+ * written before K1a has no ratings, so under a cap it emits empty until revalidation. Paging
+ * fields stay the addon's; a load-more page the cap empties is followed by up to
+ * [MAX_HIDDEN_PAGE_ADVANCE] more pages, and a row that is still empty after them is what
+ * CatalogRow.mergeCatalogPage then reads as the end of the catalog.
  */
 @Singleton
 class CatalogRepositoryImpl @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val api: AddonApi,
     private val healthStore: AddonHealthStore,
-    private val wireJson: Json
+    private val wireJson: Json,
+    private val activeRatingCap: ActiveRatingCap,
+    private val ratingFilter: CatalogRatingFilter
 ) : CatalogRepository {
     companion object {
         private const val TAG = "CatalogRepository"
@@ -66,6 +77,9 @@ class CatalogRepositoryImpl @Inject constructor(
         private const val DISK_CACHE_FILE_NAME = "catalog_rows_v1.json"
         private const val DISK_CACHE_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000 // 7 days
         private const val DISK_CACHE_MAX_ENTRIES = 128
+
+        // Spec 64 K1b: extra pages fetched after a load-more page the cap hides entirely.
+        private const val MAX_HIDDEN_PAGE_ADVANCE = 3
 
         private data class CacheEntry(val row: CatalogRow, val storedAtMs: Long)
         private data class DiskEntry(val dtoJson: String, val storedAtMs: Long)
@@ -109,10 +123,57 @@ class CatalogRepositoryImpl @Inject constructor(
         extraArgs: Map<String, String>,
         supportsSkip: Boolean
     ): Flow<NetworkResult<CatalogRow>> = flow {
+        emit(NetworkResult.Loading)
+        val cap = activeRatingCap.current()
+        val isSearch = "search" in extraArgs
+        fun fetchPage(pageSkip: Int) = fetchCatalog(
+            addonBaseUrl, addonId, addonName, catalogId, catalogName, type, pageSkip, skipStep, extraArgs, supportsSkip
+        )
+        fetchPage(skip).collect { result ->
+            if (result !is NetworkResult.Success) {
+                if (result is NetworkResult.Error) emit(result)
+                return@collect
+            }
+            var page = result.data
+            var visible = ratingFilter.filter(page, cap, lookUpUnratedSeries = isSearch)
+            // A load-more page the cap empties gets no new focus target, so the UI never asks
+            // for the next one: fetch on, bounded, until a page shows something or the
+            // catalog ends (a raw-empty page has hasMore = false, so it ends the loop and
+            // is emitted as the last page). Page 1 is not advanced (its row is simply hidden).
+            var advanced = 0
+            while (cap != null && skip > 0 && visible.items.isEmpty() && page.hasMore &&
+                advanced < MAX_HIDDEN_PAGE_ADVANCE
+            ) {
+                val next = fetchPage(page.nextSkip).first { it !is NetworkResult.Loading }
+                if (next is NetworkResult.Error) {
+                    // Surface it as this load-more's failure (retryable), not as an empty last page.
+                    emit(next)
+                    return@collect
+                }
+                if (next !is NetworkResult.Success) break
+                page = next.data
+                visible = ratingFilter.filter(page, cap, lookUpUnratedSeries = isSearch)
+                advanced++
+            }
+            emit(NetworkResult.Success(visible))
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /** The addon's full rows through the cache tiers (class KDoc); [getCatalog] filters them. */
+    private fun fetchCatalog(
+        addonBaseUrl: String,
+        addonId: String,
+        addonName: String,
+        catalogId: String,
+        catalogName: String,
+        type: String,
+        skip: Int,
+        skipStep: Int,
+        extraArgs: Map<String, String>,
+        supportsSkip: Boolean
+    ): Flow<NetworkResult<CatalogRow>> = flow {
         // Runs on IO (flowOn below): the disk-row decode, row building and cache-blob
         // encode must not run on the collecting (Main) thread.
-        emit(NetworkResult.Loading)
-
         val url = buildCatalogUrl(addonBaseUrl, type, catalogId, skip, extraArgs)
 
         // 1) In-memory freshness cache hit within TTL: serve and skip the network.
@@ -200,7 +261,8 @@ class CatalogRepositoryImpl @Inject constructor(
                 }
 
                 // Emit the fresh row unless it is identical to the disk row already
-                // served (avoids a needless row swap / focus disruption).
+                // served (avoids a needless row swap / focus disruption). Compared
+                // unfiltered: equal full rows filter to equal rows (one cap per collection).
                 if (servedDiskRow == null || servedDiskRow != catalogRow) {
                     emit(NetworkResult.Success(catalogRow))
                 }
@@ -217,7 +279,7 @@ class CatalogRepositoryImpl @Inject constructor(
                     emit(result)
                 }
             }
-            NetworkResult.Loading -> { /* Already emitted */ }
+            NetworkResult.Loading -> { /* getCatalog emits Loading */ }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -255,6 +317,7 @@ class CatalogRepositoryImpl @Inject constructor(
                     description = prior.description ?: item.description,
                     releaseInfo = prior.releaseInfo ?: item.releaseInfo,
                     imdbRating = prior.imdbRating ?: item.imdbRating,
+                    ageRating = prior.ageRating ?: item.ageRating,
                     landscapePoster = prior.landscapePoster ?: item.landscapePoster,
                     behaviorHints = prior.behaviorHints ?: item.behaviorHints
                 )

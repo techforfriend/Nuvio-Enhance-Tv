@@ -17,6 +17,8 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.core.util.languageCodeToName
+import com.nuvio.tv.data.local.AFR_SETTLE_HOLD_MAX_SECONDS
+import com.nuvio.tv.data.local.AFR_SETTLE_HOLD_MIN_SECONDS
 import com.nuvio.tv.data.local.AVAILABLE_SUBTITLE_LANGUAGES
 import com.nuvio.tv.data.local.AudioLanguageOption
 import com.nuvio.tv.data.local.AudioOutputChannels
@@ -64,6 +66,7 @@ internal fun LazyListScope.audioVideoItems(
     onOpenPicker: (AudioVideoPicker) -> Unit,
     onSetFrameRateMatchingMode: (FrameRateMatchingMode) -> Unit,
     onSetResolutionMatchingEnabled: (Boolean) -> Unit,
+    onSetAfrSettleHoldSeconds: (Int) -> Unit,
     onDisableAfrAndResolution: () -> Unit,
     onSetSkipSilence: (Boolean) -> Unit,
     onSetRememberAudioDelayPerDevice: (Boolean) -> Unit,
@@ -137,6 +140,24 @@ internal fun LazyListScope.audioVideoItems(
             checked = settings.resolutionMatchingEnabled,
             onCheckedChange = onSetResolutionMatchingEnabled,
             thisTv = playerSettingThisTv("resolution_matching_enabled")
+        )
+    }
+    item(key = "av_afr_settle_hold") {
+        val reason = playbackRowDimReason(PlaybackRow.AFR_SETTLE_HOLD, settings)
+        val seconds = settings.afrSettleHoldSeconds
+        SettingsStepperRow(
+            title = stringResource(R.string.playback_afr_settle_hold),
+            subtitle = dimmedSubtitle(reason, stringResource(R.string.playback_afr_settle_hold_sub)),
+            value = seconds,
+            min = AFR_SETTLE_HOLD_MIN_SECONDS,
+            max = AFR_SETTLE_HOLD_MAX_SECONDS,
+            step = 1,
+            valueText = if (seconds == 0) stringResource(R.string.playback_afr_off)
+            else stringResource(R.string.playback_value_seconds, seconds),
+            onValueChange = onSetAfrSettleHoldSeconds,
+            enabled = reason == null,
+            // Approved mockup (Spec 62 D6): a dimmed row shows only its reason.
+            thisTv = reason == null && playerSettingThisTv("afr_settle_hold_seconds")
         )
     }
     if (exo) {

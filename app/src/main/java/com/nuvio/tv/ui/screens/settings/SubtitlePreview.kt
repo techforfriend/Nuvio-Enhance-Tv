@@ -30,9 +30,11 @@ import com.nuvio.tv.ui.theme.NuvioTheme
  * `.l11pv` (stage 21): a Tears of Steel still with one cue drawn by the player's own SubtitleView
  * and look ([applySubtitleLook]: colours, edge, weight, offset), the size scaled to the strip.
  * Still: (CC) Blender Foundation, mango.blender.org, CC BY 3.0 (credited in docs/design.md).
+ * [hdr]: draw [style]'s HDR look ([SubtitleStyleSettings.forOutput], as the player does) and tag it
+ * "Preview · HDR" (Spec 62 D12).
  */
 @Composable
-internal fun SubtitlePreview(style: SubtitleStyleSettings, modifier: Modifier = Modifier) {
+internal fun SubtitlePreview(style: SubtitleStyleSettings, modifier: Modifier = Modifier, hdr: Boolean = false) {
     val tokens = NuvioTheme.marquee.settings
     val line = stringResource(R.string.sub_preview_line)
     val textScale = tokens.previewTextScale
@@ -52,14 +54,14 @@ internal fun SubtitlePreview(style: SubtitleStyleSettings, modifier: Modifier = 
         AndroidView(
             factory = { context -> SubtitleView(context) },
             update = { view ->
-                view.applySubtitleLook(style, ownSsaStyle = false, textScale = textScale)
+                view.applySubtitleLook(style.forOutput(hdrOutput = hdr), ownSsaStyle = false, textScale = textScale)
                 view.setCues(listOf(Cue.Builder().setText(line).build()))
             },
             // A picture only: D-pad moves between the chips and the rows straight past it.
             modifier = Modifier.fillMaxSize().focusProperties { canFocus = false }
         )
         Text(
-            text = stringResource(R.string.sub_preview_tag).uppercase(),
+            text = stringResource(if (hdr) R.string.sub_preview_tag_hdr else R.string.sub_preview_tag).uppercase(),
             style = NuvioTheme.textStyles.eyebrow,
             color = tokens.previewTagText,
             modifier = Modifier

@@ -9,10 +9,12 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
 import com.nuvio.tv.domain.model.ContinueWatchingItem
+import com.nuvio.tv.domain.model.WatchProgress
 
 // Continue Watching artwork chain + image cache keys (Home's Marquee cards and their
 // prefetchers must agree), the process-wide dead-URL blacklist (CW art + folder covers), and
-// the long-press options dialog. The CW card itself lives with Home's row band
+// the long-press options dialog with its Mark as watched gate and completed-progress builder
+// (Spec 62 H4). The CW card itself lives with Home's row band
 // (MarqueeHomeRows) since wave U slice U1c.
 
 /**
@@ -146,6 +148,56 @@ internal fun catalogPosterImageCacheKey(
     heightPx: Int
 ): String = "${url}_${widthPx}x${heightPx}"
 
+/** Spec 62 H4: an unaired Next Up episode stays in the row but cannot be marked until it airs. */
+internal fun ContinueWatchingItem.canMarkWatched(): Boolean = when (this) {
+    is ContinueWatchingItem.InProgress -> true
+    is ContinueWatchingItem.NextUp -> info.hasAired
+}
+
+/**
+ * Spec 62 H4: the completed entry "Mark as watched" writes, in the shape the details screen
+ * writes (position = duration, 100 %), so tracking sync takes the same path.
+ */
+internal fun ContinueWatchingItem.toCompletedProgress(
+    nowMs: Long = System.currentTimeMillis()
+): WatchProgress = when (this) {
+    is ContinueWatchingItem.InProgress -> {
+        val duration = progress.duration.coerceAtLeast(1L)
+        WatchProgress(
+            contentId = progress.contentId,
+            contentType = progress.contentType,
+            name = progress.name,
+            poster = progress.poster,
+            backdrop = progress.backdrop,
+            logo = progress.logo,
+            videoId = progress.videoId,
+            season = progress.season,
+            episode = progress.episode,
+            episodeTitle = progress.episodeTitle,
+            position = duration,
+            duration = duration,
+            lastWatched = nowMs,
+            progressPercent = 100f
+        )
+    }
+    is ContinueWatchingItem.NextUp -> WatchProgress(
+        contentId = info.contentId,
+        contentType = info.contentType,
+        name = info.name,
+        poster = info.poster,
+        backdrop = info.thumbnail ?: info.backdrop,
+        logo = info.logo,
+        videoId = info.videoId,
+        season = info.season,
+        episode = info.episode,
+        episodeTitle = info.episodeTitle,
+        position = 1L,
+        duration = 1L,
+        lastWatched = nowMs,
+        progressPercent = 100f
+    )
+}
+
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun ContinueWatchingOptionsDialog(
@@ -155,7 +207,8 @@ fun ContinueWatchingOptionsDialog(
     onDetails: () -> Unit,
     onStartFromBeginning: () -> Unit = {},
     showPlayManually: Boolean = false,
-    onPlayManually: () -> Unit = {}
+    onPlayManually: () -> Unit = {},
+    onMarkWatched: () -> Unit = {}
 ) {
     val title = when (item) {
         is ContinueWatchingItem.InProgress -> item.progress.name
@@ -190,6 +243,14 @@ fun ContinueWatchingOptionsDialog(
             PanelActionRow(
                 label = stringResource(R.string.cw_action_start_from_beginning),
                 onClick = onStartFromBeginning
+            )
+        }
+
+        // Spec 62 H4 (D4): above Remove, as upstream PR #4440 orders it.
+        if (item.canMarkWatched()) {
+            PanelActionRow(
+                label = stringResource(R.string.hero_mark_watched),
+                onClick = onMarkWatched
             )
         }
 

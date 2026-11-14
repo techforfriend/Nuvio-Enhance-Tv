@@ -272,6 +272,19 @@ class LiveTvModelTest {
 
     private fun row(key: String) = LiveRow(ch("a", key), key, null, null, hasGuide = false, progress = null)
 
+    @Test
+    fun `a schedule opens only on a guided, listed row with something now or next`() {
+        val p = EpgProgramme(0, 1, "P")
+        val base = row("s")
+        assertFalse(base.hasSchedule)
+        assertFalse(base.copy(hasGuide = true).hasSchedule) // a guide with nothing now or next
+        assertTrue(base.copy(hasGuide = true, now = p).hasSchedule)
+        assertTrue(base.copy(hasGuide = true, next = p).hasSchedule)
+        assertFalse(base.copy(hasGuide = false, now = p).hasSchedule)
+        val lost = base.copy(channel = base.channel.copy(lostAtMs = 1L), hasGuide = true, now = p)
+        assertFalse(lost.hasSchedule)
+    }
+
     private fun zap(rows: List<LiveRow>, key: String?, step: Int, skip: Set<String> = emptySet()) =
         LiveTvModel.zapRow(rows, key, step) { it.key in skip }?.channel?.key
 

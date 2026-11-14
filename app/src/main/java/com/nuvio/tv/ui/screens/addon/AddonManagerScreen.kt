@@ -42,6 +42,8 @@ import coil3.compose.AsyncImage
 import com.nuvio.tv.R
 import com.nuvio.tv.core.health.AddonHealthLevel
 import com.nuvio.tv.core.health.AddonHealthStore
+import com.nuvio.tv.core.network.addonGuardKeyOf
+import com.nuvio.tv.core.network.tls.addonServerLabel
 import com.nuvio.tv.core.util.addonUrlMatchKey
 import com.nuvio.tv.core.util.canonicalizeAddonUrl
 import com.nuvio.tv.core.util.safeHost
@@ -83,7 +85,9 @@ private const val BACKDROP_FOLLOW_MS = 150L
  * background fills the page). OK on a row opens its actions (Configure, Rename, Search: as you
  * type / on Enter, Move up / down, Disable, Remove; stages `addon-configure` and `addon-rename`
  * are their side panels; the search action is Spec 40, sandbox `u40-search-on-enter` stages 1-2).
- * Read-only profiles see the rows only.
+ * Read-only profiles see the rows only. Spec 68 X7 (sandbox `s068-x7-tls-confirm` v1): a row whose
+ * server's certificate was refused shows CERTIFICATE, PAUSED and a why line, with Review certificate
+ * first in its strip; Install or Review on such a server opens [AddonCertificatePanel].
  */
 @Composable
 fun AddonManagerScreen(
@@ -103,6 +107,11 @@ fun AddonManagerScreen(
     var addonPendingRemoval by remember { mutableStateOf<Addon?>(null) }
     var addonConfiguring by remember { mutableStateOf<Pair<Addon, String>?>(null) }
     var addonRenaming by remember { mutableStateOf<Addon?>(null) }
+    /** Bumped when the panel opened by Install closes: focus goes back to the Install button. */
+    var installFocusRequests by remember { mutableStateOf(0) }
+    LaunchedEffect(installFocusRequests) {
+        if (installFocusRequests > 0) installButton.requestFocusAfterFrames()
+    }
     var focusedKey by remember { mutableStateOf<String?>(null) }
     var backdropUrl by remember { mutableStateOf<String?>(null) }
     var backdropShown by remember { mutableStateOf(false) }
@@ -211,10 +220,12 @@ fun AddonManagerScreen(
                 key(addon.baseUrl) {
                     val health = uiState.healthByUrl[AddonHealthStore.addonKey(canonicalizeAddonUrl(addon.baseUrl))]
                     val searchOnEnter = addonUrlMatchKey(addon.baseUrl) in uiState.searchOnEnterKeys
-                    val facts = addonRowFacts(addon, health ?: AddonHealthLevel.UNKNOWN, searchOnEnter)
+                    val certificateFailed = addonGuardKeyOf(addon.baseUrl)?.let { it in uiState.certificateFailureKeys } == true
+                    val facts = addonRowFacts(addon, health ?: AddonHealthLevel.UNKNOWN, searchOnEnter, certificateFailed)
                     AddonRow(
                         addon = addon,
                         facts = facts,
+                        readOnly = readOnly,
                         position = index,
                         focusRequester = focusTargets.requester(addon.baseUrl),
                         onFocused = { focusedKey = addon.baseUrl },
@@ -227,6 +238,11 @@ fun AddonManagerScreen(
                                     isFirst = index == 0,
                                     isLast = index == addons.lastIndex,
                                     viewModel = viewModel,
+                                    onReviewCertificate = if (facts.certificatePaused) {
+                                        { viewModel.reviewCertificate(addon) }
+                                    } else {
+                                        null
+                                    },
                                     onConfigure = facts.configureUrl?.let { url -> { addonConfiguring = addon to url } },
                                     onRename = { addonRenaming = addon },
                                     searchOnEnter = searchOnEnter.takeIf { facts.searchable },
@@ -305,6 +321,20 @@ fun AddonManagerScreen(
         )
     }
 
+    uiState.certificatePanel?.let { panel ->
+        // Closing hands focus back to the reviewed row, or to Install (the panel is its own window).
+        val close = { trust: Boolean ->
+            viewModel.onCertificateDecision(trust)
+            val returnKey = panel.addonUrl
+            if (returnKey != null) focusTargets.pending = returnKey else installFocusRequests++
+        }
+        AddonCertificatePanel(
+            state = panel,
+            onTrust = { close(true) },
+            onDismiss = { close(false) }
+        )
+    }
+
     addonPendingRemoval?.let { addon ->
         MarqueeConfirmPanel(
             eyebrow = stringResource(R.string.addon_remove_eyebrow, addon.displayName),
@@ -332,6 +362,7 @@ fun AddonManagerScreen(
 private fun AddonRow(
     addon: Addon,
     facts: AddonRowFacts,
+    readOnly: Boolean,
     position: Int,
     focusRequester: FocusRequester,
     onFocused: () -> Unit,
@@ -372,12 +403,29 @@ private fun AddonRow(
                 facts.marks.forEach { mark ->
                     CollectionBadge(
                         text = addonMarkLabel(mark),
-                        color = if (mark == AddonMark.ADULT) NuvioPrimitives.errorOnImage else marquee.onImage2
+                        color = when (mark) {
+                            AddonMark.ADULT -> NuvioPrimitives.errorOnImage
+                            AddonMark.CERTIFICATE -> NuvioPrimitives.warning
+                            else -> marquee.onImage2
+                        }
                     )
                 }
             }
             val description = addon.description?.takeIf { it.isNotBlank() }
-            if (focusWithin && description != null) {
+            if (facts.certificatePaused) {
+                // Stage 3: the why line replaces the description, focused or not.
+                val server = addonServerLabel(addon.baseUrl).orEmpty()
+                Text(
+                    text = stringResource(
+                        // Spec 68 D11 Q8: a read-only profile has no Review action.
+                        if (readOnly) R.string.addon_cert_row_line_read_only else R.string.addon_cert_row_line,
+                        server
+                    ),
+                    style = NuvioTheme.textStyles.settingsNote,
+                    color = marquee.onImage2,
+                    modifier = Modifier.padding(top = NuvioTheme.spacing.xxs)
+                )
+            } else if (focusWithin && description != null) {
                 Text(
                     text = description,
                     style = NuvioTheme.textStyles.caption,
@@ -387,12 +435,22 @@ private fun AddonRow(
                 )
             }
         }
-        facts.health?.let { AddonHealthLabel(it) }
+        if (facts.certificatePaused) {
+            Text(
+                text = stringResource(R.string.addon_cert_paused).uppercase(),
+                style = NuvioTheme.textStyles.techBadge,
+                color = NuvioPrimitives.warning,
+                maxLines = 1
+            )
+        } else {
+            facts.health?.let { AddonHealthLabel(it) }
+        }
     }
 }
 
 /**
- * Stage 11 strip (Q8): Configure (only when [onConfigure] is set, i.e. the addon has a configure
+ * Stage 11 strip (Q8): Review certificate first (Spec 68 X7, only when [onReviewCertificate] is set,
+ * i.e. the row is paused on its certificate), Configure (only when [onConfigure] is set, i.e. the addon has a configure
  * page), Rename, Search: as you type / on Enter (Spec 40; only when [searchOnEnter] is set, i.e.
  * the addon has a search catalog; OK flips it in place), Move up / down (dimmed at the ends),
  * Disable / Enable, Remove (red).
@@ -403,11 +461,15 @@ private fun RowScope.AddonRowActions(
     isFirst: Boolean,
     isLast: Boolean,
     viewModel: AddonManagerViewModel,
+    onReviewCertificate: (() -> Unit)?,
     onConfigure: (() -> Unit)?,
     onRename: () -> Unit,
     searchOnEnter: Boolean?,
     onRemove: () -> Unit
 ) {
+    if (onReviewCertificate != null) {
+        CollectionRowAction(label = stringResource(R.string.addon_action_review_certificate), onClick = onReviewCertificate)
+    }
     if (onConfigure != null) {
         CollectionRowAction(label = stringResource(R.string.addon_action_configure), onClick = onConfigure)
     }
@@ -515,6 +577,7 @@ private fun addonProvidesLine(facts: AddonRowFacts): String {
 @Composable
 private fun addonMarkLabel(mark: AddonMark): String = stringResource(
     when (mark) {
+        AddonMark.CERTIFICATE -> R.string.addon_mark_certificate
         AddonMark.P2P -> R.string.addon_mark_p2p
         AddonMark.ADULT -> R.string.addon_mark_adult
         AddonMark.SETUP -> R.string.addon_mark_setup

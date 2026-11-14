@@ -72,7 +72,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nuvio.tv.core.update.DownloadState
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
@@ -187,8 +190,8 @@ private suspend fun SettingsReturnFocus.awaitRow(
  *
  * D-pad: a rail item selects [SETTINGS_SELECT_ON_FOCUS_MS] after focus lands on it; Right (Left in
  * RTL) or OK enters the pane through the requester the shell hands that pane, and only then: a
- * pane never focuses itself while the rail browses. About is entered only in a build with the
- * update check (its Updates rows); elsewhere it has nothing to focus. Left from a plain row returns to the rail's
+ * pane never focuses itself while the rail browses. Every pane has a row to focus (About: at least
+ * its Changelog row, Spec 80 D13). Left from a plain row returns to the rail's
  * selected item. Back in the pane returns to the rail; Back on the rail is left to the scaffold
  * (to the top bar) or, pushed over a page (no bar: the player, a no-key page), the NavHost (back
  * to that page). Down from
@@ -196,11 +199,14 @@ private suspend fun SettingsReturnFocus.awaitRow(
  *
  * [entryName] is a one-shot deep entry ([SettingsEntry] name, openSettingsAt): [onEntryConsumed]
  * clears it at once, then its row takes focus (its Playback chip selected first) and, for an
- * entry that opens a panel, its pane opens that panel.
+ * entry that opens a panel, its pane opens that panel. [SettingsEntry.CHANGELOG] opens About's
+ * changelog list once its row has focus, and the page of [entryRelease]'s release (read with the
+ * entry) once the list has it.
  */
 @Composable
 fun SettingsScreen(
     entryName: String? = null,
+    entryRelease: () -> Int? = { null },
     onEntryConsumed: () -> Unit = {},
     onNavigateToAddons: () -> Unit = {},
     onNavigateToCloudStream: () -> Unit = {},
@@ -209,9 +215,11 @@ fun SettingsScreen(
     onNavigateToAuthQrSignIn: () -> Unit = {},
     onNavigateToManageProfiles: () -> Unit = {},
     onNavigateToDpadComboSetup: (String) -> Unit = {},
+    onPlayReleaseVideo: (url: String, title: String) -> Unit = { _, _ -> },
     profileViewModel: ProfileSettingsViewModel = hiltViewModel(),
-    // The same instance About's pane resolves (this back-stack entry's store).
-    updateViewModel: UpdateViewModel = hiltViewModel()
+    // The same instances About's pane resolves (this back-stack entry's store).
+    updateViewModel: UpdateViewModel = hiltViewModel(),
+    changelogViewModel: ChangelogViewModel = hiltViewModel()
 ) {
     val isPrimaryProfileActive by profileViewModel.isPrimaryProfileActive.collectAsStateWithLifecycle()
     val showUpdateDot by updateViewModel.showNotice.collectAsStateWithLifecycle()
@@ -235,6 +243,7 @@ fun SettingsScreen(
     // A deep entry is taken off the SavedStateHandle at once and handled from here, so leaving
     // Settings mid-wait never replays it; an Activity restart drops it (normal entry instead).
     var entry by remember { mutableStateOf(SettingsEntry.fromName(entryName)) }
+    var entryReleaseCode by remember { mutableStateOf(if (entryName != null) entryRelease() else null) }
     // The deep entry's chip, held until its row has focus (the pane may compose late).
     var playbackSectionRequest by remember { mutableStateOf<PlaybackSection?>(null) }
     // A deep entry's panel (SettingsEntry.opensPanel), set once its row has focus; the pane clears it
@@ -256,14 +265,11 @@ fun SettingsScreen(
     val enterPane: (SettingsCategory) -> Unit = { category ->
         focusedRailCategory = null
         selectedCategory = category
-        // About has nothing to focus without the update check.
-        if (category != SettingsCategory.ABOUT || updateViewModel.supported) {
-            paneFocus = PaneFocus.ENTERED
-            scope.launch {
-                val entered = paneRequesters.getValue(category).requestFocusAfterFrames() ||
-                    focusManager.moveFocus(toPaneDirection)
-                if (!entered) paneFocus = PaneFocus.RAIL
-            }
+        paneFocus = PaneFocus.ENTERED
+        scope.launch {
+            val entered = paneRequesters.getValue(category).requestFocusAfterFrames() ||
+                focusManager.moveFocus(toPaneDirection)
+            if (!entered) paneFocus = PaneFocus.RAIL
         }
     }
 
@@ -296,12 +302,18 @@ fun SettingsScreen(
 
     LaunchedEffect(entryName) {
         if (entryName == null) return@LaunchedEffect
-        SettingsEntry.fromName(entryName)?.let { entry = it }
+        SettingsEntry.fromName(entryName)?.let {
+            entryReleaseCode = entryRelease()
+            entry = it
+        }
         onEntryConsumed()
     }
 
     LaunchedEffect(entry) {
         val requested = entry ?: return@LaunchedEffect
+        // An entry lands on a row of a pane: the changelog's page or list would hide it.
+        changelogViewModel.closePage()
+        changelogViewModel.closeList()
         focusedRailCategory = null
         selectedCategory = requested.target.category
         playbackSectionRequest = requested.playbackSection
@@ -314,8 +326,12 @@ fun SettingsScreen(
             railRequesters.getValue(selectedCategory).requestFocusAfterFrames()
         } else if (requested.opensPanel) {
             panelRequest = requested.target.category
+        } else if (requested == SettingsEntry.CHANGELOG) {
+            // As OK on the row would: the list replaces the row and takes focus.
+            changelogViewModel.openList(openRelease = entryReleaseCode)
         }
         playbackSectionRequest = null
+        entryReleaseCode = null
         entry = null
     }
 
@@ -331,7 +347,62 @@ fun SettingsScreen(
         selectedCategory = category
     }
 
+    // The changelog list belongs to About: another pane closes it.
+    LaunchedEffect(selectedCategory) {
+        if (selectedCategory != SettingsCategory.ABOUT) changelogViewModel.closeList()
+    }
+
     BackHandler(enabled = paneHasFocus) { focusRail() }
+
+    // Home: the update panel closes and its download stops (Spec 52; Spec 80 D14), whichever of
+    // About or a changelog page is showing.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { updateViewModel.closePanel() }
+    // Leaving Settings (a top-bar tab, a pushed route) stops it too, except for the release video
+    // (D14), whose Back returns here.
+    DisposableEffect(Unit) {
+        changelogViewModel.playingVideo = false
+        onDispose { if (!changelogViewModel.playingVideo) updateViewModel.closePanel() }
+    }
+    // Settings on top again (also a Back during the push fade, which keeps this composition): the
+    // video is over, so a later exit stops the download.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { changelogViewModel.playingVideo = false }
+
+    // Spec 80 A3: a release's page takes the whole screen below the bar; Back returns to the list
+    // (or, for the update's page, to the update panel).
+    val changelogPage = changelogViewModel.page.collectAsStateWithLifecycle().value
+    val pageForUpdate = changelogViewModel.pageForUpdate.collectAsStateWithLifecycle().value
+    val update = updateViewModel.state.collectAsStateWithLifecycle().value
+    if (changelogPage != null) {
+        val showCard = pageForUpdate && (update.available != null || update.download != DownloadState.Idle)
+        ChangelogReleasePage(
+            release = changelogPage,
+            updateCard = if (showCard) {
+                {
+                    UpdateDownloadCard(
+                        versionName = changelogPage.versionName ?: changelogPage.title,
+                        releaseSize = update.available?.sizeBytes ?: 0L,
+                        download = update.download,
+                        onDownload = updateViewModel::download,
+                        onCancel = updateViewModel::cancelDownload,
+                        onInstall = updateViewModel::installReady
+                    )
+                }
+            } else {
+                null
+            },
+            onPlayVideo = { video, title ->
+                changelogViewModel.playingVideo = true
+                onPlayReleaseVideo(video.url, title)
+            },
+            onBack = {
+                // Back over the pane: the list's row takes focus (after the player, paneFocus is fresh: RAIL).
+                paneFocus = PaneFocus.RESTORED
+                changelogViewModel.closePage()
+            },
+            anchor = contentAnchor
+        )
+        return
+    }
 
     val tokens = NuvioTheme.marquee.settings
     Row(

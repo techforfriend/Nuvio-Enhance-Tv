@@ -4,7 +4,10 @@ import com.nuvio.tv.core.util.safeHost
 import com.nuvio.tv.core.util.TtffTrace
 import com.nuvio.tv.core.torrent.formatTorrentSpeed
 import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.SeekParameters
 import com.nuvio.tv.R
 import com.nuvio.tv.data.local.SubtitleStyleSettings
@@ -65,7 +68,7 @@ internal fun PlayerRuntimeController.skipActiveInterval(): Boolean {
 
 internal fun PlayerRuntimeController.skipInterval(interval: SkipInterval): Boolean {
     val duration = currentPlaybackDurationMs().takeIf { it > 0 } ?: Long.MAX_VALUE
-    val seekMs = if (interval.endTime == Double.MAX_VALUE) {
+    val seekMs = if (interval.endTime == SkipInterval.OPEN_END) {
         duration
     } else {
         (interval.endTime * 1000).toLong()
@@ -178,15 +181,18 @@ internal fun shouldResetPostPlayStateAfterPlaybackEnded(
  * and chains auto-play next through an entire season. Shares
  * [com.nuvio.tv.core.player.PlaceholderStreamPolicy.isShortPlaceholderDuration] with the
  * external-player result path in [com.nuvio.tv.core.player.ExternalPlaybackTracker].
+ * [releaseVideo] (Spec 80 D20: a changelog release video, never a debrid answer) ends naturally
+ * however short.
  */
 internal fun shouldTreatAsNaturalPlaybackCompletion(
     hasRenderedFirstFrame: Boolean,
     hasFatalError: Boolean,
-    durationMs: Long
+    durationMs: Long,
+    releaseVideo: Boolean = false
 ): Boolean {
     if (hasFatalError) return false
     if (!hasRenderedFirstFrame) return false
-    if (isShortPlaceholderDuration(durationMs)) return false
+    if (!releaseVideo && isShortPlaceholderDuration(durationMs)) return false
     return true
 }
 
@@ -208,6 +214,13 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
             if (isUsingMpvEngine()) {
                 val view = mpvView
                 if (view != null) {
+                    // Read before the failure slot: mpv posts its playback start before an END_FILE
+                    // that follows it, so a failure after an observed start is taken this tick.
+                    val playbackStarted = view.hasStartedPlayback()
+                    // Spec 85 D3: mpv's own failed load ends the start and this job (the next stream
+                    // restarts it).
+                    val loadFailure = view.takeLoadFailure()
+                    if (loadFailure != null && handleMpvLoadFailure(loadFailure)) return@launch
                     val pos = view.currentPositionMs().coerceAtLeast(0L)
                     val playerDuration = view.durationMs().coerceAtLeast(0L)
                     applyPendingMpvSeekIfNeeded(
@@ -223,9 +236,15 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     )
                     var firstFrameReady = hasRenderedFirstFrame
                         if (!firstFrameReady) {
-                            firstFrameReady = pos > 0L || (playingNow && !cacheBuffering && playerDuration > 0L)
+                            // A resume start reports its seek target as time-pos once the file opens,
+                            // before any frame (mpv get_current_time), so a position counts only after
+                            // mpv's playback start (Spec 85; it fires on a paused start too, N7).
+                            firstFrameReady = (pos > 0L && playbackStarted) ||
+                                (playingNow && !cacheBuffering && playerDuration > 0L)
                             if (firstFrameReady) {
                                 hasRenderedFirstFrame = true
+                                cancelStartupWatchdog()
+                                clearFailoverNoticeAfterFirstFrame()
                                 val clickToFirstFrameMs = launchStartedAtElapsedMs
                                     ?.let { (android.os.SystemClock.elapsedRealtime() - it).coerceAtLeast(0L) }
                                     ?: -1L
@@ -246,6 +265,8 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     if (playerDuration > lastKnownDuration) {
                         lastKnownDuration = playerDuration
                     }
+                    // Spec 85 E7: a rejected placeholder ends this job (the next stream restarts it).
+                    if (maybeRejectMpvPlaceholder(playerDuration)) return@launch
                     val displayPosition = pendingPreviewSeekPosition ?: pos
                     updatePlaybackTimeline(
                         currentPosition = displayPosition,
@@ -256,12 +277,18 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     val nearEnd = playerDuration > 0L && pos >= (playerDuration - 500L)
                     val naturalEnded = nearEnd && shouldTreatAsNaturalPlaybackCompletion(
                         hasRenderedFirstFrame = firstFrameReady,
-                        hasFatalError = !_uiState.value.error.isNullOrBlank(),
-                        durationMs = playerDuration
+                        hasFatalError = _uiState.value.error != null,
+                        durationMs = playerDuration,
+                        releaseVideo = releaseVideo
                     )
                     val wasEnded = _uiState.value.playbackEnded
+                    // mpv picks its render target once it has video params; it is read only after this
+                    // stream's first frame (a reused VO still reports the previous file's target before
+                    // that, as Exo decides at first frame too); null keeps the last answer.
+                    val hdrOutput = if (firstFrameReady) view.readOutputIsHdr() else null
                     _uiState.update { state ->
                         state.copy(
+                            isHdrOutput = hdrOutput ?: state.isHdrOutput,
                             isPlaying = playingNow,
                             isBuffering = !firstFrameReady || cacheBuffering,
                             showLoadingOverlay = if (state.loadingOverlayEnabled) !firstFrameReady else false,
@@ -300,7 +327,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                 // reject sets the latch, and an error when no source is left).
                 if (PlaceholderStreamPolicy.durationBackstopArmed(
                         hasRenderedFirstFrame = hasRenderedFirstFrame,
-                        errorShown = !_uiState.value.error.isNullOrBlank(),
+                        errorShown = _uiState.value.error != null,
                         rejectedThisStream = placeholderRejectedForStream
                     )
                 ) {
@@ -386,7 +413,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                             "total=$stormRecoveryTotalThisPlayback"
                     )
                 }
-                if (_uiState.value.error.isNullOrBlank() && truehdStormRecoveryAttempts < 2 &&
+                if (_uiState.value.error == null && truehdStormRecoveryAttempts < 2 &&
                     android.os.SystemClock.elapsedRealtime() - truehdStormLastRecoveryAtMs >= 3_000L
                 ) {
                     playbackSpeedAwareAudioSink?.consumeTruehdStormRecoverySignal()?.let { leadMs ->
@@ -492,7 +519,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                 // discontinuity stamps the classifier token, so the rollback
                 // itself can never re-flag.
                 if (snapRecoveryPendingPosMs >= 0L &&
-                    _uiState.value.error.isNullOrBlank() &&
+                    _uiState.value.error == null &&
                     truehdStormRecoveryAttempts < 2 &&
                     android.os.SystemClock.elapsedRealtime() - truehdStormLastRecoveryAtMs >= 3_000L
                 ) {
@@ -517,6 +544,11 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     player = player,
                     hasRenderedFirstFrame = hasRenderedFirstFrame
                 )
+                if (maybeRecoverFrozenPicture(player, pos)) {
+                    // A failover is switching streams; the rest of the tick would act on the player it
+                    // releases (as after a placeholder reject). The next stream restarts the job.
+                    return@launch
+                }
                 // Update torrent rebuffer progress from ExoPlayer's buffer state
                 if (isTorrentStream && _uiState.value.isBuffering && hasRenderedFirstFrame) {
                     val bufferedAheadMs = (player.bufferedPosition - pos).coerceAtLeast(0)
@@ -552,6 +584,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     positionMs = pos,
                     durationMs = playerDuration.coerceAtLeast(0L)
                 )
+                checkExoPlaybackOverrun(player, playerDuration)
 
                 // Debug > buffer logs toggle; off by default.
                 if (bufferLogsEnabled && player.isPlaying) {
@@ -586,6 +619,102 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
             delay(500)
         }
     }
+}
+
+internal const val EXO_END_OVERRUN_GRACE_MS = 1_000L
+
+internal enum class ExoOverrunAction { NONE, REARM, FORCE_END }
+
+/**
+ * Spec 61 Q2 (NM 105490c2d): what the progress tick does about a position past the duration.
+ * [audioEnded] is only asked once everything else says "force", so the renderer read stays
+ * off the normal tick.
+ */
+internal fun exoOverrunAction(
+    positionMs: Long,
+    durationMs: Long,
+    isLive: Boolean,
+    playerEnded: Boolean,
+    alreadyHandled: Boolean,
+    hasRenderedFirstFrame: Boolean,
+    audioEnded: () -> Boolean
+): ExoOverrunAction {
+    if (durationMs <= 0L || isLive || playerEnded) return ExoOverrunAction.NONE
+    val overrunMs = positionMs - durationMs
+    // Back inside the stream after a forced end (the viewer sought back): detect again. Exactly
+    // at the duration is still the end (a forward seek clamps there), as a real ENDED would be.
+    if (overrunMs <= 0L) {
+        return if (alreadyHandled && overrunMs < 0L) ExoOverrunAction.REARM else ExoOverrunAction.NONE
+    }
+    if (alreadyHandled || overrunMs < EXO_END_OVERRUN_GRACE_MS || !hasRenderedFirstFrame) {
+        return ExoOverrunAction.NONE
+    }
+    // Audio still running past the duration means the duration is wrong, not the player.
+    return if (audioEnded()) ExoOverrunAction.FORCE_END else ExoOverrunAction.NONE
+}
+
+/**
+ * Whether at least one audio renderer is enabled and every enabled one has ended. A deliberate
+ * read of playback-thread state from the app thread (no app-thread signal for it exists): only
+ * asked past the duration plus the grace, a stale answer costs one 500 ms tick, a throw is "no".
+ */
+private fun exoAudioRendererEnded(player: ExoPlayer): Boolean =
+    runCatching {
+        val audio = (0 until player.rendererCount)
+            .filter { player.getRendererType(it) == C.TRACK_TYPE_AUDIO }
+            .map { player.getRenderer(it) }
+            .filter { it.state != Renderer.STATE_DISABLED }
+        audio.isNotEmpty() && audio.all { it.isEnded }
+    }.getOrDefault(false)
+
+/**
+ * ExoPlayer only reaches STATE_ENDED once every enabled renderer reports isEnded(). Some
+ * hardware decoders never let the video renderer read the end-of-stream marker: audio
+ * finishes, the screen goes black and the clock keeps running past the duration, so watched
+ * and next-episode never fire. Once audio has ended past the duration, finish naturally.
+ */
+internal fun PlayerRuntimeController.checkExoPlaybackOverrun(player: ExoPlayer, durationMs: Long) {
+    val positionMs = player.currentPosition
+    val action = exoOverrunAction(
+        positionMs = positionMs,
+        durationMs = durationMs,
+        isLive = player.isCurrentMediaItemLive,
+        playerEnded = player.playbackState == Player.STATE_ENDED,
+        alreadyHandled = exoEndOverrunHandled,
+        hasRenderedFirstFrame = hasRenderedFirstFrame,
+        audioEnded = { exoAudioRendererEnded(player) }
+    )
+    when (action) {
+        ExoOverrunAction.NONE -> return
+        ExoOverrunAction.REARM -> {
+            exoEndOverrunHandled = false
+            _uiState.update { it.copy(playbackEnded = false) }
+            // The forced end paused the player; a real ENDED resumes after a seek back.
+            if (!userPausedManually) player.play()
+            return
+        }
+        ExoOverrunAction.FORCE_END -> Unit
+    }
+    // Same test the STATE_ENDED listener applies; an unnatural end is asked again next tick.
+    if (!shouldTreatAsNaturalPlaybackCompletion(
+            hasRenderedFirstFrame = hasRenderedFirstFrame,
+            hasFatalError = _uiState.value.error != null,
+            durationMs = maxOf(durationMs, lastKnownDuration),
+            releaseVideo = releaseVideo
+        )
+    ) {
+        return
+    }
+    exoEndOverrunHandled = true
+    Log.i(
+        PlayerRuntimeController.TAG,
+        "EXO_END_OVERRUN: forcing natural end positionMs=$positionMs durationMs=$durationMs"
+    )
+    _uiState.update { it.copy(playbackEnded = true, isBuffering = false) }
+    handleNaturalPlaybackEnded()
+    // Stop the runaway clock; the pause's own progress save still sees the full duration
+    // through exoEndOverrunHandled in getEffectiveDuration.
+    player.pause()
 }
 
 internal fun PlayerRuntimeController.stopProgressUpdates() {
@@ -640,7 +769,7 @@ internal fun PlayerRuntimeController.getEffectiveDuration(position: Long): Long 
     val isEnded = if (isUsingMpvEngine()) {
         position >= (effectiveDuration - 500L)
     } else {
-        _exoPlayer?.playbackState == Player.STATE_ENDED
+        _exoPlayer?.playbackState == Player.STATE_ENDED || exoEndOverrunHandled
     }
     if (!isEnded && effectiveDuration < position) return 0L
 
@@ -656,11 +785,12 @@ internal fun PlayerRuntimeController.getEffectiveDuration(position: Long): Long 
 internal fun PlayerRuntimeController.handleNaturalPlaybackEnded() {
     val position = currentPlaybackPositionMs() ?: 0L
     val duration = getEffectiveDuration(position)
-    val hasFatalError = !_uiState.value.error.isNullOrBlank()
+    val hasFatalError = _uiState.value.error != null
     if (!shouldTreatAsNaturalPlaybackCompletion(
             hasRenderedFirstFrame = hasRenderedFirstFrame,
             hasFatalError = hasFatalError,
-            durationMs = duration
+            durationMs = duration,
+            releaseVideo = releaseVideo
         )
     ) {
         Log.i(
@@ -933,7 +1063,10 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         PlayerEvent.OnPlayPause -> {
             if (isUsingMpvEngine()) {
                 val playing = isPlaybackCurrentlyPlaying()
-                if (playing) {
+                if (mpvView?.isStopped() == true) {
+                    // Spec 85: a stopped start (placeholder reject, failed start) has nothing to
+                    // resume; restarting the progress job would hide a source advance's loading screen.
+                } else if (playing) {
                     userPausedManually = true
                     setPlaybackPaused(true)
                     stopProgressUpdates()
@@ -958,7 +1091,8 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                         // nt6: a parked auto-restore subtitle attaches here,
                         // while paused, so the reload lands invisibly.
                         maybeAttachDeferredAddonSubtitle()
-                    } else {
+                    } else if (!exoEndOverrunHandled) {
+                        // After a forced end (Spec 61 Q2) Play would only restart the runaway clock.
                         userPausedManually = false
                         cancelPauseOverlay()
                         player.play()
@@ -1334,6 +1468,9 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         is PlayerEvent.OnEpisodeListSelected -> {
             selectEpisodeList(event.selection)
         }
+        is PlayerEvent.OnEpisodeFilterChanged -> {
+            filterEpisodeList(event.filter)
+        }
         is PlayerEvent.OnEpisodeStreamSelected -> {
             switchToEpisodeStream(event.stream)
         }
@@ -1349,8 +1486,14 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         is PlayerEvent.OnSourceListSelected -> {
             selectSourceList(event.selection)
         }
+        is PlayerEvent.OnSourceFilterChanged -> {
+            filterSourceList(event.filter)
+        }
         is PlayerEvent.OnSourceStreamSelected -> {
             switchToSourceStream(event.stream)
+        }
+        is PlayerEvent.OnPreferSource -> {
+            preferSource(event.stream)
         }
         PlayerEvent.OnDismissTransientOverlay -> {
             _uiState.update {
@@ -1420,7 +1563,17 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             scope.launch { playerSettingsDataStore.setSubtitleSize(event.size) }
         }
         is PlayerEvent.OnSetSubtitleTextColor -> {
-            scope.launch { playerSettingsDataStore.setSubtitleTextColor(event.color) }
+            // Spec 62 H2c: the target is the style the view showed, carried in the event.
+            scope.launch {
+                if (event.hdr) {
+                    playerSettingsDataStore.setSubtitleHdrTextColor(event.color)
+                } else {
+                    playerSettingsDataStore.setSubtitleTextColor(event.color)
+                }
+            }
+        }
+        is PlayerEvent.OnSetSubtitleHdrBrightness -> {
+            scope.launch { playerSettingsDataStore.setSubtitleHdrBrightnessPercent(event.percent) }
         }
         is PlayerEvent.OnSetSubtitleBold -> {
             scope.launch { playerSettingsDataStore.setSubtitleBold(event.bold) }
@@ -1434,11 +1587,18 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         is PlayerEvent.OnSetSubtitleVerticalOffset -> {
             scope.launch { playerSettingsDataStore.setSubtitleVerticalOffset(event.offset) }
         }
-        PlayerEvent.OnResetSubtitleDefaults -> {
+        is PlayerEvent.OnResetSubtitleDefaults -> {
+            // Spec 62 H2c: the target is the style the view showed, carried in the event; on the
+            // HDR style its colour rows are the HDR ones, so those reset.
             scope.launch {
                 val defaults = SubtitleStyleSettings()
                 playerSettingsDataStore.setSubtitleSize(defaults.size)
-                playerSettingsDataStore.setSubtitleTextColor(defaults.textColor)
+                if (event.hdr) {
+                    playerSettingsDataStore.setSubtitleHdrTextColor(defaults.hdrTextColor)
+                    playerSettingsDataStore.setSubtitleHdrBrightnessPercent(defaults.hdrBrightnessPercent)
+                } else {
+                    playerSettingsDataStore.setSubtitleTextColor(defaults.textColor)
+                }
                 playerSettingsDataStore.setSubtitleBold(defaults.bold)
                 playerSettingsDataStore.setSubtitleEdgeStyle(defaults.edgeStyle)
                 playerSettingsDataStore.setSubtitleOutlineColor(defaults.outlineColor)

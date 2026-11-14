@@ -13,12 +13,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
+import com.nuvio.tv.ui.components.COMPACT_PANEL_FILL
 import com.nuvio.tv.ui.components.CompactPanel
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 /**
  * A compact panel [width] wide, centred over the [veil] in a [MarqueeVeilDialog] (the U5 consent
- * panel's shape). It keeps the TV safe area above and below, so a long panel scrolls its own content inside. Back
+ * panel's shape; [color] = the panel fill, [CompactPanel]'s by default). It keeps the TV safe area above and below, so a long panel scrolls its own content inside. Back
  * calls [onDismissRequest]; [initialFocus] takes focus once per open. Text fields work inside
  * (the Dialog window takes the IME; `RenamePanel` / `RegexPatternPanel` precedent).
  */
@@ -28,6 +29,7 @@ internal fun MarqueeCentredPanel(
     veil: Color,
     width: Dp,
     initialFocus: FocusRequester? = null,
+    color: Color = COMPACT_PANEL_FILL,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val tokens = NuvioTheme.marquee.stream
@@ -43,6 +45,7 @@ internal fun MarqueeCentredPanel(
                 end = tokens.panelPaddingHorizontal,
                 bottom = tokens.panelPaddingHorizontal
             ),
+            color = color,
             content = content
         )
     }

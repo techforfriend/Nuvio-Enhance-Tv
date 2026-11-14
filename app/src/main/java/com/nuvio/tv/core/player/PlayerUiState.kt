@@ -7,6 +7,8 @@ import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.local.SubtitleEdgeStyle
 import com.nuvio.tv.data.local.SubtitleStyleSettings
 import com.nuvio.tv.data.repository.SkipInterval
+import com.nuvio.tv.core.stream.FacetFilter
+import com.nuvio.tv.core.stream.PreferredSource
 import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.StreamListView
 import com.nuvio.tv.domain.model.MetaCastMember
@@ -118,6 +120,12 @@ data class PlayerUiState(
     val showMoreDialog: Boolean = false,
     // Subtitle style settings
     val subtitleStyle: SubtitleStyleSettings = SubtitleStyleSettings(),
+    /**
+     * The TV receives HDR (Dolby Vision, HDR10, HLG) for this stream (Spec 62 D7): ExoPlayer's
+     * first-frame output type ([isHdrOutputType]), mpv's render target transfer. Selects the HDR
+     * subtitle style and the controls dim; false until known.
+     */
+    val isHdrOutput: Boolean = false,
     // Addon subtitles
     val addonSubtitles: List<Subtitle> = emptyList(),
     val isLoadingAddonSubtitles: Boolean = false,
@@ -147,6 +155,8 @@ data class PlayerUiState(
     // The user's pick (Spec 51 M7); [episodeListView] is [episodeAllStreams] derived under it and
     // the stream list limit, with the effective selection (PlayerRuntimeControllerStreamLimit).
     val episodeListSelection: StreamListSelection = StreamListSelection.All,
+    // The filters sheet's values on (Spec 65 P1): view-only, cleared each time the list opens (D18).
+    val episodeFacetFilter: FacetFilter = FacetFilter.NONE,
     val episodeListView: StreamListView = StreamListView(),
     val episodeAvailableAddons: List<String> = emptyList(),
     val episodeSourceChips: List<SourceChipItem> = emptyList(),
@@ -167,14 +177,22 @@ data class PlayerUiState(
     val sourceMissingUpstreams: List<String> = emptyList(),
     // URLs proven dead this session (non-media body / 404 / 410); greyed in the panel.
     val deadSourceStreamUrls: Set<String> = emptySet(),
+    // Spec 75 S5: the failover the loading screen names until the next source's first frame
+    // (cleared with the failover budget too), and the chain the failover gave up on.
+    val failoverNotice: FailoverNotice? = null,
+    val exhaustedFailover: ExhaustedFailover? = null,
     // As the episode list's pair, for [sourceAllStreams].
     val sourceListSelection: StreamListSelection = StreamListSelection.All,
+    val sourceFacetFilter: FacetFilter = FacetFilter.NONE,
     val sourceListView: StreamListView = StreamListView(),
+    /** The show's preferred source (Spec 65 P6); both lists show its matches first. */
+    val preferredSource: PreferredSource? = null,
     val sourceAvailableAddons: List<String> = emptyList(),
     val sourceChips: List<SourceChipItem> = emptyList(),
     val showFileSizeBadges: Boolean = true,
     val useAddonFormatting: Boolean = false,
-    val error: String? = null,
+    /** The failure the error box shows (Spec 75 S4); null while nothing failed. */
+    val error: PlaybackFailure? = null,
     val pendingSeekPosition: Long? = null, // For resuming from saved progress
     // Parental guide overlay
     val parentalWarnings: List<ParentalWarning> = emptyList(),
@@ -249,7 +267,19 @@ data class PlayerUiState(
     // When true, suppress the passive torrent stats text (buffer, seeds, peers, speed) on the
     // loading overlay and rebuffering indicator; the Stats panel's P2P section ignores it.
     val hideTorrentStats: Boolean = true
-)
+) {
+    /** The style cues are drawn with (Spec 62 H2). */
+    val effectiveSubtitleStyle: SubtitleStyleSettings get() = subtitleStyle.forOutput(isHdrOutput)
+
+    /** In-player style edits go to the HDR text colour and brightness. */
+    val isEditingHdrSubtitleStyle: Boolean get() = subtitleStyle.hdrStyleApplies(isHdrOutput)
+
+    /** The style the in-player editor shows. */
+    val editableSubtitleStyle: SubtitleStyleSettings get() = subtitleStyle.editableForOutput(isHdrOutput)
+
+    /** The factor controls and panels over the video draw at (1 = undimmed). */
+    val playerControlsBrightness: Float get() = subtitleStyle.playerControlsBrightness(isHdrOutput)
+}
 
 /** The network test holding this start: the [service] being checked and the 1-based [step] running (0 = probing). */
 data class NetworkTestHold(val service: String, val step: Int = 0)
@@ -344,12 +374,16 @@ sealed class PlayerEvent {
     data class OnEpisodeSelected(val video: Video) : PlayerEvent()
     data object OnReloadEpisodeStreams : PlayerEvent()
     data class OnEpisodeListSelected(val selection: StreamListSelection) : PlayerEvent()
+    data class OnEpisodeFilterChanged(val filter: FacetFilter) : PlayerEvent()
     data class OnEpisodeStreamSelected(val stream: Stream) : PlayerEvent()
     data object OnShowSourcesPanel : PlayerEvent()
     data object OnDismissSourcesPanel : PlayerEvent()
     data object OnReloadSourceStreams : PlayerEvent()
     data class OnSourceListSelected(val selection: StreamListSelection) : PlayerEvent()
+    data class OnSourceFilterChanged(val filter: FacetFilter) : PlayerEvent()
     data class OnSourceStreamSelected(val stream: Stream) : PlayerEvent()
+    /** Prefer [stream]'s source for the show (Spec 65 P6); null stops preferring one. */
+    data class OnPreferSource(val stream: Stream?) : PlayerEvent()
     data object OnDismissTransientOverlay : PlayerEvent()
     data object OnParentalGuideHide : PlayerEvent()
     data class OnShowDisplayModeInfo(val info: DisplayModeInfo) : PlayerEvent()
@@ -371,12 +405,16 @@ sealed class PlayerEvent {
 
     // Subtitle style events (for in-player style tab)
     data class OnSetSubtitleSize(val size: Int) : PlayerEvent()
-    data class OnSetSubtitleTextColor(val color: Int) : PlayerEvent()
+    /** Sets the HDR text colour when [hdr] (the style view showed the HDR style), else the text colour. */
+    data class OnSetSubtitleTextColor(val color: Int, val hdr: Boolean) : PlayerEvent()
+    /** Spec 62 H2c: the HDR brightness, in percent (clamped and snapped by the store). */
+    data class OnSetSubtitleHdrBrightness(val percent: Int) : PlayerEvent()
     data class OnSetSubtitleBold(val bold: Boolean) : PlayerEvent()
     data class OnSetSubtitleEdgeStyle(val style: SubtitleEdgeStyle) : PlayerEvent()
     data class OnSetSubtitleOutlineColor(val color: Int) : PlayerEvent()
     data class OnSetSubtitleVerticalOffset(val offset: Int) : PlayerEvent()
-    data object OnResetSubtitleDefaults : PlayerEvent()
+    /** [hdr]: the style view showed the HDR style, so its HDR colour and brightness reset instead of the text colour. */
+    data class OnResetSubtitleDefaults(val hdr: Boolean) : PlayerEvent()
     data object OnToggleAspectRatio : PlayerEvent()
     data object OnSwitchInternalPlayerEngine : PlayerEvent()
     data object OnTogglePlaybackStats : PlayerEvent()

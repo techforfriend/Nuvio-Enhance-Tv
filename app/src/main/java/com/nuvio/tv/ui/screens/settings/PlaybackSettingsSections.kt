@@ -108,6 +108,7 @@ internal fun PlaybackSettingsSections(
     onSetAutoSkipSegmentTypeEnabled: (AutoSkipSegmentType, Boolean) -> Unit,
     onSetFrameRateMatchingMode: (FrameRateMatchingMode) -> Unit,
     onSetResolutionMatchingEnabled: (Boolean) -> Unit,
+    onSetAfrSettleHoldSeconds: (Int) -> Unit,
     onDisableAfrAndResolution: () -> Unit,
     onSetDownmixEnabled: (Boolean) -> Unit,
     onSetMaintainOriginalAudioOnDownmix: (Boolean) -> Unit,
@@ -132,6 +133,10 @@ internal fun PlaybackSettingsSections(
     onSetSubtitleShowOnlyPreferredLanguages: (Boolean) -> Unit,
     onSetSubtitleStripSdh: (Boolean) -> Unit,
     onSetSubtitleEdgeStyle: (SubtitleEdgeStyle) -> Unit,
+    onSetSubtitleHdrStyleEnabled: (Boolean) -> Unit,
+    onSetSubtitleHdrTextColor: (Int) -> Unit,
+    onSetSubtitleHdrBrightness: (Int) -> Unit,
+    onSetSubtitleHdrDimPlayerControls: (Boolean) -> Unit,
     onSetUseLibass: (Boolean) -> Unit,
     p2pEnabled: Boolean,
     onSetP2pEnabled: (Boolean) -> Unit,
@@ -171,6 +176,7 @@ internal fun PlaybackSettingsSections(
 
     var audioVideoPicker by rememberSaveable { mutableStateOf<AudioVideoPicker?>(null) }
     var subtitlePicker by rememberSaveable { mutableStateOf<SubtitlePicker?>(null) }
+    var hdrRowFocused by remember { mutableStateOf(false) }
     val frameRateFocus = remember { FocusRequester() }
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
@@ -199,7 +205,12 @@ internal fun PlaybackSettingsSections(
                 onSelect = { selectedSection = it }
             )
             // Pinned with the chips, so it stays in view while any Subtitles row changes the look.
-            if (section == PlaybackSection.SUBTITLES) SubtitlePreview(style = playerSettings.subtitleStyle)
+            // Spec 62 D12: the HDR look while an HDR row has focus with the HDR style on.
+            if (section == PlaybackSection.SUBTITLES) {
+                val style = playerSettings.subtitleStyle
+                val hdrPreview = hdrRowFocused && style.hdrStyleEnabled
+                SubtitlePreview(style = style, hdr = hdrPreview)
+            }
         }
     ) {
         when (section) {
@@ -250,6 +261,7 @@ internal fun PlaybackSettingsSections(
                 onOpenPicker = { audioVideoPicker = it },
                 onSetFrameRateMatchingMode = onSetFrameRateMatchingMode,
                 onSetResolutionMatchingEnabled = onSetResolutionMatchingEnabled,
+                onSetAfrSettleHoldSeconds = onSetAfrSettleHoldSeconds,
                 onDisableAfrAndResolution = onDisableAfrAndResolution,
                 onSetSkipSilence = onSetSkipSilence,
                 onSetRememberAudioDelayPerDevice = onSetRememberAudioDelayPerDevice,
@@ -280,6 +292,10 @@ internal fun PlaybackSettingsSections(
                 onSetVerticalOffset = onSetSubtitleVerticalOffset,
                 onSetBold = onSetSubtitleBold,
                 onSetEdgeStyle = onSetSubtitleEdgeStyle,
+                onSetHdrStyleEnabled = onSetSubtitleHdrStyleEnabled,
+                onSetHdrBrightness = onSetSubtitleHdrBrightness,
+                onSetHdrDimPlayerControls = onSetSubtitleHdrDimPlayerControls,
+                onHdrRowFocused = { hdrRowFocused = it },
                 onSetUseLibass = onSetUseLibass,
                 onSetShowOnlyPreferredLanguages = onSetSubtitleShowOnlyPreferredLanguages,
                 onSetStripSdh = onSetSubtitleStripSdh,
@@ -360,6 +376,7 @@ internal fun PlaybackSettingsSections(
             onSetTextColor = onSetSubtitleTextColor,
             onSetBackgroundColor = onSetSubtitleBackgroundColor,
             onSetOutlineColor = onSetSubtitleOutlineColor,
+            onSetHdrTextColor = onSetSubtitleHdrTextColor,
             onDismiss = { subtitlePicker = null }
         )
     }

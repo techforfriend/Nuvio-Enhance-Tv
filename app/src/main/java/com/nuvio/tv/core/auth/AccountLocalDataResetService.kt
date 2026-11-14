@@ -2,6 +2,7 @@ package com.nuvio.tv.core.auth
 
 import android.content.Context
 import android.util.Log
+import com.nuvio.tv.core.network.tls.AddonCertPinKeeper
 import com.nuvio.tv.data.local.ContinueWatchingEnrichmentCache
 import com.nuvio.tv.data.local.MyPhotosStore
 import com.nuvio.tv.data.local.ProfileDataStore
@@ -24,7 +25,8 @@ class AccountLocalDataResetService @Inject constructor(
     private val profileDataStoreFactory: ProfileDataStoreFactory,
     private val profileDataStore: ProfileDataStore,
     private val profileLockStateDataStore: ProfileLockStateDataStore,
-    private val myPhotosStore: MyPhotosStore
+    private val myPhotosStore: MyPhotosStore,
+    private val addonCertPinKeeper: AddonCertPinKeeper
 ) {
     // NonCancellable: the wipe is bounded local I/O and must finish once sign-out started,
     // or the previous account's shadow copies and CW cache stay on disk.
@@ -35,6 +37,8 @@ class AccountLocalDataResetService @Inject constructor(
         bestEffort("Failed to clear account files") { clearAccountFiles() }
         // Spec 44 D8: family photos do not carry over to the next account (the store drops its list too).
         bestEffort("Failed to clear My photos") { myPhotosStore.deleteAll() }
+        // Spec 68 X7: trusted addon certificates go with the account's addons (pins are device-local, D8).
+        bestEffort("Failed to clear trusted addon certificates") { addonCertPinKeeper.clear() }
     }
 
     /** Each step runs even if an earlier one failed; cancellation is rethrown (KT-CONC-03). */

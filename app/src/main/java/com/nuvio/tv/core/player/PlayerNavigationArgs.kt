@@ -40,8 +40,12 @@ internal data class PlayerNavigationArgs(
     val rememberedAudioLanguage: String?,
     val rememberedAudioName: String?,
     val launchStartedAtMs: Long?,
+    /** Spec 75: the Stream screen's scrape time for this launch (the Finding sources step), null when none. */
+    val sourcesFoundMs: Long? = null,
     /** The playing stream's own subtitles (Stremio `stream.subtitles`), labelled with [addonName]. */
-    val streamSubtitles: List<Subtitle> = emptyList()
+    val streamSubtitles: List<Subtitle> = emptyList(),
+    /** Spec 80 D20: a changelog release video (Screen.Player.createRoute's releaseVideo). */
+    val releaseVideo: Boolean = false
 ) {
     val torrentTrackers: List<String>
         get() {
@@ -99,11 +103,13 @@ internal data class PlayerNavigationArgs(
                 rememberedAudioLanguage = argOrNull("rememberedAudioLanguage"),
                 rememberedAudioName = argOrNull("rememberedAudioName"),
                 launchStartedAtMs = savedStateHandle.get<String>("launchStartedAtMs")?.toLongOrNull(),
+                sourcesFoundMs = savedStateHandle.get<String>("sourcesFoundMs")?.toLongOrNull()?.takeIf { it >= 0L },
                 streamSubtitles = decodeStreamSubtitlesArg(
                     json = savedStateHandle.get<String>("subtitles"),
                     addonName = addonName,
                     addonLogo = addonLogo
-                )
+                ),
+                releaseVideo = savedStateHandle.get<String>("releaseVideo")?.toBooleanStrictOrNull() == true
             )
         }
     }

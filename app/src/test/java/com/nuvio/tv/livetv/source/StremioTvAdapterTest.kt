@@ -70,7 +70,9 @@ class StremioTvAdapterTest {
         { error("no preset here") },
         { 1L },
         { "a1" },
-        io
+        io,
+        pack = PackStore(tmp.root, io),
+        scans = PackScanStore(tmp.root, io)
     )
 
     @Test

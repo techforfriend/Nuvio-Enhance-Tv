@@ -1,7 +1,10 @@
 package com.nuvio.tv.ui.navigation
 
+import androidx.lifecycle.SavedStateHandle
+import com.nuvio.tv.core.player.PlayerNavigationArgs
 import com.nuvio.tv.core.util.encodeUrlArg
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,6 +44,28 @@ class ScreenRouteTest {
 
         assertTrue(route.contains("&videoHash=a%26b%23c&videoSize="))
         assertTrue(route.contains("&infoHash=d%25e%26fileIdx%3D9&fileIdx=&"))
+    }
+
+    @Test
+    fun `player route carries the sources time last, empty when there was no search`() {
+        val route = Screen.Player.createRoute(streamUrl = "http://h/v", title = "T", launchStartedAtMs = 5L, sourcesFoundMs = 1_400L)
+        assertTrue(route.endsWith("&launchStartedAtMs=5&sourcesFoundMs=1400"))
+        assertTrue(Screen.Player.route.endsWith("&sourcesFoundMs={sourcesFoundMs}"))
+        val none = Screen.Player.createRoute(streamUrl = "http://h/v", title = "T", launchStartedAtMs = 5L)
+        assertTrue(none.endsWith("&sourcesFoundMs="))
+    }
+
+    @Test
+    fun `player route marks a release video only when asked, read back by the nav args (Spec 80 D20)`() {
+        assertTrue(Screen.Player.route.contains("&releaseVideo={releaseVideo}&"))
+        val normal = Screen.Player.createRoute(streamUrl = "http://h/v", title = "T", launchStartedAtMs = 5L)
+        assertTrue(normal.contains("&releaseVideo=false&"))
+        val release = Screen.Player.createRoute(streamUrl = "http://h/v", title = "T", launchStartedAtMs = 5L, releaseVideo = true)
+        assertTrue(release.contains("&releaseVideo=true&"))
+
+        assertTrue(PlayerNavigationArgs.from(SavedStateHandle(mapOf("releaseVideo" to "true"))).releaseVideo)
+        assertFalse(PlayerNavigationArgs.from(SavedStateHandle(mapOf("releaseVideo" to "false"))).releaseVideo)
+        assertFalse(PlayerNavigationArgs.from(SavedStateHandle()).releaseVideo)
     }
 
     @Test

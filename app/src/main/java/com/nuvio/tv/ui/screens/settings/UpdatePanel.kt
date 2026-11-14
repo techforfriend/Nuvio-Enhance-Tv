@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.settings
 
 import android.text.format.Formatter
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -16,8 +17,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -39,6 +43,10 @@ import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.R
 import com.nuvio.tv.core.update.DownloadState
 import com.nuvio.tv.core.update.KnownRelease
+import com.nuvio.tv.core.update.MARKDOWN_HEADING
+import com.nuvio.tv.core.update.splitReleaseBody
+import com.nuvio.tv.ui.components.marquee.MarqueeFormRow
+import com.nuvio.tv.ui.components.marquee.MarqueeFormRowIcon
 import com.nuvio.tv.ui.components.PanelEyebrow
 import com.nuvio.tv.ui.components.marquee.MarqueePanelActions
 import com.nuvio.tv.ui.components.marquee.MarqueePrimaryButton
@@ -64,9 +72,12 @@ internal fun updateFeedAddress(): String = "github.com/${BuildConfig.UPDATE_OWNE
 
 /** The day the release was published, in [zone]; null when GitHub sent none or it does not parse. */
 internal fun KnownRelease.publishedDate(zone: ZoneId = ZoneId.systemDefault()): LocalDate? =
+    releaseDate(publishedAt, zone)
+
+/** The day [publishedAt] (ISO 8601, as GitHub sends it) falls on in [zone]; null when absent or unparsable. */
+internal fun releaseDate(publishedAt: String?, zone: ZoneId = ZoneId.systemDefault()): LocalDate? =
     publishedAt?.let { runCatching { Instant.parse(it).atZone(zone).toLocalDate() }.getOrNull() }
 
-private val HEADING = Regex("""^\s{0,3}#{1,6}\s+(.*?)(\s+#+)?$""")
 private val BULLET = Regex("""^(\s*)[-*+]\s+(.*)$""")
 /** A link or an image, its URL allowed one level of parentheses. */
 private val LINK = Regex("""!?\[([^\]]*)]\((?:[^()]|\([^()]*\))*\)""")
@@ -84,7 +95,7 @@ internal fun releaseNotesText(notes: String): String =
     notes.lineSequence()
         .map { raw ->
             val line = raw.trimEnd()
-            HEADING.matchEntire(line)?.let { return@map it.groupValues[1] }
+            MARKDOWN_HEADING.matchEntire(line)?.let { return@map it.groupValues[2] }
             BULLET.matchEntire(line)?.let { return@map "${it.groupValues[1]}\u2022 ${it.groupValues[2]}" }
             line
         }
@@ -109,6 +120,12 @@ internal fun releaseName(release: KnownRelease, withBuild: Boolean): String = st
  * its progress and Cancel ([onCancel]: the panel stays); after a failure, the reason and Try again.
  * Running with no total yet is the fresh check before the download: 0 of the release's size. Back
  * calls [onDismiss].
+ *
+ * Spec 80 (sandbox spec-80-release-changelog, stage b-panel): What's new shows the release's short
+ * What's new section (D3; the whole body when it has none); a row under it opens the update's
+ * changelog page ([onOpenChangelog]) without stopping the download (D14); a download that
+ * finished off screen waits as Ready: Install now ([onInstallReady]). [onShown] reports the panel
+ * on screen, so a file that verifies meanwhile goes to the installer at once.
  */
 @Composable
 internal fun UpdateSidePanel(
@@ -116,7 +133,10 @@ internal fun UpdateSidePanel(
     download: DownloadState,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onInstallReady: () -> Unit,
+    onShown: (Boolean) -> Unit,
+    onOpenChangelog: () -> Unit
 ) {
     val marquee = NuvioTheme.marquee
     val context = LocalContext.current
@@ -124,7 +144,14 @@ internal fun UpdateSidePanel(
     val cancelFocus = remember { FocusRequester() }
     val running = download as? DownloadState.Running
     val failed = download == DownloadState.Failed
-    val notes = remember(release.notes) { releaseNotesText(release.notes) }
+    val ready = download == DownloadState.Ready
+    val notes = remember(release.notes) {
+        releaseNotesText(splitReleaseBody(release.notes).whatsNew.ifEmpty { release.notes })
+    }
+    DisposableEffect(Unit) {
+        onShown(true)
+        onDispose { onShown(false) }
+    }
     val meta = listOfNotNull(
         release.publishedDate()?.let { stringResource(R.string.update_panel_released, formatShortDate(it)) },
         Formatter.formatShortFileSize(context, release.sizeBytes),
@@ -153,6 +180,17 @@ internal fun UpdateSidePanel(
                 UpdatePanelSection(stringResource(R.string.update_whats_new), top = 4.dp)
                 UpdateNotes(notes)
             }
+            MarqueeFormRow(
+                label = stringResource(
+                    if (release.videoUrl != null) R.string.update_open_changelog_video else R.string.update_open_changelog
+                ),
+                helper = stringResource(R.string.update_keeps_going).takeIf { running != null },
+                leadingIcon = Icons.Filled.PlayArrow.takeIf { release.videoUrl != null },
+                onClick = onOpenChangelog,
+                modifier = Modifier.padding(top = 8.dp)
+            ) { _ ->
+                MarqueeFormRowIcon(Icons.AutoMirrored.Filled.KeyboardArrowRight)
+            }
             if (running != null) {
                 UpdatePanelSection(stringResource(R.string.update_downloading), top = 10.dp)
                 UpdateProgress(running, release.sizeBytes)
@@ -171,9 +209,15 @@ internal fun UpdateSidePanel(
                 )
             } else {
                 MarqueePrimaryButton(
-                    label = stringResource(if (failed) R.string.update_try_again else R.string.update_download_install),
+                    label = stringResource(
+                        when {
+                            ready -> R.string.update_ready_install
+                            failed -> R.string.update_try_again
+                            else -> R.string.update_download_install
+                        }
+                    ),
                     icon = if (failed) null else Icons.Filled.FileDownload,
-                    onClick = onDownload,
+                    onClick = if (ready) onInstallReady else onDownload,
                     focusRequester = actionFocus,
                     compact = true
                 )
@@ -246,7 +290,7 @@ internal fun progressFraction(bytes: Long, total: Long): Float =
 
 /** `.s52prog` + `.s52pct`: a 4 dp bar, then "18 MB of 41 MB" and the percentage. */
 @Composable
-private fun UpdateProgress(running: DownloadState.Running, releaseSize: Long) {
+internal fun UpdateProgress(running: DownloadState.Running, releaseSize: Long) {
     val context = LocalContext.current
     val total = progressTotal(running, releaseSize)
     val fraction = progressFraction(running.bytes, total)
@@ -282,5 +326,64 @@ private fun UpdateProgress(running: DownloadState.Running, releaseSize: Long) {
             style = style,
             color = NuvioTheme.marquee.onImage2
         )
+    }
+}
+
+/**
+ * `.s80dl` (sandbox spec-80-release-changelog, stages b-reading and b-ready): the update's
+ * download on its changelog page, an opaque card. Idle: Download and install; running: progress
+ * and Cancel; Ready: "Downloaded and checked" and Ready: Install now (the installer opens only on
+ * that press, Spec 80 D6); failed: the reason and Try again. Nothing here takes focus by itself.
+ */
+@Composable
+internal fun UpdateDownloadCard(
+    versionName: String,
+    releaseSize: Long,
+    download: DownloadState,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onInstall: () -> Unit
+) {
+    val context = LocalContext.current
+    val tokens = NuvioTheme.marquee.settings
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(tokens.signInCardFill, shape)
+            .border(NuvioTheme.spacing.hairline, tokens.signInCardEdge, shape)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        when (download) {
+            is DownloadState.Running -> {
+                UpdatePanelSection(stringResource(R.string.update_downloading_version, versionName), top = 0.dp)
+                UpdateProgress(download, releaseSize)
+                CollectionsHeaderButton(label = stringResource(R.string.action_cancel), onClick = onCancel)
+            }
+            DownloadState.Ready -> {
+                Text(
+                    text = stringResource(R.string.update_ready_checked, Formatter.formatShortFileSize(context, releaseSize)),
+                    style = NuvioTheme.textStyles.caption,
+                    color = NuvioTheme.marquee.readyText
+                )
+                MarqueePrimaryButton(
+                    label = stringResource(R.string.update_ready_install),
+                    icon = Icons.Filled.FileDownload,
+                    onClick = onInstall,
+                    compact = true
+                )
+            }
+            DownloadState.Failed -> {
+                SettingsPanelErrorLine(stringResource(R.string.update_failed))
+                MarqueePrimaryButton(label = stringResource(R.string.update_try_again), icon = null, onClick = onDownload, compact = true)
+            }
+            DownloadState.Idle -> MarqueePrimaryButton(
+                label = stringResource(R.string.update_download_install),
+                icon = Icons.Filled.FileDownload,
+                onClick = onDownload,
+                compact = true
+            )
+        }
     }
 }

@@ -4,11 +4,14 @@ import android.content.Context
 import android.os.SystemClock
 import com.nuvio.tv.core.network.NetworkTransportReader
 import com.nuvio.tv.core.player.AutoPlaySelection
+import com.nuvio.tv.core.player.ContinuationTarget
+import com.nuvio.tv.core.player.DecodeCapability
 import com.nuvio.tv.core.player.PrefetchedSelection
 import com.nuvio.tv.core.player.SelectionSnapshot
 import com.nuvio.tv.core.player.StreamAutoPlaySelector
 import com.nuvio.tv.data.local.BingeGroupCacheDataStore
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
+import com.nuvio.tv.data.local.PreferredSourceDataStore
 import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.domain.model.AddonStreams
 import com.nuvio.tv.domain.model.enabledAddons
@@ -51,8 +54,9 @@ class PrefetchSelectionSupplier @Inject constructor(
     private val playerSettingsDataStore: PlayerSettingsDataStore,
     private val addonRepository: AddonRepository,
     private val bingeGroupCacheDataStore: BingeGroupCacheDataStore,
+    private val preferredSourceDataStore: PreferredSourceDataStore,
     private val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
-    private val rejectedStreamUrls: RejectedStreamUrls
+    private val failedReleases: FailedReleases
 ) {
 
     private val _uiSignals = MutableStateFlow<Map<String, SourcePrefetchSignal>>(emptyMap())
@@ -98,20 +102,24 @@ class PrefetchSelectionSupplier @Inject constructor(
      *
      * [runtimeMinutes] / [episode] are the target's as the caller already knows them (Spec 51
      * D8: nothing waits for one), for the stream list limit; [exemptBingeGroup] is the player's
-     * binge exemption (P5), null elsewhere.
+     * binge exemption (P5), null elsewhere. [film]: the target is a film
+     * ([ContentIdentity.isFilmType]), so the film size floors apply as at the press (Spec 65 D4);
+     * the identity guard itself runs at the press, through PrefetchedSelectionGate.
      */
     suspend fun rankAndPrewarm(
         groups: List<AddonStreams>,
         contentId: String?,
         runtimeMinutes: Int?,
         episode: Boolean,
+        film: Boolean,
         bingeOverride: String? = null,
         exemptBingeGroup: String? = null,
         uiKey: String? = null,
-        prewarm: Boolean = true
+        prewarm: Boolean = true,
+        continuation: ContinuationTarget? = null
     ): PrefetchedSelection? {
         val rankT0 = SystemClock.elapsedRealtime()
-        val selection = rank(groups, contentId, bingeOverride, runtimeMinutes, episode, exemptBingeGroup)
+        val selection = rank(groups, contentId, bingeOverride, runtimeMinutes, episode, film, exemptBingeGroup, continuation)
         // §2.7(a): the cache's total_ms covers this call AND any prewarm.
         // Logged here so the rank component needs no subtraction.
         val winnerLabel = if (selection == null) "none" else "yes"
@@ -171,10 +179,15 @@ class PrefetchSelectionSupplier @Inject constructor(
         bingeOverride: String?,
         runtimeMinutes: Int?,
         episode: Boolean,
-        exemptBingeGroup: String?
+        film: Boolean,
+        exemptBingeGroup: String?,
+        continuation: ContinuationTarget?
     ): PrefetchedSelection? {
         val settings = playerSettingsDataStore.playerSettings.first()
-        if (settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL) return null
+        // Spec 65 P6: the show's preferred source, as the press reads it (the same store, the same
+        // id). It plays in MANUAL mode too (D20), so only MANUAL without one ranks nothing.
+        val preferred = contentId?.let { preferredSourceDataStore.get(it) }
+        if (settings.streamAutoPlayMode == StreamAutoPlayMode.MANUAL && preferred == null) return null
 
         val installedAddonOrder = addonRepository.getInstalledAddons()
             .first()
@@ -211,8 +224,13 @@ class PrefetchSelectionSupplier @Inject constructor(
             settings = settings,
             installedAddonOrder = installedAddonOrder,
             preferredBingeGroup = preferredBingeGroup,
-            rejectedUrls = rejectedStreamUrls.snapshot(),
-            hiddenKeys = hiddenKeys
+            failures = failedReleases.snapshot(),
+            hiddenKeys = hiddenKeys,
+            filmSizeFloors = film,
+            continuation = continuation,
+            preferred = preferred,
+            // Spec 65 P8: the device's decoders, as the press reads them (one probe per process).
+            softwareOnly = DecodeCapability.softwareOnly()
         )
         val winner = AutoPlaySelection.select(
             streams = allStreams,

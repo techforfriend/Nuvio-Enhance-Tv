@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,21 +33,28 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -57,9 +65,13 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import com.nuvio.tv.core.player.DecodeCapability
+import com.nuvio.tv.core.stream.FacetFilter
 import com.nuvio.tv.core.stream.MissingUpstreamsTemplates
 import com.nuvio.tv.core.stream.HiddenStream
 import com.nuvio.tv.core.stream.ResolutionVerdict
+import com.nuvio.tv.core.stream.SavedStreamFilters
+import com.nuvio.tv.core.stream.StreamPin
 import com.nuvio.tv.core.stream.StreamLimitVerdict
 import com.nuvio.tv.core.stream.resolutionLabel
 import com.nuvio.tv.core.stream.resolutionVerdict
@@ -86,20 +98,30 @@ import kotlinx.coroutines.launch as coroutineLaunch
 
 /**
  * Sources panel (approved sandbox `u5-stream-screen-marquee` stages 1, 3-7; the player's Sources
- * panel, `u6-player-panels-marquee` stage 1; the stream limit, `spec-51-network-stream-limit` v3):
- * the compact-panel shell at the screen's end, eyebrow "SOURCES · N" ("19 OF 23" while the limit
- * hides streams), the Marquee chips with counts ([AddonFilterChips], the limit chip among them),
- * the hidden line when [view] lists hidden streams, a rule, then [streamPanelBody]: skeleton rows,
- * the empty / error block, or the [StreamSourceRow] list running to the panel edge. [view] is the
- * derived list (Spec 51 P4): its rows, effective selection and counts. [markedIndex] (-1 = none)
- * is the row carrying [marker]; [deadStreamUrls] rows dim; [contextParts] (the player's episode
- * sources, u6 stage 3: "S1 E4", the title) show under the eyebrow. The list's focus model is the
- * as-built one: the target row ([sourcePanelInitialFocusIndex]: the first result, or the marked
- * row when [focusMarkedRow], window note N6) takes focus as results arrive until the user moves,
- * Up from row 1 to the selected chip, Left/Right on rows switch the selection, F-5 restore on Back
- * from the player, and a re-derive that drops the focused row focuses the first
- * ([rowFocusAfterRederive]). Entering the empty or error state decides focus once (U4d lesson):
- * the selected chip, or Retry, unless the chips already hold focus.
+ * panel, `u6-player-panels-marquee` stage 1; the stream limit, `spec-51-network-stream-limit` v3;
+ * the row and sheets, `spec-65-stream-filters` v5 stages 1-7, 10): the compact-panel shell at
+ * the screen's end, the eyebrow ([SourcesEyebrow]), the row of circles and pinned chips
+ * ([SourcesCircleRow]; [saved] holds the profile's saved filters and pins, changed through
+ * [onSaveFilter] and [onTogglePin] from the sheets), the
+ * hidden line when [view] lists hidden streams, a rule, then [streamPanelBody]: skeleton rows, the
+ * empty / error block, or the [StreamSourceRow] list running to the panel edge. [view] is the
+ * derived list (Spec 51 P4): its rows, effective selection, counts and filter values. [sheet] is
+ * the sheet drawn over the panel ([SourcesSheet]); the caller holds it ([onSheetChange]) and closes
+ * it on Back. While one is open focus cannot enter the panel under it; on closing, focus returns
+ * to the sheet's circle. [markedIndex] (-1 = none) is the row carrying [marker]; [failureMarkFor]
+ * gives a row's Spec 75 failure mark (reason + age; it also covers this session's dead sources),
+ * null for none; [contextParts] (the player's episode sources, u6 stage 3: "S1 E4", the title) show
+ * under the eyebrow. The list's focus model is the as-built one: the target row
+ * ([sourcePanelInitialFocusIndex]: the first result, or the marked row when [focusMarkedRow],
+ * window note N6) takes focus as results arrive until the user moves, Up from row 1 to the sources
+ * circle, F-5 restore on Back from the player, and a re-derive that drops the focused row focuses
+ * the first ([rowFocusAfterRederive]). Left/Right on a row do nothing (Spec 65 D19: views change
+ * in the sheets). Entering the empty or error state decides focus once (U4d lesson): the sources
+ * circle, or Retry, unless the row of circles already holds focus. [onPreferSource] (Spec 65 P6,
+ * stages 12-14; null = no row menu: a film, or a list of another kind): hold OK on a row opens
+ * [SourceRowMenu], not in a view listing hidden streams; it gets the stream to prefer for the show,
+ * or null to stop. The view's leading [StreamListView.preferredCount] rows match the preference:
+ * the first says "Preferred" ([sourceRowMarker]), and the menu on any of them offers to stop.
  */
 @Composable
 internal fun StreamSourcesPanel(
@@ -108,10 +130,17 @@ internal fun StreamSourcesPanel(
     view: StreamListView,
     availableAddons: List<String>,
     sourceChips: List<SourceChipItem>,
+    saved: SavedStreamFilters,
     showFileSizeBadges: Boolean,
     useAddonFormatting: Boolean,
     accent: () -> Color,
+    sheet: SourcesPanelSheet?,
+    onSheetChange: (SourcesPanelSheet?) -> Unit,
     onListSelected: (StreamListSelection) -> Unit,
+    onFilterChange: (FacetFilter) -> Unit,
+    /** Saves the filter's values under the name given (the values' own label). */
+    onSaveFilter: (FacetFilter, String) -> Unit,
+    onTogglePin: (StreamPin) -> Unit,
     onRefresh: () -> Unit,
     onStreamSelected: (Stream) -> Unit,
     onRetry: () -> Unit,
@@ -120,46 +149,74 @@ internal fun StreamSourcesPanel(
     markedIndex: Int = -1,
     focusMarkedRow: Boolean = false,
     contextParts: List<String> = emptyList(),
-    deadStreamUrls: Set<String> = emptySet(),
+    failureMarkFor: (Stream) -> SourceFailureMark? = { null },
     /** Upstreams a gateway reported as failed; named in a foot under the list (Spec 42 D7). */
     missingUpstreams: List<String> = emptyList(),
     // F-5 (Stream screen): restore focus to the played row ([Stream.limitKey]) on Back from the player.
     focusedStreamKey: String? = null,
     shouldRestoreFocusedStream: Boolean = false,
-    onRestoreFocusedStreamHandled: () -> Unit = {}
+    onRestoreFocusedStreamHandled: () -> Unit = {},
+    /** False while the panel is leaving (the player's exit slide): a sheet cleared then returns no focus. */
+    returnFocusOnSheetClose: Boolean = true,
+    /** Opens the saved filters' phone page from the filters sheet; null (the player's panels) = no phone button. */
+    onEditFiltersOnPhone: (() -> Unit)? = null,
+    onPreferSource: ((Stream?) -> Unit)? = null
 ) {
     val streams = view.streams
     val selection = view.selection
+    // Spec 65 P8: what this device cannot play as released, for the rows' decode line. Known from
+    // the first frame once the process has queried its decoders (auto-play does, before a list
+    // shows); else nothing to say until the query, off the main thread, answers.
+    val context = LocalContext.current.applicationContext
+    val decode by produceState(
+        remember(context) { DecodeCapability.currentIfProbed(context) } ?: DecodeCapability.UNKNOWN,
+        context
+    ) {
+        value = DecodeCapability.current(context)
+    }
     var enter by remember { mutableStateOf(false) }
     var targetFocusRequestId by remember { mutableStateOf(0) }
+    // The last request the list carried out: a list that comes back (a filter that listed nothing
+    // switched off from a pinned chip) must not replay it and pull focus off the row of circles.
+    var servedTargetFocusRequestId by remember { mutableStateOf(0) }
     var listHasFocus by remember { mutableStateOf(false) }
     var userMovedFromTarget by remember { mutableStateOf(shouldRestoreFocusedStream) }
+    var rowMenu by remember { mutableStateOf<SourceRowMenuTarget?>(null) }
+    // Counts the prefer / stop choices: the list keeps the row they were made on in view as it moves.
+    var followRowRequestId by remember { mutableStateOf(0) }
     var targetFocusAssigned by remember { mutableStateOf(shouldRestoreFocusedStream) }
     val scope = rememberCoroutineScope()
     var focusJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val orderedAddonNames = remember(availableAddons, sourceChips) {
         sourceChipAddonNames(availableAddons, sourceChips)
     }
-    val chips = remember(orderedAddonNames, view.hiddenCount) {
-        chipRowSelections(orderedAddonNames, view.hiddenCount)
-    }
     val streamKeys = remember(streams) { streamRowKeys(streams) }
     val targetIndex = sourcePanelInitialFocusIndex(markedIndex, focusMarkedRow)
     val targetStreamKey = streamKeys.getOrNull(targetIndex)
-    val refreshFocusRequester = remember { FocusRequester() }
-    val selectionFocusRequesters = remember { mutableMapOf<StreamListSelection, FocusRequester>() }
-    val chipFocusRequesters = remember(chips) {
-        // Drop the requesters of chips that left the row
-        selectionFocusRequesters.keys.retainAll(chips.toSet())
-        chips.associateWith { selectionFocusRequesters.getOrPut(it) { FocusRequester() } }
-    }
-    /** Moves focus to [target]'s chip (a row's Left/Right, Up from row 1): the user has moved. */
-    fun focusChip(target: StreamListSelection) {
+    val circleFocus = remember { SourcesCircleFocus() }
+    /** Up from row 1: the sources circle takes focus, and the user has moved. */
+    fun focusSourcesCircle() {
         userMovedFromTarget = true
-        val requester = chipFocusRequesters[target] ?: return
         focusJob?.cancel()
         focusJob = scope.coroutineLaunch {
-            requester.requestFocusAfterFrames(frames = 1)
+            circleFocus.sources.requestFocusAfterFrames(frames = 1)
+        }
+    }
+    // The hidden sheet closes with its circle (nothing is hidden any more).
+    LaunchedEffect(sheet, view.hiddenCount) {
+        if (sheet == SourcesPanelSheet.HIDDEN && view.hiddenCount == 0) onSheetChange(null)
+    }
+    // A sheet that closed hands focus back to its circle; the sources circle when that one left.
+    var previousSheet by remember { mutableStateOf(sheet) }
+    val returnFocus by rememberUpdatedState(returnFocusOnSheetClose)
+    LaunchedEffect(sheet) {
+        val closed = if (sheet == null) previousSheet else null
+        previousSheet = sheet
+        if (closed == null || !returnFocus) return@LaunchedEffect
+        // The hidden circle left with its sheet when nothing is hidden any more.
+        val circleGone = closed == SourcesPanelSheet.HIDDEN && view.hiddenCount == 0
+        if (circleGone || !circleFocus.of(closed).requestFocusAfterFrames(frames = 1)) {
+            circleFocus.sources.requestFocusAfterFrames(frames = if (circleGone) 1 else 0)
         }
     }
 
@@ -177,7 +234,7 @@ internal fun StreamSourcesPanel(
             targetFocusRequestId += 1
         }
     }
-    // On the "All" tab, while the user has not moved, a target change as results arrive (a new
+    // On the All view, while the user has not moved, a target change as results arrive (a new
     // first item, or the marked row from a slower addon) moves focus to the new target.
     var trackedTargetStreamKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(targetStreamKey, selection, listHasFocus) {
@@ -193,155 +250,244 @@ internal fun StreamSourcesPanel(
         }
         trackedTargetStreamKey = targetStreamKey
     }
-    var chipsHaveFocus by remember { mutableStateOf(false) }
+    var circlesHaveFocus by remember { mutableStateOf(false) }
     val body = streamPanelBody(isLoading = isLoading, hasError = error != null, hasStreams = streams.isNotEmpty())
     val retryFocusRequester = remember { FocusRequester() }
-    // Focus is decided once per entry into a message state (U4d lesson): the chips keep it when
-    // they hold it, except on an error with no addon left standing, whose failed chips are
-    // removed 1.6 s later (the row would vanish under the focus). The latch the list uses for
-    // first-result focus is left alone, so results that follow still take focus.
+    // Focus is decided once per entry into a message state (U4d lesson): the circles keep it
+    // when they hold it. The latch the list uses for first-result focus is left alone, so
+    // results that follow still take focus.
     LaunchedEffect(body) {
         when (body) {
-            StreamPanelBody.ERROR -> if (!chipsHaveFocus || availableAddons.isEmpty()) {
-                retryFocusRequester.requestFocusAfterFrames()
-            }
-            StreamPanelBody.EMPTY -> if (!chipsHaveFocus) {
-                chipFocusRequesters[selection]?.requestFocusAfterFrames(frames = 1)
-            }
+            StreamPanelBody.ERROR -> if (!circlesHaveFocus) retryFocusRequester.requestFocusAfterFrames()
+            StreamPanelBody.EMPTY -> if (!circlesHaveFocus) circleFocus.sources.requestFocusAfterFrames(frames = 1)
             StreamPanelBody.LOADING, StreamPanelBody.LIST -> Unit
         }
     }
 
     val panel = NuvioTheme.marquee.stream
-    val sourcesTitle = stringResource(R.string.sources_title)
-    val shownOfTotal = eyebrowShownOfTotal(view)
-    val eyebrowCount = when {
-        isLoading -> "…"
-        shownOfTotal != null -> stringResource(R.string.stream_sources_shown_of_total, shownOfTotal.first, shownOfTotal.second)
-        else -> view.allCount.toString()
-    }
     val showHiddenLine = body == StreamPanelBody.LIST && view.listsHidden &&
         (view.limitVerdict != null || view.resolutionVerdict != null)
-    CompactPanel(
+    val sheetRows = remember(orderedAddonNames, availableAddons, sourceChips, view) {
+        sourcesSheetRows(orderedAddonNames, availableAddons, sourceChips, view)
+    }
+    val pins = remember(saved, view, availableAddons) { pinnedChips(saved, view, availableAddons) }
+    Box(
         modifier = modifier
             .width(panel.panelWidth)
-            .fillMaxHeight(),
-        contentPadding = PaddingValues(
-            start = panel.panelPaddingHorizontal,
-            top = panel.panelPaddingTop,
-            end = panel.panelPaddingHorizontal
-        )
+            .fillMaxHeight()
     ) {
-        PanelEyebrowText(
-            text = "$sourcesTitle · $eyebrowCount",
-            modifier = Modifier.padding(horizontal = panel.eyebrowInset)
-        )
-        if (contextParts.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(panel.contextTop))
-            PanelContextLine(parts = contextParts, modifier = Modifier.padding(horizontal = panel.eyebrowInset))
-        }
-        Spacer(modifier = Modifier.height(panel.panelGap))
-
-        // Chip row: All, the limit chip, the addons
-        Box(
+        CompactPanel(
             modifier = Modifier
-                .height(panel.chipHeight)
-                .onFocusChanged { chipsHaveFocus = it.hasFocus }
+                .fillMaxSize()
+                // Under an open sheet nothing takes focus: not by the D-pad, not a row's own request.
+                .focusProperties { onEnter = { if (sheet != null) cancelFocusChange() } }
+                .focusGroup(),
+            contentPadding = PaddingValues(
+                start = panel.panelPaddingHorizontal,
+                top = panel.panelPaddingTop,
+                end = panel.panelPaddingHorizontal
+            )
         ) {
-            androidx.compose.animation.AnimatedVisibility(
-                visible = sourceChips.isNotEmpty() || (!isLoading && availableAddons.isNotEmpty()),
-                enter = fadeIn(animationSpec = tween(300)),
-                exit = fadeOut(animationSpec = tween(300))
+            SourcesEyebrow(
+                view = view,
+                isLoading = isLoading,
+                accent = accent,
+                modifier = Modifier.padding(horizontal = panel.eyebrowInset)
+            )
+            if (contextParts.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(panel.contextTop))
+                PanelContextLine(parts = contextParts, modifier = Modifier.padding(horizontal = panel.eyebrowInset))
+            }
+            Spacer(modifier = Modifier.height(panel.panelGap))
+
+            Box(
+                modifier = Modifier
+                    .height(panel.chipHeight)
+                    .onFocusChanged { circlesHaveFocus = it.hasFocus }
             ) {
-                AddonFilterChips(
-                    addons = availableAddons,
-                    sourceChips = sourceChips,
+                SourcesCircleRow(
                     view = view,
-                    chips = chips,
-                    isStillFetching = isLoading,
+                    mark = sourcesCircleMark(isLoading, sourceChips),
+                    accent = accent,
+                    focus = circleFocus,
                     onRefresh = {
                         userMovedFromTarget = false
                         targetFocusAssigned = false
                         onRefresh()
                     },
-                    onSelected = onListSelected,
-                    refreshFocusRequester = refreshFocusRequester,
-                    chipFocusRequesters = chipFocusRequesters
+                    onOpenSheet = {
+                        userMovedFromTarget = true
+                        onSheetChange(it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    pins = pins,
+                    onPinClick = { chip ->
+                        userMovedFromTarget = true
+                        when (chip) {
+                            is PinnedChip.Filter -> onFilterChange(chip.filterOnClick)
+                            is PinnedChip.Addon -> onListSelected(chip.selectionOnClick)
+                        }
+                    }
                 )
             }
-        }
 
-        if (showHiddenLine) {
-            Spacer(modifier = Modifier.height(panel.limitLineTop))
-            HiddenStreamsLine(bitrate = view.limitVerdict, resolution = view.resolutionVerdict)
-        }
-        Spacer(modifier = Modifier.height(panel.panelGap))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(RULE_HEIGHT)
-                .background(panel.rule)
-        )
-        Spacer(modifier = Modifier.height(panel.panelGap))
+            if (showHiddenLine) {
+                Spacer(modifier = Modifier.height(panel.limitLineTop))
+                HiddenStreamsLine(bitrate = view.limitVerdict, resolution = view.resolutionVerdict)
+            }
+            Spacer(modifier = Modifier.height(panel.panelGap))
+            StreamRule()
+            Spacer(modifier = Modifier.height(panel.panelGap))
 
-        androidx.compose.animation.AnimatedVisibility(
-            visible = enter,
-            modifier = Modifier.weight(1f),
-            enter = fadeIn(animationSpec = tween(260)) +
-                slideInHorizontally(
-                    animationSpec = tween(260),
-                    initialOffsetX = { fullWidth -> (fullWidth * 0.06f).toInt() }
-                ),
-            exit = fadeOut(animationSpec = tween(120))
-        ) {
-            // Content area: the panel is its surface.
-            Box(modifier = Modifier.fillMaxSize()) {
-                when (body) {
-                    StreamPanelBody.LOADING -> StreamSkeletonRows()
-                    StreamPanelBody.ERROR -> StreamPanelMessage(
-                        title = stringResource(R.string.stream_error_fetch_failed),
-                        body = error,
-                        onRetry = onRetry,
-                        retryFocusRequester = retryFocusRequester
-                    )
-                    StreamPanelBody.EMPTY -> StreamPanelMessage(
-                        title = stringResource(R.string.stream_no_streams),
-                        body = stringResource(R.string.stream_no_streams_hint)
-                    )
-                    StreamPanelBody.LIST -> StreamsList(
-                        streams = streams,
-                        streamKeys = streamKeys,
-                        overLimitVerdicts = if (view.listsHidden) view.hiddenVerdicts else emptyMap(),
-                        onStreamSelected = onStreamSelected,
-                        focusedStreamKey = focusedStreamKey,
-                        shouldRestoreFocusedStream = shouldRestoreFocusedStream,
-                        onRestoreFocusedStreamHandled = onRestoreFocusedStreamHandled,
-                        targetIndex = targetIndex,
-                        targetStreamKey = targetStreamKey,
-                        targetFocusRequestId = targetFocusRequestId,
-                        selection = selection,
-                        chips = chips,
-                        showFileSizeBadges = showFileSizeBadges,
-                        useAddonFormatting = useAddonFormatting,
-                        marker = marker,
-                        markedIndex = markedIndex,
-                        deadStreamUrls = deadStreamUrls,
-                        accent = accent,
-                        onListSelected = {
-                            onListSelected(it)
-                            focusChip(it)
-                        },
-                        onUpFromFirstRow = { focusChip(selection) },
-                        onUserNavigatedFromTarget = {
-                            userMovedFromTarget = true
-                        },
-                        onFocusChanged = { listHasFocus = it }
-                    )
+            androidx.compose.animation.AnimatedVisibility(
+                visible = enter,
+                modifier = Modifier.weight(1f),
+                enter = fadeIn(animationSpec = tween(260)) +
+                    slideInHorizontally(
+                        animationSpec = tween(260),
+                        initialOffsetX = { fullWidth -> (fullWidth * 0.06f).toInt() }
+                    ),
+                exit = fadeOut(animationSpec = tween(120))
+            ) {
+                // Content area: the panel is its surface.
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (body) {
+                        StreamPanelBody.LOADING -> StreamSkeletonRows()
+                        StreamPanelBody.ERROR -> StreamPanelMessage(
+                            title = stringResource(R.string.stream_error_fetch_failed),
+                            body = error,
+                            // As Refresh: the rows that come back take focus again (Retry leaves).
+                            onRetry = {
+                                userMovedFromTarget = false
+                                targetFocusAssigned = false
+                                onRetry()
+                            },
+                            retryFocusRequester = retryFocusRequester
+                        )
+                        StreamPanelBody.EMPTY -> StreamPanelMessage(
+                            title = stringResource(R.string.stream_no_streams),
+                            // A filter emptied the view: the streams are there, the filter lists none.
+                            body = stringResource(
+                                if (view.filteredOut > 0) R.string.stream_no_streams_filtered else R.string.stream_no_streams_hint
+                            )
+                        )
+                        StreamPanelBody.LIST -> StreamsList(
+                            streams = streams,
+                            streamKeys = streamKeys,
+                            overLimitVerdicts = if (view.listsHidden) view.hiddenVerdicts else emptyMap(),
+                            onStreamSelected = onStreamSelected,
+                            focusedStreamKey = focusedStreamKey,
+                            shouldRestoreFocusedStream = shouldRestoreFocusedStream,
+                            onRestoreFocusedStreamHandled = onRestoreFocusedStreamHandled,
+                            targetIndex = targetIndex,
+                            targetStreamKey = targetStreamKey,
+                            targetFocusRequestId =
+                                targetFocusRequestId.takeIf { it != servedTargetFocusRequestId } ?: 0,
+                            onTargetFocusRequestServed = { servedTargetFocusRequestId = it },
+                            selection = selection,
+                            showFileSizeBadges = showFileSizeBadges,
+                            useAddonFormatting = useAddonFormatting,
+                            marker = marker,
+                            markedIndex = markedIndex,
+                            failureMarkFor = failureMarkFor,
+                            decode = decode,
+                            accent = accent,
+                            preferredCount = view.preferredCount,
+                            followRowRequestId = followRowRequestId,
+                            onRowMenu = if (onPreferSource != null && !view.listsHidden) {
+                                { target ->
+                                    // The viewer is acting on this row: results that follow leave focus on it.
+                                    userMovedFromTarget = true
+                                    rowMenu = target
+                                }
+                            } else {
+                                null
+                            },
+                            onUpFromFirstRow = ::focusSourcesCircle,
+                            onUserNavigatedFromTarget = {
+                                userMovedFromTarget = true
+                            },
+                            onFocusChanged = { listHasFocus = it }
+                        )
+                    }
                 }
             }
+            if (body == StreamPanelBody.LIST) MissingUpstreamsFoot(missingUpstreams)
         }
-        if (body == StreamPanelBody.LIST) MissingUpstreamsFoot(missingUpstreams)
+        if (sheet != null) {
+            SourcesSheet(
+                sheet = sheet,
+                view = view,
+                rows = sheetRows,
+                saved = saved,
+                accent = accent,
+                onListSelected = onListSelected,
+                onFilterChange = onFilterChange,
+                onSaveFilter = onSaveFilter,
+                onTogglePin = onTogglePin,
+                onClose = { onSheetChange(null) },
+                onEditOnPhone = onEditFiltersOnPhone
+            )
+        }
     }
+    val menu = rowMenu
+    if (menu != null && onPreferSource != null) {
+        SourceRowMenu(
+            target = menu,
+            accent = accent,
+            onPlay = { stream ->
+                rowMenu = null
+                onStreamSelected(stream)
+            },
+            onPrefer = { stream ->
+                rowMenu = null
+                followRowRequestId += 1
+                onPreferSource(stream)
+            },
+            onDismiss = { rowMenu = null }
+        )
+    }
+}
+
+/**
+ * The panel's eyebrow (Spec 51 P6; Spec 65 stages 1, 3, 5, 7): "SOURCES · 14"; "19 OF 23" while
+ * the limits hide streams or a filter is on, then the filter's values in the ambient [accent]
+ * ("4 OF 16 · 4K · ATMOS"); "2 HIDDEN" in amber while [view] lists hidden streams. Its own
+ * composable, so an animating accent recomposes only this line.
+ */
+@Composable
+private fun SourcesEyebrow(
+    view: StreamListView,
+    isLoading: Boolean,
+    accent: () -> Color,
+    modifier: Modifier = Modifier
+) {
+    val title = stringResource(R.string.sources_title).uppercase()
+    val shownOfTotal = eyebrowShownOfTotal(view)
+    val count = when {
+        isLoading -> "…"
+        view.listsHidden -> stringResource(R.string.stream_eyebrow_hidden, view.streams.size)
+        shownOfTotal != null ->
+            stringResource(R.string.stream_sources_shown_of_total, shownOfTotal.first, shownOfTotal.second)
+        else -> view.allCount.toString()
+    }.uppercase()
+    // Filters never apply to the hidden view, so it is not named over one.
+    val filterName = facetFilterLabel(view.filter, stringResource(R.string.stream_facet_unknown))
+        ?.takeIf { !view.listsHidden }
+        ?.uppercase()
+    val warn = NuvioTheme.marquee.stream.limitWarn
+    val accentColor = if (filterName != null) accent() else Color.Unspecified
+    val text = remember(title, count, filterName, view.listsHidden, isLoading, warn, accentColor) {
+        buildAnnotatedString {
+            append("$title · ")
+            if (view.listsHidden && !isLoading) withStyle(SpanStyle(color = warn)) { append(count) } else append(count)
+            if (filterName != null) {
+                append(" · ")
+                withStyle(SpanStyle(color = accentColor)) { append(filterName) }
+            }
+        }
+    }
+    PanelEyebrowText(text = text, modifier = modifier, maxLines = 1)
 }
 
 /** Centres the hidden line's 14 dp icon on its first 17 sp text line (the mockup's 1 px). */
@@ -352,12 +498,12 @@ private val HIDDEN_LINE_ICON_TOP = 1.dp
  * stages b-chip-open, b-mixed): a warning icon, then in white "Hidden: " and each reason present,
  * the resolution limit's first ("over your 1080p limit, or too fast to seek smoothly on this TV."),
  * then what the network test measured and the limit it keeps when [bitrate] came from it.
- * [bitrate] is [StreamListView.limitVerdict] (the chip's own figure and service), [resolution]
+ * [bitrate] is [StreamListView.limitVerdict] (the hidden sheet's own figure and service), [resolution]
  * [StreamListView.resolutionVerdict]; at least one is set. Up to three lines (the approved line wraps
  * to three). Not focusable.
  */
 @Composable
-private fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: ResolutionVerdict?) {
+internal fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: ResolutionVerdict?) {
     val tokens = NuvioTheme.marquee.stream
     val source = bitrate?.source
     val resolutionWhy = resolution?.let {
@@ -416,10 +562,15 @@ private fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: Resoluti
 
 /**
  * The eyebrow's "shown of total" while the limit hides streams (Spec 51 P6: "19 OF 23"; "0 OF 23"
- * for a view listing only hidden streams); null when nothing is hidden (the eyebrow counts All).
+ * for a view listing only hidden streams), or a filter is on (Spec 65: "4 OF 16", All's rows under
+ * the filter); null when neither (the eyebrow counts All).
  */
-internal fun eyebrowShownOfTotal(view: StreamListView): Pair<Int, Int>? =
-    if (view.hiddenCount > 0) (view.total - view.hiddenCount) to view.total else null
+internal fun eyebrowShownOfTotal(view: StreamListView): Pair<Int, Int>? = when {
+    // allCount counts hidden rows when nothing else is listed (deriveStreamList's count rule), never shown ones.
+    !view.filter.isEmpty -> (if (view.total == view.hiddenCount) 0 else view.allCount) to view.total
+    view.hiddenCount > 0 -> (view.total - view.hiddenCount) to view.total
+    else -> null
+}
 
 /**
  * A hidden row's bitrate as shown (Spec 51 P6): rounded up, so a stream hidden for being over a
@@ -431,8 +582,8 @@ internal fun overLimitMbpsLabel(verdict: StreamLimitVerdict): Int = ceil(verdict
  * The row to focus after a re-derive (Spec 51 P6, r3 / R4-5): when the list held focus on
  * [focusedRow], the effective [selection] is still [selectionBefore] and [streamKeys] no longer
  * hold that row (a late runtime, an addon filling an empty view, a network test writing tables),
- * the view's first row; else null. A changed selection (Left/Right on a row) is not a re-derive:
- * that move keeps focus on its chip. [rescuePending]: an earlier rescue was cut short by these
+ * the view's first row; else null. A changed selection (picked in a sheet) is not a re-derive:
+ * focus returns to that sheet's circle. [rescuePending]: an earlier rescue was cut short by these
  * rows before focus landed, so the new first row takes it, under the same guards: a changed
  * selection or a focused row that survives (the user moved meanwhile) cancels it.
  */
@@ -482,12 +633,7 @@ private fun MissingUpstreamsFoot(names: List<String>) {
         }
     }
     Column(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(RULE_HEIGHT)
-                .background(panel.rule)
-        )
+        StreamRule()
         Row(
             modifier = Modifier.padding(
                 start = panel.eyebrowInset,
@@ -556,7 +702,7 @@ private fun PanelContextLine(parts: List<String>, modifier: Modifier = Modifier)
     )
 }
 
-/** What the sources panel shows under its chips (stages 1, 4, 6, 7). */
+/** What the sources panel shows under its circles (stages 1, 4, 6, 7). */
 internal enum class StreamPanelBody { LOADING, ERROR, EMPTY, LIST }
 
 /** The as-built order: loading first, then a fetch error, then no streams, else the list. */
@@ -666,6 +812,20 @@ private class ListFocusMemo {
     var selection: StreamListSelection? = null
     /** A first-row rescue is under way; a restart by new rows keeps it (rowFocusAfterRederive). */
     var rescuePending = false
+    /** The row a prefer / stop choice was made on: scrolled back into view once the list moves it. */
+    var followRowKey: String? = null
+}
+
+/** A row's last layout position; read when its menu opens, never observed (rows scroll). */
+private class RowAnchor {
+    var coordinates: LayoutCoordinates? = null
+}
+
+/** Whether the item at [index] lies wholly inside the list's viewport. */
+private fun LazyListState.showsWhole(index: Int): Boolean {
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return false
+    return item.offset >= info.viewportStartOffset && item.offset + item.size <= info.viewportEndOffset
 }
 
 /** The list's per-request focus attempts: one per frame, about half a second. */
@@ -700,20 +860,22 @@ private fun StreamsList(
     targetIndex: Int,
     targetStreamKey: String?,
     targetFocusRequestId: Int = 0,
+    onTargetFocusRequestServed: (Int) -> Unit = {},
     selection: StreamListSelection,
-    chips: List<StreamListSelection>,
     showFileSizeBadges: Boolean = true,
     useAddonFormatting: Boolean,
     marker: SourceRowMarker?,
     markedIndex: Int,
-    deadStreamUrls: Set<String>,
+    failureMarkFor: (Stream) -> SourceFailureMark?,
+    decode: DecodeCapability,
     accent: () -> Color,
-    onListSelected: (StreamListSelection) -> Unit = {},
+    preferredCount: Int = 0,
+    followRowRequestId: Int = 0,
+    onRowMenu: ((SourceRowMenuTarget) -> Unit)? = null,
     onUpFromFirstRow: () -> Unit = {},
     onUserNavigatedFromTarget: () -> Unit = {},
     onFocusChanged: (Boolean) -> Unit = {}
 ) {
-    val isRtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
     val tokens = NuvioTheme.marquee.stream
     val lastKeyRepeatDispatchRef = remember { java.util.concurrent.atomic.AtomicLong(0L) }
     val restoreFocusRequester = remember { FocusRequester() }
@@ -737,6 +899,8 @@ private fun StreamsList(
         val requestedKey = targetStreamKey
         if (targetFocusRequestId <= 0 || requestedKey == null) return@LaunchedEffect
         streamListState.scrollAndFocusRow(targetIndex, { streamFocusRequesters[requestedKey] }) { targetRowHasFocus }
+        // Not reached when the list leaves first: the request is still owed when it returns.
+        onTargetFocusRequestServed(targetFocusRequestId)
     }
 
     // A re-derive that drops the focused row (rowFocusAfterRederive): read the focus in the
@@ -765,6 +929,26 @@ private fun StreamsList(
         }
         // Not reached when new rows cancel this effect: the restarted one takes the rescue over.
         focusMemo.rescuePending = false
+    }
+
+    // Spec 65 P6: a prefer / stop choice moves its row (to the top, or back down). The row keeps
+    // focus (a focused item stays composed), so the list scrolls to it once it has moved out of view.
+    LaunchedEffect(followRowRequestId) {
+        if (followRowRequestId > 0) focusMemo.followRowKey = focusMemo.rowKey
+    }
+    LaunchedEffect(streamKeys) {
+        val followKey = focusMemo.followRowKey ?: return@LaunchedEffect
+        val index = streamKeys.indexOf(followKey)
+        // The viewer moved on, or the row left the list: nothing to follow any more.
+        if (focusMemo.rowKey != followKey || index < 0) {
+            focusMemo.followRowKey = null
+            return@LaunchedEffect
+        }
+        withFrameNanos { }
+        if (!streamListState.showsWhole(index)) {
+            focusMemo.followRowKey = null
+            streamListState.animateScrollToItem(index)
+        }
     }
 
     val restoreRow = remember(streams, focusedStreamKey) { restoreRowIndex(streams, focusedStreamKey) }
@@ -802,12 +986,9 @@ private fun StreamsList(
                 if (event.key == Key.DirectionDown || event.key == Key.DirectionUp) {
                     onUserNavigatedFromTarget()
                 }
-                if (chips.size < 2) return@onKeyEvent false
-                // Left/Right step through the chips (All, the limit chip, addons); consumed at
-                // either end so focus never leaves the list sideways.
-                val step = horizontalStep(event.key, isRtl) ?: return@onKeyEvent false
-                chips.stepFrom(selection, step)?.let(onListSelected)
-                true
+                // Left/Right do nothing on a row (Spec 65 D19); consumed so focus never leaves
+                // the list sideways.
+                event.key == Key.DirectionLeft || event.key == Key.DirectionRight
             },
         verticalArrangement = Arrangement.spacedBy(tokens.rowGap),
         contentPadding = PaddingValues(bottom = tokens.panelPaddingHorizontal)
@@ -826,17 +1007,27 @@ private fun StreamsList(
             // No connection warm on focus (T25): focus is not consent, and a GET on a
             // resolve-style addon URL asks the debrid service for a file the user never
             // picked. The press warms (S1g, onStreamSelected).
+            val anchor = remember { RowAnchor() }
             StreamSourceRow(
                 stream = stream,
                 showSize = showFileSizeBadges,
                 useAddonFormatting = useAddonFormatting,
-                marker = marker.takeIf { index == markedIndex },
-                dimmed = stream.getStreamUrl()?.let { it in deadStreamUrls } == true,
+                marker = sourceRowMarker(index, marker, markedIndex, preferredCount),
+                onLongPress = onRowMenu?.let { open ->
+                    {
+                        anchor.coordinates?.takeIf { it.isAttached }?.boundsInWindow()?.let { bounds ->
+                            open(SourceRowMenuTarget(stream, bounds, preferred = index < preferredCount))
+                        }
+                    }
+                },
+                failureMark = remember(stream, failureMarkFor) { failureMarkFor(stream) },
                 overLimitMbps = overLimit?.bitrate?.let(::overLimitMbpsLabel),
                 overResolutionCap = overLimit?.resolution?.cap,
+                decode = decode,
                 accent = accent,
                 onClick = { onStreamSelected(stream) },
                 modifier = Modifier
+                    .then(if (onRowMenu != null) Modifier.onGloballyPositioned { anchor.coordinates = it } else Modifier)
                     .focusRequester(focusRequester)
                     .onFocusChanged {
                         if (it.isFocused) focusMemo.rowKey = rowKey
@@ -860,4 +1051,13 @@ private fun StreamsList(
     }
 }
 
-private val RULE_HEIGHT = 1.dp
+/** The panel's and its sheets' 1 dp `stream.rule`. */
+@Composable
+internal fun StreamRule() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(NuvioTheme.marquee.stream.rule)
+    )
+}

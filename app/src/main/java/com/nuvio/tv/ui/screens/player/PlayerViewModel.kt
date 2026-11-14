@@ -57,6 +57,12 @@ import com.nuvio.tv.core.player.attachHostActivity
 import com.nuvio.tv.core.player.attachMpvView
 import com.nuvio.tv.core.player.bindExoSubtitleView
 import com.nuvio.tv.core.player.consumeNetworkTestNotice
+import com.nuvio.tv.core.player.failureBoxEngineTarget
+import com.nuvio.tv.core.player.loadSourceListForFailureBox
+import com.nuvio.tv.core.player.nextSourceAfterPlaying
+import com.nuvio.tv.core.player.playNextSourceFromFailureBox
+import com.nuvio.tv.core.player.retryFromFailureBox
+import com.nuvio.tv.core.player.switchEngineFromFailureBox
 import com.nuvio.tv.core.player.frameRateLabel
 import com.nuvio.tv.core.player.hideControls
 import com.nuvio.tv.core.player.isRefreshMatch
@@ -83,7 +89,9 @@ class PlayerViewModel @Inject constructor(
     private val streamLinkCacheDataStore: StreamLinkCacheDataStore,
     private val streamBadgeSettingsDataStore: StreamBadgeSettingsDataStore,
     private val bingeGroupCacheDataStore: com.nuvio.tv.data.local.BingeGroupCacheDataStore,
-    private val rejectedStreamUrls: com.nuvio.tv.core.stream.RejectedStreamUrls,
+    private val savedStreamFiltersDataStore: com.nuvio.tv.data.local.SavedStreamFiltersDataStore,
+    private val preferredSourceDataStore: com.nuvio.tv.data.local.PreferredSourceDataStore,
+    private val failedReleases: com.nuvio.tv.core.stream.FailedReleases,
     private val layoutPreferenceDataStore: com.nuvio.tv.data.local.LayoutPreferenceDataStore,
     private val watchedItemsPreferences: com.nuvio.tv.data.local.WatchedItemsPreferences,
     private val trackPreferenceDataStore: com.nuvio.tv.data.local.TrackPreferenceDataStore,
@@ -126,7 +134,8 @@ class PlayerViewModel @Inject constructor(
         streamLinkCacheDataStore = streamLinkCacheDataStore,
         streamBadgeSettingsDataStore = streamBadgeSettingsDataStore,
         bingeGroupCacheDataStore = bingeGroupCacheDataStore,
-        rejectedStreamUrls = rejectedStreamUrls,
+        preferredSourceDataStore = preferredSourceDataStore,
+        failedReleases = failedReleases,
         layoutPreferenceDataStore = layoutPreferenceDataStore,
         watchedItemsPreferences = watchedItemsPreferences,
         trackPreferenceDataStore = trackPreferenceDataStore,
@@ -139,6 +148,20 @@ class PlayerViewModel @Inject constructor(
         savedStateHandle = savedStateHandle,
         scope = viewModelScope
     )
+
+    /** Whether a preferred source can be kept for what is playing (Spec 65 P6): its content id is known. */
+    val canPreferSource: Boolean = controller.contentId != null
+
+    /** The profile's saved filters and Sources-row pins, for both Sources panels (Spec 65 P2). */
+    val savedStreamFilters = savedStreamFiltersDataStore.state
+
+    fun saveStreamFilter(filter: com.nuvio.tv.core.stream.FacetFilter, name: String) {
+        viewModelScope.launch { savedStreamFiltersDataStore.save(filter, name) }
+    }
+
+    fun toggleStreamPin(pin: com.nuvio.tv.core.stream.StreamPin) {
+        viewModelScope.launch { savedStreamFiltersDataStore.togglePin(pin) }
+    }
 
     val uiState: StateFlow<PlayerUiState>
         get() = controller.uiState
@@ -987,6 +1010,33 @@ class PlayerViewModel @Inject constructor(
     fun getCurrentStreamUrl(): String = controller.getCurrentStreamUrl()
 
     fun getCurrentHeaders(): Map<String, String> = controller.getCurrentHeaders()
+
+    /** Spec 75 S6: the failure store's marks now (the Sources panels' rows), read off the main thread. */
+    suspend fun recentFailures(): com.nuvio.tv.core.stream.RecentFailures =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { failedReleases.recent() }
+
+    /** Spec 86 R3: what the error box can offer now (an untried source, the other engine). */
+    internal fun failureBoxOptions(): FailureBoxOptions = FailureBoxOptions(
+        nextSource = controller.nextSourceAfterPlaying() != null,
+        engineTarget = controller.failureBoxEngineTarget()
+    )
+
+    /** Spec 86 R3: the box is up; load the playing item's list if it has none, for Next source. */
+    fun onFailureBoxShown() {
+        controller.loadSourceListForFailureBox()
+    }
+
+    fun playNextSourceFromFailureBox() {
+        controller.playNextSourceFromFailureBox()
+    }
+
+    fun retryFromFailureBox() {
+        controller.retryFromFailureBox()
+    }
+
+    fun switchEngineFromFailureBox() {
+        controller.switchEngineFromFailureBox()
+    }
 
     fun stopAndRelease() {
         controller.stopAndRelease()

@@ -1,5 +1,6 @@
 package com.nuvio.tv.core.player
 
+import com.nuvio.tv.core.stream.FailureReason
 import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.NonCancellable
@@ -67,11 +68,11 @@ internal fun PlayerRuntimeController.onRuntimeMismatchChoice(playAnyway: Boolean
 
 /**
  * Spec 42 P2 (F-2): a rejected stream was saved as this title's preferred source when it started
- * (last link + binge group). Drop both and mark the URL rejected, so neither Reuse last link,
- * the remembered group nor auto-select brings it back.
+ * (last link + binge group). Drop both and record it as the wrong file (Spec 65 P5: its URLs and
+ * release, 30 days), so neither Reuse last link, the remembered group nor auto-select brings it back.
  */
 private fun PlayerRuntimeController.forgetRejectedStream() {
-    rejectedStreamUrls.add(currentStreamUrl)
+    recordPlaybackFailure(FailureReason.WRONG_FILE, playingListEntry())
     val key = streamCacheKey
     val cid = contentId
     scope.launch(NonCancellable) {

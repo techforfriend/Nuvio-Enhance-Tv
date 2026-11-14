@@ -18,6 +18,22 @@ class PlaybackRowRulesTest {
     private fun reason(row: PlaybackRow, settings: PlayerSettings) = playbackRowDimReason(row, settings)
 
     @Test
+    fun `wait after display switch needs frame rate matching`() {
+        assertEquals(
+            R.string.playback_needs_frame_rate_matching,
+            reason(PlaybackRow.AFR_SETTLE_HOLD, PlayerSettings())
+        )
+        // Resolution matching alone never switches the display mode (D10).
+        assertEquals(
+            R.string.playback_needs_frame_rate_matching,
+            reason(PlaybackRow.AFR_SETTLE_HOLD, PlayerSettings(resolutionMatchingEnabled = true))
+        )
+        listOf(FrameRateMatchingMode.START, FrameRateMatchingMode.START_STOP).forEach { mode ->
+            assertNull(reason(PlaybackRow.AFR_SETTLE_HOLD, PlayerSettings(frameRateMatchingMode = mode)))
+        }
+    }
+
+    @Test
     fun `auto-skip rows need Skip Intro`() {
         assertEquals(R.string.playback_needs_skip_intro, reason(PlaybackRow.AUTO_SKIP, PlayerSettings(skipIntroEnabled = false)))
         assertNull(reason(PlaybackRow.AUTO_SKIP, PlayerSettings(skipIntroEnabled = true)))
@@ -170,6 +186,20 @@ class PlaybackRowRulesTest {
         )
         assertNull(
             reason(PlaybackRow.REUSE_BINGE_GROUP, PlayerSettings(streamAutoPlayPreferBingeGroupForNextEpisode = true))
+        )
+    }
+
+    @Test
+    fun `HDR subtitle rows need the separate HDR style`() {
+        assertEquals(
+            R.string.playback_needs_hdr_subtitle_style,
+            reason(PlaybackRow.HDR_SUBTITLE_STYLE, PlayerSettings())
+        )
+        assertNull(
+            reason(
+                PlaybackRow.HDR_SUBTITLE_STYLE,
+                PlayerSettings(subtitleStyle = SubtitleStyleSettings(hdrStyleEnabled = true))
+            )
         )
     }
 

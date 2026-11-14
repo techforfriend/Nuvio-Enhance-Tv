@@ -62,7 +62,8 @@ private class PillAnchor {
  * shown filter, stage 1) and opens Discover's compact panel under it ([eyebrow], [options], built
  * only while it is open; a tick on [selectedValue]). OK on an option closes it and calls
  * [onSelect]; Back closes unchanged. Focus returns to the pill. Callers put `focusRequester` in
- * [modifier].
+ * [modifier]. [showLabel] false draws the value only ([label] still names it to accessibility; the
+ * View picker, Spec 67 D7); [alignEnd] lines the panel up with the pill's end.
  */
 @Composable
 internal fun LiveTvPicker(
@@ -75,7 +76,9 @@ internal fun LiveTvPicker(
     selectedValue: String,
     onOpen: () -> Unit,
     onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showLabel: Boolean = true,
+    alignEnd: Boolean = false
 ) {
     val pillRequester = remember { FocusRequester() }
     var openAt by remember { mutableStateOf<Rect?>(null) }
@@ -90,6 +93,7 @@ internal fun LiveTvPicker(
         value = value,
         active = active,
         all = all,
+        showLabel = showLabel,
         onOpen = { bounds ->
             onOpen()
             openAt = bounds
@@ -98,7 +102,7 @@ internal fun LiveTvPicker(
     )
     openAt?.let { bounds ->
         val initial = remember { FocusRequester() }
-        MarqueeAnchoredPanel(anchor = bounds, onDismissRequest = close, initialFocus = initial) {
+        MarqueeAnchoredPanel(anchor = bounds, onDismissRequest = close, alignEnd = alignEnd, initialFocus = initial) {
             MarqueePickerOptionList(
                 title = eyebrow,
                 options = options(),
@@ -114,7 +118,7 @@ internal fun LiveTvPicker(
 }
 
 /**
- * `.l38p`: [label] in small type, the [value], a chevron; [pillHeight] tall like the filter pills.
+ * `.l38p`: [label] in small type (unless not [showLabel]), the [value], a chevron; [pillHeight] tall like the filter pills.
  * Glass when the pickers are the shown filter ([active]) and it holds a value; at All ([all]) a
  * hairline with dim text; a value while Favorites or Recents show = a hairline with white text.
  * Focused = white, black text.
@@ -125,6 +129,7 @@ private fun LiveTvPickerPill(
     value: String,
     active: Boolean,
     all: Boolean,
+    showLabel: Boolean,
     onOpen: (Rect) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -163,8 +168,10 @@ private fun LiveTvPickerPill(
                 .padding(start = live.pillPaddingHorizontal, end = live.pickerPaddingEnd),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = label, style = NuvioTheme.textStyles.caption, color = secondary, maxLines = 1)
-            Spacer(modifier = Modifier.width(live.pickerInnerGap))
+            if (showLabel) {
+                Text(text = label, style = NuvioTheme.textStyles.caption, color = secondary, maxLines = 1)
+                Spacer(modifier = Modifier.width(live.pickerInnerGap))
+            }
             // Category values can be playlist groups of any length.
             Text(
                 text = value,

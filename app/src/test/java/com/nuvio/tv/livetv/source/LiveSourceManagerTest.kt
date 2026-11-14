@@ -4,6 +4,8 @@ import com.nuvio.tv.livetv.data.ChannelRepository
 import com.nuvio.tv.livetv.data.GuideRepository
 import com.nuvio.tv.livetv.model.EpgOverride
 import com.nuvio.tv.livetv.model.EpgRef
+import com.nuvio.tv.livetv.parse.EpgChannel
+import com.nuvio.tv.livetv.parse.EpgProgramme
 import com.nuvio.tv.livetv.parse.EpgSnapshot
 import com.nuvio.tv.livetv.parse.XmltvNowNextParser
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -15,6 +17,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -26,6 +29,7 @@ import org.kxml2.io.KXmlParser
 import okio.Buffer
 import java.io.File
 import java.time.Instant
+import java.time.ZoneOffset
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LiveSourceManagerTest {
@@ -40,6 +44,7 @@ class LiveSourceManagerTest {
     private lateinit var store: SourceStore
     private lateinit var channels: ChannelRepository
     private lateinit var guides: GuideRepository
+    private lateinit var pack: PackStore
 
     @Before
     fun setUp() {
@@ -47,6 +52,7 @@ class LiveSourceManagerTest {
         store = SourceStore(tmp.root, io)
         channels = ChannelRepository(tmp.root, { now }, io)
         guides = GuideRepository(tmp.root, io)
+        pack = PackStore(tmp.root, io)
     }
 
     @After
@@ -62,11 +68,15 @@ class LiveSourceManagerTest {
         IptvMetadataRepository(tmp.root, SourceFetcher(OkHttpClient(), io), { now }, io, "http://127.0.0.1:1/"),
         SourceFetcher(OkHttpClient(), io, maxTextBytes),
         StremioTvAdapter(SourceFetcher(OkHttpClient(), io)),
-        XmltvNowNextParser({ KXmlParser() }),
+        XmltvNowNextParser({ KXmlParser() }, maxProgrammesPerChannel = LiveSourceManager.DAY_WINDOW_MAX_PROGRAMMES),
         { File(PRESET_PATH).inputStream() },
         { now },
         { "s${++ids}" },
-        io
+        io,
+        // Not UTC (the usual CI zone): a window taken from the system zone instead would show.
+        { ZoneOffset.ofHours(-6) },
+        pack = pack,
+        scans = PackScanStore(tmp.root, io)
     )
 
     private fun playlist(vararg ids: String) = buildString {
@@ -276,7 +286,15 @@ class LiveSourceManagerTest {
         assertEquals("in", guide.country)
         assertEquals(1, guide.channelCount) // Star Jalsha matched by name inside India
         assertNull(guide.lastError)
-        assertEquals("Bigg Boss Bangla", guides.guides.value.getValue(guide.id).nowNext("542998", now).first?.title)
+        val snapshot = guides.guides.value.getValue(guide.id)
+        assertEquals("Bigg Boss Bangla", snapshot.nowNext("542998", now).first?.title)
+        // Spec 67 G1c: today and tomorrow at UTC-6 (now is 20:15 on the 18th there), today's earlier
+        // programmes kept for the day schedule.
+        assertEquals(Instant.parse("2026-10-18T06:00:00Z").toEpochMilli(), snapshot.windowStartMs)
+        assertEquals(Instant.parse("2026-10-20T06:00:00Z").toEpochMilli(), snapshot.windowEndMs)
+        val first = snapshot.programmes.getValue("542998").first()
+        assertEquals(Instant.parse("2026-10-19T00:00:00Z").toEpochMilli(), first.startMs)
+        assertTrue(first.stopMs <= now)
 
         val cold = GuideRepository(tmp.root, io)
         cold.load(listOf(guide.id))
@@ -334,8 +352,8 @@ class LiveSourceManagerTest {
         assertNull(complete.lastError)
         assertTrue(guides.guides.value.getValue(guide.id).complete)
 
-        // Once the complete snapshot's window has passed, a partial replaces it.
-        now += 7L * 60 * 60 * 1000
+        // After local midnight the complete snapshot no longer reaches the end of tomorrow: a partial replaces it.
+        now = Instant.parse("2026-10-19T06:30:00Z").toEpochMilli()
         server.enqueue(MockResponse().setBody(epgHalf()))
         val late = manager.refresh(guide.id)!!
         assertEquals(now, late.lastRefreshMs)
@@ -376,23 +394,152 @@ class LiveSourceManagerTest {
     fun `stale rule`() {
         val hour = 60L * 60 * 1000
         val m3u = LiveSource("a", SourceKind.M3U, "A", "https://x/a.m3u", 0, lastRefreshMs = 0)
-        assertTrue(LiveSourceManager.isStale(m3u.copy(lastRefreshMs = null), null, 0))
-        assertTrue(!LiveSourceManager.isStale(m3u, null, 23 * hour))
-        assertTrue(LiveSourceManager.isStale(m3u, null, 24 * hour))
+        val utc = ZoneOffset.UTC
+        assertTrue(LiveSourceManager.isStale(m3u.copy(lastRefreshMs = null), null, 0, utc))
+        assertTrue(!LiveSourceManager.isStale(m3u, null, 23 * hour, utc))
+        assertTrue(LiveSourceManager.isStale(m3u, null, 24 * hour, utc))
 
         val guide = m3u.copy(kind = SourceKind.XMLTV)
-        val snapshot = EpgSnapshot(emptyMap(), emptyMap(), 0, 6 * hour, complete = true)
-        assertTrue(LiveSourceManager.isStale(guide, null, hour))
-        assertTrue(!LiveSourceManager.isStale(guide, snapshot, 4 * hour))
-        assertTrue(LiveSourceManager.isStale(guide, snapshot, 5 * hour))
+        assertTrue(LiveSourceManager.isStale(guide, null, hour, utc))
+        // A pre-G1c 6 h window does not reach the end of tomorrow: stale at once.
+        assertTrue(LiveSourceManager.isStale(guide, EpgSnapshot(emptyMap(), emptyMap(), 0, 6 * hour, complete = true), hour, utc))
 
-        val partial = snapshot.copy(complete = false)
-        assertTrue(!LiveSourceManager.isStale(guide, partial, hour / 2))
-        assertTrue(LiveSourceManager.isStale(guide, partial, hour))
+        // Spec 67 G1c day window (refreshed 20:00): fresh until local midnight, stale after it.
+        val day = 24 * hour
+        val (start, end) = LiveSourceManager.dayWindow(20 * hour, utc)
+        assertEquals(0L to 2 * day, start to end)
+        val window = EpgSnapshot(emptyMap(), emptyMap(), start, end, complete = true)
+        val evening = guide.copy(lastRefreshMs = 20 * hour)
+        assertTrue(!LiveSourceManager.isStale(evening, window, day - 1, utc))
+        assertTrue(LiveSourceManager.isStale(evening, window, day, utc))
+        // A zone change west moves the end of tomorrow later: 20:00 UTC is 14:00 the same day at UTC-6.
+        assertTrue(LiveSourceManager.isStale(evening, window, 20 * hour, ZoneOffset.ofHours(-6)))
+        // Midnight is the device zone's: at UTC+05:30, 21:00 UTC is already the 2nd.
+        assertTrue(LiveSourceManager.isStale(evening, window, 21 * hour, ZoneOffset.ofHoursMinutes(5, 30)))
+
+        // A cut-short day window: retried hourly.
+        val partial = window.copy(complete = false)
+        assertTrue(!LiveSourceManager.isStale(evening, partial, 20 * hour + hour / 2, utc))
+        assertTrue(LiveSourceManager.isStale(evening, partial, 21 * hour, utc))
 
         val stremio = m3u.copy(kind = SourceKind.STREMIO)
-        assertTrue(!LiveSourceManager.isStale(stremio, null, 23 * hour))
-        assertTrue(LiveSourceManager.isStale(stremio, null, 24 * hour))
+        assertTrue(!LiveSourceManager.isStale(stremio, null, 23 * hour, utc))
+        assertTrue(LiveSourceManager.isStale(stremio, null, 24 * hour, utc))
+
+        val pack = m3u.copy(kind = SourceKind.PACK)
+        assertTrue(!LiveSourceManager.isStale(pack, null, 23 * hour, utc))
+        assertTrue(LiveSourceManager.isStale(pack, null, 24 * hour, utc))
+    }
+
+    @Test
+    fun `dayWindow is today and tomorrow as local calendar days`() {
+        val chicago = java.time.ZoneId.of("America/Chicago")
+        fun at(iso: String) = Instant.parse(iso).toEpochMilli()
+        // 23:00 CDT on the 19th is already the 20th in UTC: the window starts at local midnight.
+        assertEquals(
+            at("2026-10-19T05:00:00Z") to at("2026-10-21T05:00:00Z"),
+            LiveSourceManager.dayWindow(at("2026-10-20T04:00:00Z"), chicago)
+        )
+        val hour = 60L * 60 * 1000
+        // DST ends 1 November 2026 (a 25 h day), starts 8 March 2026 (23 h).
+        LiveSourceManager.dayWindow(at("2026-10-31T17:00:00Z"), chicago).let { (s, e) -> assertEquals(49 * hour, e - s) }
+        LiveSourceManager.dayWindow(at("2026-03-07T18:00:00Z"), chicago).let { (s, e) -> assertEquals(47 * hour, e - s) }
+    }
+
+    @Test
+    fun `after midnight a cut-short guide replaces yesterday's and is retried hourly, not on every open`() = runTest {
+        now = guideAt
+        val manager = manager()
+        server.enqueue(MockResponse().setBody(epgBody()))
+        val guide = (manager.addUrl(server.url("/epg_IN.xml.gz").toString()) as LiveSourceManager.AddResult.Added).source
+        val requests = server.requestCount
+        val yesterday = guides.guides.value.getValue(guide.id)
+
+        now = Instant.parse("2026-10-19T06:15:00Z").toEpochMilli() // 00:15 local: a new day
+        server.enqueue(MockResponse().setBody(epgHalf()))
+        manager.refreshStale()
+        assertEquals(requests + 1, server.requestCount)
+        val partial = guides.guides.value.getValue(guide.id)
+        assertTrue(!partial.complete)
+        // The cut fell before 542998's programmes: the cached ones not yet ended are kept, not blanked.
+        val carried = yesterday.programmes.getValue("542998").filter { it.stopMs > partial.windowStartMs }
+        assertTrue(carried.isNotEmpty())
+        assertEquals(carried, partial.programmes.getValue("542998"))
+        assertEquals(Instant.parse("2026-10-21T06:00:00Z").toEpochMilli(), partial.windowEndMs)
+        assertEquals("Guide file incomplete; kept what was read", store.get(guide.id)!!.lastError)
+
+        now += 30L * 60 * 1000
+        manager.refreshStale()
+        assertEquals(requests + 1, server.requestCount)
+
+        now += 30L * 60 * 1000
+        server.enqueue(MockResponse().setBody(epgBody()))
+        manager.refreshStale()
+        assertEquals(requests + 2, server.requestCount)
+        assertTrue(guides.guides.value.getValue(guide.id).complete)
+    }
+
+    @Test
+    fun `cut-short guides day after day never carry an ended list forward`() = runTest {
+        now = guideAt
+        val manager = manager()
+        server.enqueue(MockResponse().setBody(epgBody()))
+        val guide = (manager.addUrl(server.url("/epg_IN.xml.gz").toString()) as LiveSourceManager.AddResult.Added).source
+
+        // Day 1 (00:15 local): the cut falls before 542998's programmes, which run to 11:00Z: filled.
+        now = Instant.parse("2026-10-19T06:15:00Z").toEpochMilli()
+        server.enqueue(MockResponse().setBody(epgHalf()))
+        manager.refreshStale()
+        assertTrue("542998" in guides.guides.value.getValue(guide.id).programmes)
+
+        // Day 2: cut short again. 542998's carried list has ended: dropped, not kept as a dead "live" list.
+        now = Instant.parse("2026-10-20T06:15:00Z").toEpochMilli()
+        server.enqueue(MockResponse().setBody(epgHalf()))
+        val requests = server.requestCount
+        manager.refreshStale()
+        assertEquals(requests + 1, server.requestCount)
+        val day2 = guides.guides.value.getValue(guide.id)
+        assertTrue(!day2.complete)
+        assertTrue("542998" !in day2.programmes)
+    }
+
+    @Test
+    fun `fillFrom keeps only cached programmes that have not ended`() {
+        fun p(start: Long, stop: Long, title: String) = EpgProgramme(start, stop, title)
+        fun ch(id: String) = id to EpgChannel(id, listOf(id), null)
+        val windowStart = 1_000L
+        val old = EpgSnapshot(
+            channels = mapOf(ch("ended"), ch("airing"), ch("cut"), ch("late")),
+            programmes = mapOf(
+                "ended" to listOf(p(0, 500, "E1"), p(500, 1_000, "E2")),
+                "airing" to listOf(p(500, 1_500, "A1"), p(1_500, 2_000, "A2")),
+                // CX straddles the partial list's end (a revised schedule): never appended as an overlap.
+                "cut" to listOf(p(1_000, 1_100, "C1 old"), p(1_050, 1_150, "CX"), p(1_150, 1_200, "C2"), p(1_200, 1_300, "C3")),
+                // Its cached programmes ended, but the partial has today's: its entry must stay.
+                "late" to listOf(p(0, 900, "L0"))
+            ),
+            windowStartMs = 0, windowEndMs = 2_000, complete = true
+        )
+        val partial = EpgSnapshot(
+            channels = mapOf("cut" to EpgChannel("cut", listOf("Cut renamed"), "icon"), ch("new")),
+            programmes = mapOf(
+                "cut" to listOf(p(1_000, 1_100, "C1")),
+                "new" to listOf(p(1_000, 1_200, "N1")),
+                "late" to listOf(p(1_000, 1_100, "L1"))
+            ),
+            windowStartMs = windowStart, windowEndMs = 3_000, complete = false
+        )
+        val filled = LiveSourceManager.fillFrom(partial, old)
+        assertEquals(setOf("airing", "cut", "new", "late"), filled.programmes.keys)
+        assertEquals(listOf("A1", "A2"), filled.programmes.getValue("airing").map { it.title })
+        // The partial's own list wins; it gets the cached rest of its day from its end, no overlap.
+        assertEquals(listOf("C1", "C2", "C3"), filled.programmes.getValue("cut").map { it.title })
+        assertEquals(setOf("airing", "cut", "new", "late"), filled.channels.keys)
+        assertEquals(listOf("Cut renamed"), filled.channels.getValue("cut").displayNames)
+        // An hourly retry fills from the last fill: stable, nothing duplicated or grown.
+        assertEquals(filled, LiveSourceManager.fillFrom(partial, filled))
+        assertEquals(windowStart to 3_000L, filled.windowStartMs to filled.windowEndMs)
+        assertTrue(!filled.complete)
     }
 
     @Test
@@ -408,7 +555,12 @@ class LiveSourceManagerTest {
         manager.refreshStale()
         assertEquals(requests, server.requestCount)
 
-        now = guideAt + 5L * 60 * 60 * 1000 // guide window nearly over, playlist still fresh
+        // 23:30 here (already past midnight in CDT, UTC-5): only the injected zone counts.
+        now = Instant.parse("2026-10-19T05:30:00Z").toEpochMilli()
+        manager.refreshStale()
+        assertEquals(requests, server.requestCount)
+
+        now = Instant.parse("2026-10-19T06:15:00Z").toEpochMilli() // past local midnight, playlist still fresh
         server.enqueue(MockResponse().setBody(epgBody()))
         manager.refreshStale()
         assertEquals(requests + 1, server.requestCount)
@@ -417,21 +569,85 @@ class LiveSourceManagerTest {
     }
 
     @Test
-    fun `the India guides are added once as records, keeping a copy a source already holds`() = runTest {
+    fun `the India guide is added once as a record, or kept as a copy a source already holds`() = runTest {
         val manager = manager()
-        val epgPw = LiveSourceManager.INDIA_GUIDES[0]
-        val mine = LiveSource("mine", SourceKind.XMLTV, "Mine", epgPw.url, 0L)
-        store.upsert(mine)
-
-        val guides = manager.addIndiaGuides()!!
-        assertEquals(listOf(mine, LiveSourceManager.INDIA_GUIDES[1].copy(addedAtMs = now)), guides)
+        val guides = manager.addPresetGuides(listOf(preset("in")))!!
+        assertEquals(listOf(LiveSourceManager.INDIA_GUIDES.single().copy(addedAtMs = now)), guides)
         assertTrue(guides.all { it.kind == SourceKind.XMLTV && it.lastRefreshMs == null })
-        assertEquals("in", guides[1].country)
+        assertEquals("in", guides.single().country)
         assertEquals(0, server.requestCount) // fetched by the caller's refresh, not here
 
         now += 1_000
-        assertEquals(guides, manager.addIndiaGuides())
-        assertEquals(2, store.sources.value.size)
+        assertEquals(guides, manager.addPresetGuides(listOf(preset("in"))))
+        assertEquals(1, store.sources.value.size)
+
+        store.remove(guides.single().id)
+        val mine = LiveSource("mine", SourceKind.XMLTV, "Mine", LiveSourceManager.INDIA_GUIDES.single().url, 0L)
+        store.upsert(mine)
+        assertEquals(listOf(mine), manager.addPresetGuides(listOf(preset("in"))))
+        assertEquals(listOf(mine), store.sources.value)
+    }
+
+    @Test
+    fun `load removes the retired epg pw India record with its cache and choices, once, and nothing else`() = runTest {
+        val retired = LiveSource("preset-epg-pw-in", SourceKind.XMLTV, "epg.pw India", "https://epg.pw/xmltv/epg_IN.xml.gz", 0L)
+        // A user's own record of the same URL is not the preset: it stays.
+        val mine = LiveSource("mine", SourceKind.XMLTV, "Mine", retired.url, 0L)
+        store.upsert(retired)
+        store.upsert(mine)
+        val snapshot = EpgSnapshot(emptyMap(), emptyMap(), 0, 1, complete = true)
+        guides.put(retired.id, snapshot)
+        guides.put(mine.id, snapshot)
+        channels.load()
+        channels.setOverride("a", EpgOverride(EpgRef(retired.id, "1")))
+        channels.setOverride("b", EpgOverride(EpgRef(mine.id, "1")))
+
+        manager().load()
+        assertEquals(listOf(mine), store.sources.value)
+        assertEquals(setOf(mine.id), guides.guides.value.keys)
+        assertFalse(File(tmp.root, "epg-${retired.id}.json").exists())
+        assertEquals(mapOf("b" to EpgOverride(EpgRef(mine.id, "1"))), channels.overrides.value)
+
+        // Persisted, and a second load is a no-op.
+        val reread = SourceStore(tmp.root, io)
+        reread.load()
+        assertEquals(listOf(mine), reread.sources.value)
+        manager().load()
+        assertEquals(listOf(mine), store.sources.value)
+        assertEquals(LiveSourceManager.RETIRED_GUIDE_IDS, listOf(retired.id))
+        assertTrue(LiveSourceManager.GUIDE_PRESETS.flatMap { it.guides }.none { it.id in LiveSourceManager.RETIRED_GUIDE_IDS })
+    }
+
+    @Test
+    fun `a retired record whose removal fails stays, and the next load removes it`() = runTest {
+        val retired = LiveSource("preset-epg-pw-in", SourceKind.XMLTV, "epg.pw India", "https://epg.pw/xmltv/epg_IN.xml.gz", 0L)
+        store.upsert(retired)
+        channels.load()
+        channels.setOverride("a", EpgOverride(EpgRef(retired.id, "1")))
+        // An unwritable folder fails the overrides write that remove() makes before the record goes.
+        assertTrue(tmp.root.setWritable(false))
+        try {
+            manager().load()
+        } finally {
+            tmp.root.setWritable(true)
+        }
+        assertEquals(listOf(retired), store.sources.value)
+
+        manager().load()
+        assertEquals(emptyList<LiveSource>(), store.sources.value)
+        assertEquals(emptyMap<String, EpgOverride>(), channels.overrides.value)
+    }
+
+    private fun preset(key: String) = LiveSourceManager.GUIDE_PRESETS.single { it.key == key }
+
+    @Test
+    fun `several presets are added in one write round, in preset then guide order`() = runTest {
+        val manager = manager()
+        val presets = listOf(preset("plex"), preset("au"), preset("samsung"))
+        val guides = manager.addPresetGuides(presets)!!
+        assertEquals(presets.flatMap { p -> p.guides.map { it.copy(addedAtMs = now) } }, guides)
+        assertEquals(4, store.sources.value.size)
+        assertEquals(0, server.requestCount)
     }
 
     @Test
@@ -440,7 +656,7 @@ class LiveSourceManagerTest {
         manager.addBroadcasters()
         assertTrue(store.sources.value.none { it.url == LiveSourceManager.PLUTO_GUIDE.url })
 
-        val guide = manager.addPlutoGuide()!!
+        val guide = manager.addPresetGuides(listOf(preset("pluto")))!!.single()
         assertEquals(LiveSourceManager.PLUTO_GUIDE.copy(addedAtMs = now), guide)
         assertEquals(SourceKind.XMLTV, guide.kind)
         assertNull(guide.country) // never matched by name
@@ -449,7 +665,7 @@ class LiveSourceManagerTest {
 
         // A source already holding the URL (here the record itself) is returned, not duplicated.
         now += 1_000
-        assertEquals(guide, manager.addPlutoGuide())
+        assertEquals(listOf(guide), manager.addPresetGuides(listOf(preset("pluto"))))
         assertEquals(1, store.sources.value.count { it.url == LiveSourceManager.PLUTO_GUIDE.url })
     }
 
@@ -461,6 +677,128 @@ class LiveSourceManagerTest {
         assertEquals("ca", c("https://example.org/guide-ca.xml"))
         assertNull(c("https://example.org/guide.xml"))
         assertNull(c("https://example.org/epg"))
+        // epgshare01: two letters and a feed digit (Spec 55 S1); service files read as none.
+        assertEquals("uk", c("https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz"))
+        assertEquals("tr", c("https://epgshare01.online/epgshare01/epg_ripper_TR3.xml.gz"))
+        assertNull(c("https://epgshare01.online/epgshare01/epg_ripper_PLEX1.xml.gz"))
+        assertNull(c("https://epgshare01.online/epgshare01/epg_ripper_US_LOCALS2.xml.gz"))
+    }
+
+    private fun epgshare(stem: String) = "https://epgshare01.online/epgshare01/epg_ripper_$stem.xml.gz"
+
+    private fun chIn(country: String?, n: Int) = (1..n).map {
+        com.nuvio.tv.livetv.model.Channel(key = "$country$it", sourceId = "p", name = "$country$it", country = country, streams = emptyList())
+    }
+
+    @Test
+    fun `three or fewer header guides are all candidates, catch-alls and non-web addresses dropped`() {
+        val urls = listOf(epgshare("ALL_SOURCES1"), "https://a.example/epg.xml", epgshare("DUMMY_CHANNELS"),
+            "ftp://b.example/x.xml", epgshare("UK1"), "https://a.example/epg.xml", "not a url")
+        assertEquals(
+            listOf(listOf("https://a.example/epg.xml"), listOf(epgshare("UK1"))) to false,
+            LiveSourceManager.headerCandidates(urls, emptyList())
+        )
+        assertNull(LiveSourceManager.headerCandidates(listOf(epgshare("ALL_SOURCES1")), emptyList()))
+        assertNull(LiveSourceManager.headerCandidates(emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `more header guides give one group per channel country, largest first, files in header order`() {
+        val urls = listOf(epgshare("AL1"), epgshare("IN1"), epgshare("PLEX1"), epgshare("UK1"), epgshare("IN4"),
+            epgshare("ALL_SOURCES1"), epgshare("DE1"))
+        val channels = chIn("uk", 2) + chIn("in", 3) + chIn("it", 9) + chIn(null, 5)
+        assertEquals(
+            listOf(listOf(epgshare("IN1"), epgshare("IN4")), listOf(epgshare("UK1"))) to true,
+            LiveSourceManager.headerCandidates(urls, channels)
+        )
+        // No channel from any header country: nothing to offer.
+        assertNull(LiveSourceManager.headerCandidates(urls, chIn("it", 2)))
+    }
+
+    @Test
+    fun `a playlist's header guides are probed and recorded, gone or oversized files skipped`() = runTest {
+        val big = LiveSourceManager.MAX_GUIDE_DOWNLOAD_BYTES + 1
+        fun guide(stem: String) = server.url("/epg_ripper_$stem.xml.gz").toString()
+        val header = listOf("IN1", "IN2", "UK1", "UK2", "DE1", "FR1").joinToString(",") { guide(it) }
+        val body = "#EXTM3U x-tvg-url=\"$header\"\n" + listOf("a.in", "b.in", "c.uk", "d.de", "e.fr").joinToString("") {
+            "#EXTINF:-1 tvg-id=\"$it\",$it\nhttps://example.org/$it.m3u8\n"
+        }
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/list.m3u" -> MockResponse().setBody(body)
+                    request.method != "HEAD" -> MockResponse().setResponseCode(500)
+                    "IN1" in path -> MockResponse().setResponseCode(404)
+                    "UK1" in path -> MockResponse().setHeader("Content-Length", big)
+                    "DE1" in path -> MockResponse().setResponseCode(410)
+                    else -> MockResponse().setHeader("Content-Length", 1000)
+                }
+            }
+        }
+        val manager = manager()
+        val added = (manager.addUrl(url()) as LiveSourceManager.AddResult.Added).source
+        // in (2 channels) first; its 404 tries IN2; uk's oversized UK1 tries UK2; de has no other file.
+        assertEquals(HeaderGuides(listOf(guide("IN2"), guide("UK2"), guide("FR1")), byCountry = true), added.headerGuides)
+        assertEquals(added, store.get(added.id))
+        assertTrue(server.requestCount >= 7)
+    }
+
+    @Test
+    fun `a refresh re-probes the header guides`() = runTest {
+        val manager = manager()
+        val first = server.url("/epg_a.xml").toString()
+        val second = server.url("/epg_b.xml").toString()
+        fun list(url: String) = "#EXTM3U x-tvg-url=\"$url\"\n#EXTINF:-1 tvg-id=\"a.in\",A\nhttps://example.org/a.m3u8\n"
+        server.enqueue(MockResponse().setBody(list(first)))
+        server.enqueue(MockResponse())
+        val added = (manager.addUrl(url()) as LiveSourceManager.AddResult.Added).source
+        assertEquals(listOf(first), added.headerGuides?.urls)
+
+        server.enqueue(MockResponse().setBody(list(second)))
+        server.enqueue(MockResponse().setResponseCode(404))
+        now += 1_000
+        // The new header's only guide is gone: nothing to offer any more.
+        assertNull(manager.refresh(added.id)!!.headerGuides)
+        assertNull(store.get(added.id)!!.headerGuides)
+    }
+
+    @Test
+    fun `a playlist's header attributes are kept on its record, updated by a refresh`() = runTest {
+        val manager = manager()
+        val guide = "http://127.0.0.1:1/epg.xml"
+        val added = added(manager, "#EXTM3U url-tvg=\"$guide\" catchup=\"shift\" tvg-shift=\"1\"\n" + playlist("a").removePrefix("#EXTM3U\n"))
+        assertEquals(mapOf("catchup" to "shift", "tvg-shift" to "1"), added.playlistAttrs)
+        assertEquals(added, store.get(added.id))
+
+        server.enqueue(MockResponse().setBody(playlist("a")))
+        now += 1_000
+        assertNull(manager.refresh(added.id)!!.playlistAttrs)
+        assertNull(store.get(added.id)!!.playlistAttrs)
+    }
+
+    @Test
+    fun `a probe that fails on the network keeps the guide`() = runTest {
+        val dead = "http://127.0.0.1:1/epg_ripper_IN1.xml.gz"
+        server.enqueue(MockResponse().setBody("#EXTM3U url-tvg=\"$dead\"\n#EXTINF:-1 tvg-id=\"a.in\",A\nhttps://example.org/a.m3u8\n"))
+        val added = (manager().addUrl(url()) as LiveSourceManager.AddResult.Added).source
+        assertEquals(HeaderGuides(listOf(dead), byCountry = false), added.headerGuides)
+    }
+
+    @Test
+    fun `header guides are added once as named records with the file's country`() = runTest {
+        val manager = manager()
+        val uk = epgshare("UK1")
+        val mine = LiveSource("mine", SourceKind.XMLTV, "Mine", "https://a.example/epg.xml", 0L)
+        store.upsert(mine)
+        val guides = manager.addHeaderGuides(listOf(uk to "epgshare01 United Kingdom", mine.url to "a.example"))!!
+        assertEquals(
+            listOf(LiveSource("s1", SourceKind.XMLTV, "epgshare01 United Kingdom", uk, now, country = "uk"), mine),
+            guides
+        )
+        assertEquals(0, server.requestCount) // fetched by the caller's refresh, not here
+        assertEquals(guides.take(1), manager.addHeaderGuides(listOf(uk to "again")))
+        assertEquals(2, store.sources.value.size)
     }
 
     private companion object {

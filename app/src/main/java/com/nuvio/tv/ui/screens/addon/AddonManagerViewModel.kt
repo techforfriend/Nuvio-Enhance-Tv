@@ -12,7 +12,13 @@ import com.nuvio.tv.core.sync.HomeCatalogOrdering
 import com.nuvio.tv.core.sync.HomeCatalogSettingsSyncService
 import com.nuvio.tv.core.sync.StartupSyncService
 import com.nuvio.tv.core.network.ADDON_REQUEST_TIMEOUT_MS
+import com.nuvio.tv.core.network.AddonHostGuard
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.network.tls.AddonCertPinKeeper
+import com.nuvio.tv.core.network.tls.AddonCertProbe
+import com.nuvio.tv.core.network.tls.AddonCertProbeResult
+import com.nuvio.tv.core.network.tls.AddonCertTrustAction
+import com.nuvio.tv.core.network.tls.addonServerLabel
 import com.nuvio.tv.core.qr.QrCodeGenerator
 import com.nuvio.tv.core.server.AddonConfigServer
 import com.nuvio.tv.core.server.AddonInfo
@@ -47,6 +53,7 @@ import com.nuvio.tv.domain.repository.AddonRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -63,8 +70,9 @@ import javax.inject.Inject
 
 private const val TAG = "AddonManagerViewModel"
 
+/** Internal constructor: it takes the internal [AddonHostGuard] (Spec 68 P6). */
 @HiltViewModel
-class AddonManagerViewModel @Inject constructor(
+class AddonManagerViewModel @Inject internal constructor(
     private val addonRepository: AddonRepository,
     private val layoutPreferenceDataStore: LayoutPreferenceDataStore,
     private val collectionsDataStore: CollectionsDataStore,
@@ -74,7 +82,11 @@ class AddonManagerViewModel @Inject constructor(
     private val profileManager: ProfileManager,
     private val tmdbCollectionSourceResolver: TmdbCollectionSourceResolver,
     @param:ApplicationContext private val context: Context,
-    private val healthStore: AddonHealthStore
+    private val healthStore: AddonHealthStore,
+    private val hostGuard: AddonHostGuard,
+    private val certProbe: AddonCertProbe,
+    private val certTrustAction: AddonCertTrustAction,
+    private val certPinKeeper: AddonCertPinKeeper
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AddonManagerUiState())
@@ -105,10 +117,19 @@ class AddonManagerViewModel @Inject constructor(
     @Volatile private var servedAddonUrls: List<String> = emptyList()
     private var reloadJob: Job? = null
 
+    /** An install or a Review certificate in progress (one at a time: they share the panel). */
+    private var certificateJob: Job? = null
+
+    /** The open certificate panel's answer: true = Trust. */
+    private var certificateDecision: CompletableDeferred<Boolean>? = null
+
     init {
         observeInstalledAddons()
         observeSearchOnEnter()
         observeHealth()
+        observeCertificateFailures()
+        // Spec 68 P8: opening the Addons page forgets certificates no profile's addons use.
+        viewModelScope.launch { certPinKeeper.prune() }
         observeCatalogPreferences()
         observeCollections()
         loadLogoBytes()
@@ -118,6 +139,14 @@ class AddonManagerViewModel @Inject constructor(
         viewModelScope.launch {
             healthStore.levels.collect { levels ->
                 _uiState.update { it.copy(healthByUrl = levels) }
+            }
+        }
+    }
+
+    private fun observeCertificateFailures() {
+        viewModelScope.launch {
+            hostGuard.certificateFailures.collect { keys ->
+                _uiState.update { it.copy(certificateFailureKeys = keys) }
             }
         }
     }
@@ -180,37 +209,93 @@ class AddonManagerViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        if (certificateJob?.isActive == true) return
+        certificateJob = viewModelScope.launch {
             _uiState.update { it.copy(isInstalling = true, error = null, transientMessage = null) }
+            try {
+                // Spec 68 P8: a pin trusted during this attempt survives a prune until it ends.
+                certPinKeeper.withInstallExemption(normalizedUrl) { install(normalizedUrl) }
+            } finally {
+                _uiState.update { it.copy(isInstalling = false) }
+            }
+        }
+    }
 
-            when (val result = addonRepository.fetchAddon(normalizedUrl)) {
-                is NetworkResult.Success -> {
-                    addonRepository.addAddon(normalizedUrl)
-                    val addonName = result.data.displayName.ifBlank { result.data.baseUrl }
-                    _uiState.update {
-                        it.copy(
-                            isInstalling = false,
-                            installUrl = "",
-                            transientMessage = context.getString(R.string.addon_install_success, addonName),
-                            transientMessageIsError = false
-                        )
-                    }
-                }
-                is NetworkResult.Error -> {
-                    val message = result.message
-                    _uiState.update {
-                        it.copy(
-                            isInstalling = false,
-                            error = message,
-                            transientMessage = message,
-                            transientMessageIsError = true
-                        )
-                    }
-                }
-                NetworkResult.Loading -> {
-                    _uiState.update { it.copy(isInstalling = true) }
+    private suspend fun install(normalizedUrl: String) {
+        var result = addonRepository.fetchAddon(normalizedUrl)
+        if (result is NetworkResult.Error && result.certificate) {
+            // Cancel, Back or a probe that found nothing to trust ends the attempt (its line already shown).
+            if (!resolveCertificate(normalizedUrl, addonName = null)) return
+            result = addonRepository.fetchAddon(normalizedUrl)
+        }
+        when (val outcome = result) {
+            is NetworkResult.Success -> {
+                addonRepository.addAddon(normalizedUrl)
+                val addonName = outcome.data.displayName.ifBlank { outcome.data.baseUrl }
+                _uiState.update {
+                    it.copy(
+                        installUrl = "",
+                        transientMessage = context.getString(R.string.addon_install_success, addonName),
+                        transientMessageIsError = false
+                    )
                 }
             }
+            is NetworkResult.Error -> _uiState.update {
+                it.copy(error = outcome.message, transientMessage = outcome.message, transientMessageIsError = true)
+            }
+            NetworkResult.Loading -> Unit
+        }
+    }
+
+    /** Row action (stage 3): probes the addon's server and, when its certificate fails, opens the panel. */
+    fun reviewCertificate(addon: Addon) {
+        if (certificateJob?.isActive == true) return
+        certificateJob = viewModelScope.launch {
+            // Spec 68 D11 Q9: no line after Trust; the row clears when the addon answers.
+            resolveCertificate(addon.baseUrl, addon.displayName, addonUrl = addon.baseUrl)
+        }
+    }
+
+    /** The certificate panel's answer: Trust ([trust] true), or Cancel / Keep paused / Back. */
+    fun onCertificateDecision(trust: Boolean) {
+        certificateDecision?.complete(trust)
+    }
+
+    /**
+     * Spec 68 P7: probes [url]'s server. An untrusted certificate opens the panel; true when the user
+     * trusted it (pin stored, the server's breaker reset, its installed addons re-fetched). Any other
+     * outcome shows its line and returns false.
+     */
+    private suspend fun resolveCertificate(url: String, addonName: String?, addonUrl: String? = null): Boolean {
+        val label = addonServerLabel(url).orEmpty()
+        return when (val probed = certProbe.probe(url)) {
+            is AddonCertProbeResult.Untrusted -> {
+                val trusted = askTrust(AddonCertificatePanelState(probed, addonName, addonUrl))
+                if (trusted) certTrustAction.trust(probed)
+                trusted
+            }
+            AddonCertProbeResult.VerifiesNow -> showCertificateLine(R.string.addon_cert_verifies_now, label, isError = false)
+            AddonCertProbeResult.NoCertificate -> showCertificateLine(R.string.addon_cert_unreachable, label, isError = true)
+            AddonCertProbeResult.Inconsistent -> showCertificateLine(R.string.addon_cert_inconsistent, label, isError = true)
+        }
+    }
+
+    private fun showCertificateLine(@StringRes line: Int, label: String, isError: Boolean): Boolean {
+        val message = context.getString(line, label)
+        _uiState.update { it.copy(transientMessage = message, transientMessageIsError = isError) }
+        return false
+    }
+
+    /** Opens [panel] and waits for the user; the panel closes however the wait ends. */
+    private suspend fun askTrust(panel: AddonCertificatePanelState): Boolean {
+        val decision = CompletableDeferred<Boolean>()
+        certificateDecision = decision
+        _uiState.update { it.copy(certificatePanel = panel) }
+        return try {
+            decision.await()
+        } finally {
+            certificateDecision = null
+            _uiState.update { it.copy(certificatePanel = null) }
         }
     }
 
@@ -351,7 +436,7 @@ class AddonManagerViewModel @Inject constructor(
             return
         }
 
-        val url = "http://$ip:${activeServer.listeningPort}"
+        val url = activeServer.url(ip)
         val qrBitmap = QrCodeGenerator.generate(url, 512)
 
         _uiState.update {

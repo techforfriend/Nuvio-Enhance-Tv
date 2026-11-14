@@ -165,6 +165,72 @@ class SubtitleCharsetDetectorTest {
         assertTrue(repaired != mojibake)
     }
 
+    // W5-01 (Spec 87 T1): hint-less legacy CJK files over 4 KB. The detector samples a fixed
+    // window that can end inside a double-byte character; that must not zero the CJK scores.
+    // The window is anchored at the first non-ASCII byte, so spaces added after the first CJK
+    // character slide the rest of the file past its end: one cue's worth of shifts puts the
+    // end at every byte of a cue, mid-character included.
+    private fun cjkSrt(line: String, shift: Int): String = buildString {
+        var cue = 1
+        while (length < 6000) {
+            val text = if (cue == 1) line.take(1) + " ".repeat(shift) + line.drop(1) else line
+            val second = (cue % 60).toString().padStart(2, '0')
+            append(cue).append('\n')
+            append("00:00:$second,000 --> 00:00:$second,500\n")
+            append(text).append('\n').append(line).append('\n').append(line).append("\n\n")
+            cue++
+        }
+    }
+
+    private fun assertDecodesWithoutHintOver4Kb(charsetName: String, line: String) {
+        val charset = Charset.forName(charsetName)
+        val cueBytes = ("99\n00:00:39,000 --> 00:00:39,500\n" + "$line\n".repeat(3) + "\n").toByteArray(charset).size
+        for (shift in 0 until cueBytes) {
+            val srt = cjkSrt(line, shift)
+            val bytes = srt.toByteArray(charset)
+            assertTrue(bytes.size > 4096)
+            assertEquals("$charsetName shift=$shift", srt, SubtitleCharsetDetector.decode(bytes))
+        }
+    }
+
+    private val simplifiedLine = "我们今天晚上去看电影吧，你觉得怎么样？"
+    private val traditionalLine = "我們今天晚上去看電影吧，你覺得怎麼樣"
+
+    @Test
+    fun decodesGbkOver4KbWithoutHint() = assertDecodesWithoutHintOver4Kb("GBK", simplifiedLine)
+
+    @Test
+    fun decodesBig5Over4KbWithoutHint() = assertDecodesWithoutHintOver4Kb("Big5", traditionalLine)
+
+    @Test
+    fun decodesShiftJisOver4KbWithoutHint() =
+        assertDecodesWithoutHintOver4Kb("Shift_JIS", "今日はとても良い天気ですね。一緒に散歩しませんか？")
+
+    @Test
+    fun decodesEucKrOver4KbWithoutHint() =
+        assertDecodesWithoutHintOver4Kb("EUC-KR", "오늘 밤에 영화 보러 갈래요? 정말 재미있을 거예요.")
+
+    // The Chinese hint picks Big5 when the whole file decodes cleanly as Big5, else GB18030.
+    @Test
+    fun chineseHintDecodesGbkAsGb18030() {
+        val srt = cjkSrt(simplifiedLine, 0)
+        assertEquals(srt, SubtitleCharsetDetector.decode(srt.toByteArray(Charset.forName("GBK")), languageHint = "zh"))
+    }
+
+    @Test
+    fun chineseHintDecodesBig5AsBig5() {
+        val srt = cjkSrt(traditionalLine, 0)
+        assertEquals(srt, SubtitleCharsetDetector.decode(srt.toByteArray(Charset.forName("Big5")), languageHint = "zh"))
+    }
+
+    @Test
+    fun chineseHintKeepsBig5ForAFileCutMidCharacter() {
+        val text = cjkSrt(traditionalLine, 0).trimEnd()
+        val bytes = text.toByteArray(Charset.forName("Big5"))
+        val decoded = SubtitleCharsetDetector.decode(bytes.copyOf(bytes.size - 1), languageHint = "zh")
+        assertTrue("Expected Big5 text, got: ${decoded.takeLast(40)}", decoded.startsWith(text.dropLast(1)))
+    }
+
     @Test
     fun repairsDoubleEncodedCentralEuropeanUtf8WithLanguageHint() {
         val polish = "Zażółć gęślą jaźń — Pchnąć w tę łódź jeża i ośm skrzyń"

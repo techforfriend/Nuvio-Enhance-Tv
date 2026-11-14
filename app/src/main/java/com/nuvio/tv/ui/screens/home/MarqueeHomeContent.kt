@@ -86,6 +86,7 @@ fun MarqueeHomeContent(
     onRequestTrailerPreview: (String, String, String?, String) -> Unit,
     onLoadMoreCatalog: (String, String, String) -> Unit,
     onRemoveContinueWatching: (String, Int?, Int?, Boolean) -> Unit,
+    onMarkContinueWatchingWatched: (ContinueWatchingItem) -> Unit = {},
     isCatalogItemWatched: (MetaPreview) -> Boolean = { false },
     onCatalogItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> },
     onNavigateToFolderDetail: (String, String) -> Unit = { _, _ -> },
@@ -598,6 +599,14 @@ fun MarqueeHomeContent(
             showPlayManually = showContinueWatchingManualPlayOption,
             onPlayManually = {
                 onContinueWatchingPlayManually(selectedOptionsItem)
+                optionsItem.value = null
+            },
+            onMarkWatched = {
+                // Spec 62 H4: focus stays at the same index through the active row's remembered
+                // index, no pending target: whichever card lands there takes focus (a Next Up
+                // sorts to the front, so it is that card only when the marked one was first),
+                // clamped to the new last card when the last one leaves.
+                onMarkContinueWatchingWatched(selectedOptionsItem)
                 optionsItem.value = null
             }
         )

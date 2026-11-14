@@ -61,8 +61,8 @@ private const val FOCUSED_NOW_ALPHA = 0.75f
 private const val FOCUSED_TAG_ALPHA = 0.7f
 /** Outlined keys and tags: a white (black when focused) .30 hairline. */
 internal const val TAG_EDGE_ALPHA = 0.3f
-private const val ROW_TRACK_ALPHA = 0.22f
-private const val FOCUSED_ROW_TRACK_ALPHA = 0.18f
+internal const val ROW_TRACK_ALPHA = 0.22f
+internal const val FOCUSED_ROW_TRACK_ALPHA = 0.18f
 
 /**
  * A filter's label: Favorites, Recents, or a Browse's picker values joined ("Canada · News"; Spec 38

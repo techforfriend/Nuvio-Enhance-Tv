@@ -30,7 +30,11 @@ internal enum class PlaybackRow {
     INJECT_HDR10,
     OUTLINE_COLOR,
     /** Target buffer size and Allow larger target buffer. */
-    TARGET_BUFFER
+    TARGET_BUFFER,
+    /** Wait after display switch (Spec 62 H1, D10): only Frame rate matching switches the display mode. */
+    AFR_SETTLE_HOLD,
+    /** HDR text colour, HDR brightness and Dim player controls (Spec 62 H2, D7). */
+    HDR_SUBTITLE_STYLE
 }
 
 /**
@@ -92,6 +96,11 @@ internal fun playbackRowDimReason(row: PlaybackRow, settings: PlayerSettings): I
                 .takeUnless { settings.subtitleStyle.edgeStyle == SubtitleEdgeStyle.OUTLINE }
         PlaybackRow.TARGET_BUFFER ->
             R.string.playback_not_with_managed_budget.takeIf { settings.bufferBudgetManaged }
+        PlaybackRow.AFR_SETTLE_HOLD ->
+            R.string.playback_needs_frame_rate_matching
+                .takeIf { settings.frameRateMatchingMode == FrameRateMatchingMode.OFF }
+        PlaybackRow.HDR_SUBTITLE_STYLE ->
+            R.string.playback_needs_hdr_subtitle_style.takeUnless { settings.subtitleStyle.hdrStyleEnabled }
     }
 }
 

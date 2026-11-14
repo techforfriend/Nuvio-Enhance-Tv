@@ -6,10 +6,16 @@ import com.nuvio.tv.livetv.data.ChannelRepository
 import com.nuvio.tv.livetv.data.GuideRepository
 import com.nuvio.tv.livetv.data.HiddenChannelStore
 import com.nuvio.tv.livetv.source.IptvMetadataRepository
+import com.nuvio.tv.livetv.source.LiveSource
 import com.nuvio.tv.livetv.source.LiveSourceManager
+import com.nuvio.tv.livetv.source.PackScanRecord
+import com.nuvio.tv.livetv.source.PackScanStore
+import com.nuvio.tv.livetv.source.PackScanner
+import com.nuvio.tv.livetv.source.PackStore
 import com.nuvio.tv.livetv.source.SourceKind
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -18,6 +24,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
@@ -34,10 +43,13 @@ data class LiveTvSourcesUiState(
     /** When the iptv-org channel data was fetched; null = never (no DATA row). */
     val metadataFetchedAtMs: Long? = null,
     val hidden: List<HiddenRow> = emptyList(),
-    /** Stage 6 (Spec 38 S2): the Pluto guide row above the sources; null = none. */
-    val pluto: GuideSuggestion? = null,
-    /** Spec 49 D27 F5: the India guides row above the sources; null = none. */
-    val india: GuideSuggestion? = null
+    /**
+     * Spec 55 S2: the guide presets offered above the sources, most channels first (Pluto's and
+     * India's rows among them); more than [LiveTvSourcesModel.FOLD_PRESETS] show as one row (D11).
+     */
+    val presets: List<PresetSuggestion> = emptyList(),
+    /** Spec 55 S1: playlists' header guides not yet added (SUGGESTED rows and Choose guides). */
+    val headers: List<HeaderSuggestion> = emptyList()
 )
 
 /** The Add source dialog's check (stage 15): Add is enabled only in [Ready]. */
@@ -55,10 +67,17 @@ sealed interface SourcesEvent {
     data object RenameFailed : SourcesEvent
     data object RemoveFailed : SourcesEvent
     data object UnhideFailed : SourcesEvent
-    /** The Pluto guide record could not be saved. */
-    data object PlutoAddFailed : SourcesEvent
-    /** An India guide record could not be saved. */
-    data object IndiaAddFailed : SourcesEvent
+    /** A preset guide record could not be saved. */
+    data object PresetAddFailed : SourcesEvent
+    /** A header guide record could not be saved. */
+    data object HeaderAddFailed : SourcesEvent
+    /** Add pack failed (Spec 73 D6); [reason] is the manager's user-facing refusal. */
+    data class PackAddFailed(val reason: String) : SourcesEvent
+    /**
+     * A pack scan ended (done or cancelled) while this route is open: its result panel (Spec 73
+     * stages 7, 8; D12 Q3: only over Sources, nothing elsewhere).
+     */
+    data class ScanEnded(val record: PackScanRecord) : SourcesEvent
 }
 
 /**
@@ -74,14 +93,18 @@ class LiveTvSourcesViewModel @Inject constructor(
     channelRepository: ChannelRepository,
     guideRepository: GuideRepository,
     metadataRepository: IptvMetadataRepository,
-    private val hiddenStore: HiddenChannelStore
+    private val hiddenStore: HiddenChannelStore,
+    private val scanner: PackScanner,
+    private val packStore: PackStore,
+    private val scanStore: PackScanStore
 ) : ViewModel() {
 
     private val loaded = MutableStateFlow(false)
     private val refreshing = MutableStateFlow<Set<String>>(emptySet())
     private var refreshAllJob: Job? = null
-    private var plutoJob: Job? = null
-    private var indiaJob: Job? = null
+    /** Presets whose records are being written (a second press on the same row would toast Added twice). */
+    private val presetsAdding = MutableStateFlow<Set<String>>(emptySet())
+    private var headerJob: Job? = null
 
     private val _addUrl = MutableStateFlow("")
     val addUrl: StateFlow<String> = _addUrl.asStateFlow()
@@ -105,7 +128,10 @@ class LiveTvSourcesViewModel @Inject constructor(
 
     // Their own flow: a refresh starting or ending must not rescan every stream URL.
     private val suggestions = combine(sourceManager.sources, channelRepository.channels) { sources, channels ->
-        LiveTvSourcesModel.plutoSuggestion(sources, channels) to LiveTvSourcesModel.indiaSuggestion(sources, channels)
+        Suggestions(
+            LiveTvSourcesModel.presetSuggestions(sources, channels),
+            LiveTvSourcesModel.headerSuggestions(sources, channels)
+        )
     }
 
     val uiState: StateFlow<LiveTvSourcesUiState> = combine(
@@ -114,7 +140,7 @@ class LiveTvSourcesViewModel @Inject constructor(
         hidden,
         metadataRepository.metadata,
         suggestions
-    ) { loaded, rows, hidden, metadata, (pluto, india) ->
+    ) { loaded, rows, hidden, metadata, suggested ->
         LiveTvSourcesUiState(
             loading = !loaded,
             rows = rows,
@@ -122,19 +148,86 @@ class LiveTvSourcesViewModel @Inject constructor(
             guides = rows.count { it.source.kind == SourceKind.XMLTV },
             metadataFetchedAtMs = metadata?.fetchedAtMs,
             hidden = hidden,
-            pluto = pluto,
-            india = india
+            presets = suggested.presets,
+            headers = suggested.headers
         )
     }.flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), LiveTvSourcesUiState())
 
+    private val packState = MutableStateFlow(PackOffer())
+
+    /**
+     * The SUGGESTED channel pack row (Spec 73 D6): null while the pack is added (or the list is
+     * loading); its figures are read whenever it is offered and not read yet (also after a Remove), none when they cannot be read.
+     */
+    val packOffer: StateFlow<PackOffer?> = combine(loaded, sourceManager.sources, packState) { loaded, sources, offer ->
+        offer.takeIf { loaded && sources.none { it.kind == SourceKind.PACK } }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
+
+    /** The pack's scan, running or not (Spec 73 S3b: the row's SCANNING n% / PAUSED, the progress panel). */
+    val scan: StateFlow<PackScanner.State> = scanner.state
+
+    /**
+     * The stored pack and scans as the scan UI reads them (country list, the row's last scan and
+     * waiting count); null while no pack is added, before the first read, and while the pack's
+     * file is not written yet (an add stores the record first: the country list waits). Read
+     * again when a pack download completes and when a scan starts or ends (a running scan's counts
+     * come from [scan]).
+     */
+    val scanFacts: StateFlow<PackScanFacts?> = packScanFacts(
+        sourceManager.sources,
+        sourceManager.packSaves,
+        scanner.state.map { it is PackScanner.State.Running }
+    ) {
+        val scans = scanStore.read()
+        PackScanModel.facts(packStore.read(), scans.results, scans.last, thisTvRegion())
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
+
     init {
+        viewModelScope.launch { scanner.ended.collect { events.send(SourcesEvent.ScanEnded(it)) } }
         viewModelScope.launch {
             hiddenStore.load()
             sourceManager.load()
             loaded.value = true
+            // Whenever the pack is not added (also after a Remove here) and its figures are not read yet.
+            sourceManager.sources
+                .map { list -> list.none { it.kind == SourceKind.PACK } }
+                .distinctUntilChanged()
+                .collect { offered ->
+                    if (offered && packState.value.summary == null) {
+                        val summary = sourceManager.packSummary()
+                        packState.update { it.copy(summary = summary) }
+                    }
+                }
         }
     }
+
+    /**
+     * Sources' "Add pack" (Spec 73 D6): downloads and adds the pack; Added moves focus to its new
+     * row, a failure toasts its reason. A second press while it runs does nothing.
+     */
+    fun addPack() {
+        if (packState.value.adding) return
+        packState.update { it.copy(adding = true) }
+        viewModelScope.launch {
+            try {
+                when (val result = sourceManager.addPack()) {
+                    is LiveSourceManager.AddResult.Added -> events.send(SourcesEvent.Added(result.source.id, result.source.name))
+                    is LiveSourceManager.AddResult.Refused -> events.send(SourcesEvent.PackAddFailed(result.reason))
+                }
+            } finally {
+                packState.update { it.copy(adding = false) }
+            }
+        }
+    }
+
+    /** Scans the pack's channels of [countries] (Spec 73 D4); false when a scan runs already. */
+    fun startScan(countries: Set<String?>): Boolean = scanner.start(countries)
+
+    /** Cancel scan (D5): stops the scan, keeping what it checked. */
+    fun cancelScan() = scanner.cancel()
 
     fun refresh(id: String) {
         if (id in refreshing.value) return
@@ -160,34 +253,52 @@ class LiveTvSourcesViewModel @Inject constructor(
         }
     }
 
-    /** Stage 6 "Add guide": stores the Pluto guide record, then fetches it here (its row shows Refreshing). */
-    fun addPlutoGuide() {
-        // A second press before the row leaves would toast Added twice.
-        if (plutoJob?.isActive == true) return
-        plutoJob = viewModelScope.launch {
-            val guide = sourceManager.addPlutoGuide()
-            if (guide == null) {
-                events.send(SourcesEvent.PlutoAddFailed)
-                return@launch
+    /**
+     * Spec 55 S2 "Add guide(s)" on a preset row, or Choose guides' "Add N guides": stores the guide
+     * records of the offered presets among [keys], then fetches each ([refresh], so one guide's
+     * download never holds up the next round). A preset whose write is still running is skipped,
+     * so a second press on its row cannot toast Added twice; another row's press still adds.
+     */
+    fun addPresets(keys: Collection<String>) {
+        val busy = presetsAdding.value
+        val presets = uiState.value.presets.map { it.preset }.filter { it.key in keys && it.key !in busy }
+        if (presets.isEmpty()) return
+        val adding = presets.mapTo(HashSet()) { it.key }
+        presetsAdding.update { it + adding }
+        viewModelScope.launch {
+            try {
+                val guides = sourceManager.addPresetGuides(presets)
+                if (guides == null) {
+                    events.send(SourcesEvent.PresetAddFailed)
+                    return@launch
+                }
+                events.send(SourcesEvent.Added(guides.first().id, guides.first().name))
+                guides.forEach { refresh(it.id) }
+            } finally {
+                presetsAdding.update { it - adding }
             }
-            events.send(SourcesEvent.Added(guide.id, guide.name))
-            if (guide.id !in refreshing.value) refreshNow(guide.id)
         }
     }
 
-    /** Spec 49 D27 F5 "Add guides": stores both India guide records, then fetches them here. */
-    fun addIndiaGuides() {
-        if (indiaJob?.isActive == true) return
-        indiaJob = viewModelScope.launch {
-            val guides = sourceManager.addIndiaGuides()
+    /**
+     * Spec 55 S1 "Add guides" / Choose guides' "Add N guides": stores a record for each of [urls]
+     * among playlist [sourceId]'s offered header guides, named as offered, then fetches them here.
+     * The guard covers the record write only: each fetch runs on its own ([refresh]), so a second
+     * Choose guides round is not held up by the first round's downloads.
+     */
+    fun addHeaderGuides(sourceId: String, urls: Collection<String>) {
+        if (headerJob?.isActive == true) return
+        val offered = uiState.value.headers.firstOrNull { it.sourceId == sourceId }?.guides.orEmpty()
+        val named = offered.filter { it.url in urls }.map { it.url to it.name }
+        if (named.isEmpty()) return
+        headerJob = viewModelScope.launch {
+            val guides = sourceManager.addHeaderGuides(named)
             if (guides == null) {
-                events.send(SourcesEvent.IndiaAddFailed)
+                events.send(SourcesEvent.HeaderAddFailed)
                 return@launch
             }
             events.send(SourcesEvent.Added(guides.first().id, guides.first().name))
-            for (guide in guides) {
-                if (guide.id !in refreshing.value) refreshNow(guide.id)
-            }
+            guides.forEach { refresh(it.id) }
         }
     }
 
@@ -264,7 +375,38 @@ class LiveTvSourcesViewModel @Inject constructor(
         }
     }
 
+    private data class Suggestions(
+        val presets: List<PresetSuggestion>,
+        val headers: List<HeaderSuggestion>
+    )
+
     private companion object {
         const val STOP_TIMEOUT_MS = 5_000L
+
+        /** This TV's region from its time zone (D4: THIS TV); null for a zone with none (UTC: "001"). */
+        fun thisTvRegion(): String? = try {
+            android.icu.util.TimeZone.getRegion(java.util.TimeZone.getDefault().id)
+                .takeIf { it.length == 2 && it.all(Char::isLetter) }
+        } catch (_: RuntimeException) {
+            null // an unknown zone id; on the JVM (unit tests) the android.icu stub
+        }
     }
 }
+
+/**
+ * [LiveTvSourcesViewModel.scanFacts]' triggers (Spec 73 S3c): [read] runs when the pack's record
+ * comes or goes, when a pack download completes ([packSaves], counted once its file is written:
+ * an add writes the record first), and when a scan starts or ends; null while no record.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun packScanFacts(
+    sources: Flow<List<LiveSource>>,
+    packSaves: Flow<Int>,
+    running: Flow<Boolean>,
+    read: suspend () -> PackScanFacts?
+): Flow<PackScanFacts?> = combine(
+    sources.map { list -> list.any { it.kind == SourceKind.PACK } }.distinctUntilChanged(),
+    packSaves,
+    running.distinctUntilChanged()
+) { added, saves, scanning -> if (added) saves to scanning else null }
+    .mapLatest { key -> key?.let { read() } }

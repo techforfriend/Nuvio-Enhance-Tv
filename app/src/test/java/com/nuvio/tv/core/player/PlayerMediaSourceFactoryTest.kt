@@ -21,21 +21,45 @@ class PlayerMediaSourceFactoryTest {
     }
 
     @Test
-    fun `blu-ray transport streams are recognised by extension from filename or url path`() {
-        // Format-capability G2: these must start on mpv; ExoPlayer cannot open them.
-        val isBd = PlayerMediaSourceFactory::isBluRayTransportStream
-        assertTrue(isBd("https://cdn.example/f/Movie.Remux.M2TS?token=a.b", null))
-        assertTrue(isBd("https://debrid.example/dl/123", "00001.mts"))
-        assertTrue(isBd("https://debrid.example/dl/123", "Movie.m2ts"))
-        assertFalse(isBd("https://cdn.example/f/Movie.ts", null))
-        assertFalse(isBd("https://cdn.example/f/Movie.mkv?x=y.m2ts", null))
-        assertFalse(isBd("https://debrid.example/dl/123", null))
-        assertTrue(isBd("https://cdn.example/f/clip.mts#t=10", null))
-        assertTrue(isBd("https://debrid.example/dl/123", "Movie #2.m2ts"))
-        assertTrue(isBd("https://debrid.example/dl/123", "  Movie.M2TS "))
+    fun `headers OkHttp would reject are dropped, valid ones kept`() {
+        val bad = mapOf(
+            "X Space" to "v", "X:Colon" to "v", "(paren)" to "v", "Ünï" to "v", "X-Utf" to "café",
+            "X-Tab" to "a\tb", "X-Nl" to "a\nb", "X-Del" to "a\u007Fb", "Range" to "bytes=0-", "X-Empty" to " "
+        )
+        val good = mapOf("Cookie" to "a=1; b=2", "User-Agent" to "Mozilla/5.0 (X11)", "!#$%&'*+-.^_`|~09azAZ" to "~\"q\" {}")
+        val kept = PlayerMediaSourceFactory.sanitizeHeaders(bad + good)
+        assertEquals(good, kept)
+        // What the rule guards against: OkHttp throws on these (a failed request). It accepts `:` and `(` in a
+        // name, but they are not RFC 9110 tokens: `X:Colon: v` would reach the server as header `X`.
+        val builder = okhttp3.Request.Builder().url("https://example.org/")
+        kept.forEach { (k, v) -> builder.header(k, v) }
+        builder.build()
+        for ((k, v) in bad.filterKeys { it in setOf("X Space", "Ünï", "X-Utf", "X-Nl", "X-Del") }) {
+            assertTrue(k, runCatching { okhttp3.Request.Builder().url("https://example.org/").header(k, v) }.isFailure)
+        }
+    }
+
+    @Test
+    fun `files exoplayer cannot open are recognised by extension from filename or url path`() {
+        // Format-capability G2 (Blu-ray .m2ts/.mts) and Spec 85 G8 (.wmv/.asf): these start on mpv.
+        val onMpv = PlayerMediaSourceFactory::startsOnMpvByName
+        assertTrue(onMpv("https://cdn.example/f/Movie.Remux.M2TS?token=a.b", null))
+        assertTrue(onMpv("https://debrid.example/dl/123", "00001.mts"))
+        assertTrue(onMpv("https://debrid.example/dl/123", "Movie.m2ts"))
+        assertFalse(onMpv("https://cdn.example/f/Movie.ts", null))
+        assertFalse(onMpv("https://cdn.example/f/Movie.mkv?x=y.m2ts", null))
+        assertFalse(onMpv("https://debrid.example/dl/123", null))
+        assertTrue(onMpv("https://cdn.example/f/clip.mts#t=10", null))
+        assertTrue(onMpv("https://debrid.example/dl/123", "Movie #2.m2ts"))
+        assertTrue(onMpv("https://debrid.example/dl/123", "  Movie.M2TS "))
         // Either hint matches: an .m2ts URL path wins over an unrelated filename hint.
-        assertTrue(isBd("https://cdn.example/f/Movie.m2ts", "Movie.mkv"))
-        assertFalse(isBd("https://cdn.example/f/Movie.m2ts/", null))
+        assertTrue(onMpv("https://cdn.example/f/Movie.m2ts", "Movie.mkv"))
+        assertFalse(onMpv("https://cdn.example/f/Movie.m2ts/", null))
+        // WMV/ASF: no ASF extractor in Media3.
+        assertTrue(onMpv("https://cdn.example/f/Old.Movie.WMV?sig=1", null))
+        assertTrue(onMpv("https://debrid.example/dl/123", "Clip.asf"))
+        assertFalse(onMpv("https://cdn.example/f/Movie.wma", null))
+        assertFalse(onMpv("https://cdn.example/f/Movie.mkv?x=y.wmv", null))
     }
 
     @Test

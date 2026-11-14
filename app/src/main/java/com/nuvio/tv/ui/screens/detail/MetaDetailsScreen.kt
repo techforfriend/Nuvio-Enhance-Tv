@@ -171,7 +171,9 @@ fun MetaDetailsScreen(
     onNavigateToDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit = { _, _, _ -> },
     onPlayClick: DetailPlayHandler = { _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ -> },
     onPlayManuallyClick: DetailPlayHandler = { _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ -> },
-    onPlayStartFromBeginningClick: DetailPlayHandler = { _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ -> }
+    onPlayStartFromBeginningClick: DetailPlayHandler = { _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ -> },
+    /** Who's watching, from the rating-limit block (Spec 64 D13). */
+    onSwitchProfile: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     // Re-entered with the page already loaded (back from the player or a pushed screen): the
@@ -303,6 +305,11 @@ fun MetaDetailsScreen(
             }
     ) {
         when {
+            uiState.ratingBlock != null -> DetailRatingBlockState(
+                block = uiState.ratingBlock!!,
+                onBack = onBackPress,
+                onSwitchProfile = onSwitchProfile
+            )
             // Loading: the handed-over Home backdrop under a first-frame skeleton (DetailStates.kt).
             uiState.isLoading -> DetailLoadingState(backdropUrl = heroBackdropUrl)
             uiState.error != null -> DetailErrorState(
@@ -579,7 +586,9 @@ fun MetaDetailsScreen(
                     onNavigateToDiscoverGenre = onNavigateToDiscoverGenre,
                     onNavigateToTmdbEntityBrowse = onNavigateToTmdbEntityBrowse,
                     onNavigateToDetail = onNavigateToDetail,
-                    onPosterLongPress = { item -> viewModel.posterOptions.show(item, null) }
+                    onPosterLongPress = { item -> viewModel.posterOptions.show(item, null) },
+                    linksLimited = uiState.ratingLimit != null,
+                    onLimitedLinkClick = { viewModel.onEvent(MetaDetailsEvent.OnRatingLimitedLink) }
                 )
             }
         }
@@ -743,7 +752,11 @@ private fun MetaDetailsContent(
     onNavigateToDiscoverGenre: (type: String, genre: String) -> Unit = { _, _ -> },
     onNavigateToTmdbEntityBrowse: (entityKind: String, entityId: Int, entityName: String, sourceType: String, sourceTitle: String, sectionLabel: String) -> Unit = { _, _, _, _, _, _ -> },
     onNavigateToDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit = { _, _, _ -> },
-    onPosterLongPress: (MetaPreview) -> Unit = {}
+    onPosterLongPress: (MetaPreview) -> Unit = {},
+    // Spec 64 D12: under a rating limit OK on a cast member, studio or About person chip calls
+    // [onLimitedLinkClick] (a toast) instead: no page to open, so no focus restore is marked.
+    linksLimited: Boolean = false,
+    onLimitedLinkClick: () -> Unit = {}
 ) {
     val isSeries = remember(meta.type, meta.videos) {
         meta.type == ContentType.SERIES || meta.videos.isNotEmpty()
@@ -1398,7 +1411,9 @@ private fun MetaDetailsContent(
                                 onFocused = focusTitle,
                                 onClick = { member ->
                                     val id = member.tmdbId
-                                    if (id != null) {
+                                    if (linksLimited) {
+                                        onLimitedLinkClick()
+                                    } else if (id != null) {
                                         markRestore(RestoreTarget.CAST_MEMBER, castPersonId = id)
                                         onNavigateToCastDetail(id, member.name, personPageDepartment(member.character), meta.name, strCast)
                                     } else if (member.name.isNotBlank()) {
@@ -1491,10 +1506,14 @@ private fun MetaDetailsContent(
                                 onRestoreFocusHandled = { clearPendingRestore() },
                                 onFocused = focusTitle,
                                 onClick = { item ->
-                                    item.company.tmdbId?.let { entityId ->
-                                        markRestore(RestoreTarget.COMPANY_OR_NETWORK, companyId = entityId)
-                                        val section = if (item.kind == TmdbEntityKind.NETWORK.routeValue) strNetwork else strStudios
-                                        onNavigateToTmdbEntityBrowse(item.kind, entityId, item.company.name, meta.apiType, meta.name, section)
+                                    if (linksLimited) {
+                                        onLimitedLinkClick()
+                                    } else {
+                                        item.company.tmdbId?.let { entityId ->
+                                            markRestore(RestoreTarget.COMPANY_OR_NETWORK, companyId = entityId)
+                                            val section = if (item.kind == TmdbEntityKind.NETWORK.routeValue) strNetwork else strStudios
+                                            onNavigateToTmdbEntityBrowse(item.kind, entityId, item.company.name, meta.apiType, meta.name, section)
+                                        }
                                     }
                                 }
                             )
@@ -1601,9 +1620,13 @@ private fun MetaDetailsContent(
                 collection = collection,
                 // People and genres push their screen over Detail; the sheet reopens on return.
                 onPersonClick = { person ->
-                    person.tmdbId?.let { id ->
-                        val section = resources.getString(personChipSectionRes(person.role))
-                        onNavigateToCastDetail(id, person.name, personPageDepartment(person.role), meta.name, section)
+                    if (linksLimited) {
+                        onLimitedLinkClick()
+                    } else {
+                        person.tmdbId?.let { id ->
+                            val section = resources.getString(personChipSectionRes(person.role))
+                            onNavigateToCastDetail(id, person.name, personPageDepartment(person.role), meta.name, section)
+                        }
                     }
                 },
                 onGenreClick = { genre -> onNavigateToDiscoverGenre(meta.apiType, genre) },

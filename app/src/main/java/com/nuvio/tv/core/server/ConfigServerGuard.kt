@@ -12,7 +12,7 @@ private val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost")
 
 /**
  * Request gate run at the top of every phone-page server's serve() (the two
- * config servers, PhotoUploadServer and TmdbKeyServer), for every method. Returns the 403 to send, or null when the request may proceed.
+ * config servers, PhotoUploadServer, TmdbKeyServer and SavedFiltersConfigServer), for every method. Returns the 403 to send, or null when the request may proceed.
  *
  * 1. Host allow-list (DNS rebinding, CWE-346): a rebinding page reaches this
  *    server under the attacker's hostname, so its Host header carries that

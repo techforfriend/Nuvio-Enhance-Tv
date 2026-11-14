@@ -46,8 +46,10 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
 ): ExoPlayer {
     val assHandler = AssHandler(renderType)
     val assSubtitleParserFactory = CompatAssSubtitleParserFactory(assHandler)
+    // Spec 61 Q4: the MKV extractor leaves PGS/VobSub raw for the text renderer; ASS still
+    // reaches libass through the parser.
     val assExtractorsFactory = extractorsFactory.withAssMkvSupportCompat(
-        subtitleParserFactory = assSubtitleParserFactory,
+        subtitleParserFactory = RenderTimeSubtitles.extractionParsers(assSubtitleParserFactory),
         assHandler = assHandler
     )
     playerMediaSourceFactory?.configureSubtitleParsing(

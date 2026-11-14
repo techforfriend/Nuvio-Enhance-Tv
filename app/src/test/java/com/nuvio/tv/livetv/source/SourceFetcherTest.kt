@@ -108,4 +108,27 @@ class SourceFetcherTest {
         val (_, roomy) = SourceFetcher.sniff(ByteArrayInputStream(body), maxTextBytes = 20_000)
         assertEquals(10_008, roomy.readBytes().size)
     }
+
+    @Test
+    fun `a probe HEADs the URL and reports status and size`() = runTest {
+        server.enqueue(MockResponse().setHeader("Content-Length", 1234))
+        assertEquals(SourceFetcher.Probe(200, 1234), fetcher.probe(url()))
+        assertEquals("HEAD", server.takeRequest().method)
+        server.enqueue(MockResponse().setResponseCode(404))
+        assertEquals(404, fetcher.probe(url()).code)
+    }
+
+    @Test
+    fun `a refused certificate reads as a fixed reason, fetch and probe alike`() = runTest {
+        val refusing = OkHttpClient.Builder().addInterceptor {
+            throw javax.net.ssl.SSLHandshakeException("handshake").apply {
+                initCause(java.security.cert.CertificateException("self-signed"))
+            }
+        }.build()
+        val certFetcher = SourceFetcher(refusing, UnconfinedTestDispatcher())
+        val fetchFailure = runCatching { certFetcher.fetch(url()) { _, _ -> Unit } }.exceptionOrNull()
+        assertEquals(SourceFetcher.CERTIFICATE_REFUSED, (fetchFailure as SourceFetchException).message)
+        val probeFailure = runCatching { certFetcher.probe(url()) }.exceptionOrNull()
+        assertEquals(SourceFetcher.CERTIFICATE_REFUSED, (probeFailure as SourceFetchException).message)
+    }
 }

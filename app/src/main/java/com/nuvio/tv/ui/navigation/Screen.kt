@@ -68,7 +68,7 @@ sealed class Screen(val route: String) {
             return "stream/$encodedVideoId/$encodedContentTypePath/$encodedTitle?poster=$encodedPoster&backdrop=$encodedBackdrop&logo=$encodedLogo&season=${season ?: ""}&episode=${episode ?: ""}&episodeName=$encodedEpisodeName&genres=$encodedGenres&year=$encodedYear&contentId=$encodedContentId&contentName=$encodedContentName&runtime=${runtime ?: ""}&manualSelection=$manualSelection&returnToDetailOnBack=$returnToDetailOnBack&returnToHomeOnBack=$returnToHomeOnBack&startFromBeginning=$startFromBeginning&contentLanguage=$encodedContentLanguage&streamRequestId=$encodedStreamRequestId"
         }
     }
-    data object Player : Screen("player/{streamUrl}/{title}?streamName={streamName}&year={year}&headers={headers}&contentId={contentId}&contentType={contentType}&contentName={contentName}&poster={poster}&backdrop={backdrop}&logo={logo}&videoId={videoId}&season={season}&episode={episode}&episodeTitle={episodeTitle}&bingeGroup={bingeGroup}&autoPlayNav={autoPlayNav}&returnToDetailOnBack={returnToDetailOnBack}&returnToHomeOnBack={returnToHomeOnBack}&filename={filename}&videoHash={videoHash}&videoSize={videoSize}&startFromBeginning={startFromBeginning}&addonName={addonName}&addonLogo={addonLogo}&streamDescription={streamDescription}&infoHash={infoHash}&fileIdx={fileIdx}&sources={sources}&contentLanguage={contentLanguage}&runtimeMinutes={runtimeMinutes}&subtitles={subtitles}&launchStartedAtMs={launchStartedAtMs}") {
+    data object Player : Screen("player/{streamUrl}/{title}?streamName={streamName}&year={year}&headers={headers}&contentId={contentId}&contentType={contentType}&contentName={contentName}&poster={poster}&backdrop={backdrop}&logo={logo}&videoId={videoId}&season={season}&episode={episode}&episodeTitle={episodeTitle}&bingeGroup={bingeGroup}&autoPlayNav={autoPlayNav}&returnToDetailOnBack={returnToDetailOnBack}&returnToHomeOnBack={returnToHomeOnBack}&filename={filename}&videoHash={videoHash}&videoSize={videoSize}&startFromBeginning={startFromBeginning}&addonName={addonName}&addonLogo={addonLogo}&streamDescription={streamDescription}&infoHash={infoHash}&fileIdx={fileIdx}&sources={sources}&contentLanguage={contentLanguage}&runtimeMinutes={runtimeMinutes}&subtitles={subtitles}&releaseVideo={releaseVideo}&launchStartedAtMs={launchStartedAtMs}&sourcesFoundMs={sourcesFoundMs}") {
 
         fun createRoute(
             streamUrl: String,
@@ -105,7 +105,14 @@ sealed class Screen(val route: String) {
             runtimeMinutes: Int? = null,
             /** The stream's own subtitles (Stremio `stream.subtitles`). */
             subtitles: List<com.nuvio.tv.domain.model.Subtitle> = emptyList(),
-            launchStartedAtMs: Long = SystemClock.elapsedRealtime()
+            /**
+             * Spec 80 D20: a changelog release video. The player keeps no last-playback diagnostics
+             * for it and lets it end on its own, however short.
+             */
+            releaseVideo: Boolean = false,
+            launchStartedAtMs: Long = SystemClock.elapsedRealtime(),
+            /** Spec 75: how long finding sources took for this launch, null when there was no scrape. */
+            sourcesFoundMs: Long? = null
         ): String {
             val encodedUrl = encodeUrlArg(streamUrl)
             val encodedTitle = encodeUrlArg(title)
@@ -133,7 +140,7 @@ sealed class Screen(val route: String) {
             val encodedContentLanguage = contentLanguage?.let { encodeUrlArg(it) } ?: ""
             val encodedSubtitles = subtitles.takeIf { it.isNotEmpty() }
                 ?.let { encodeUrlArg(com.nuvio.tv.core.player.encodeStreamSubtitlesArg(it)) } ?: ""
-            return "player/$encodedUrl/$encodedTitle?streamName=$encodedStreamName&year=$encodedYear&headers=$encodedHeaders&contentId=$encodedContentId&contentType=$encodedContentType&contentName=$encodedContentName&poster=$encodedPoster&backdrop=$encodedBackdrop&logo=$encodedLogo&videoId=$encodedVideoId&season=${season ?: ""}&episode=${episode ?: ""}&episodeTitle=$encodedEpisodeTitle&bingeGroup=$encodedBingeGroup&autoPlayNav=$autoPlayNav&returnToDetailOnBack=$returnToDetailOnBack&returnToHomeOnBack=$returnToHomeOnBack&filename=$encodedFilename&videoHash=$encodedVideoHash&videoSize=${videoSize ?: ""}&startFromBeginning=$startFromBeginning&addonName=$encodedAddonName&addonLogo=$encodedAddonLogo&streamDescription=$encodedStreamDescription&infoHash=$encodedInfoHash&fileIdx=${fileIdx ?: ""}&sources=$encodedSources&contentLanguage=$encodedContentLanguage&runtimeMinutes=${runtimeMinutes ?: ""}&subtitles=$encodedSubtitles&launchStartedAtMs=$launchStartedAtMs"
+            return "player/$encodedUrl/$encodedTitle?streamName=$encodedStreamName&year=$encodedYear&headers=$encodedHeaders&contentId=$encodedContentId&contentType=$encodedContentType&contentName=$encodedContentName&poster=$encodedPoster&backdrop=$encodedBackdrop&logo=$encodedLogo&videoId=$encodedVideoId&season=${season ?: ""}&episode=${episode ?: ""}&episodeTitle=$encodedEpisodeTitle&bingeGroup=$encodedBingeGroup&autoPlayNav=$autoPlayNav&returnToDetailOnBack=$returnToDetailOnBack&returnToHomeOnBack=$returnToHomeOnBack&filename=$encodedFilename&videoHash=$encodedVideoHash&videoSize=${videoSize ?: ""}&startFromBeginning=$startFromBeginning&addonName=$encodedAddonName&addonLogo=$encodedAddonLogo&streamDescription=$encodedStreamDescription&infoHash=$encodedInfoHash&fileIdx=${fileIdx ?: ""}&sources=$encodedSources&contentLanguage=$encodedContentLanguage&runtimeMinutes=${runtimeMinutes ?: ""}&subtitles=$encodedSubtitles&releaseVideo=$releaseVideo&launchStartedAtMs=$launchStartedAtMs&sourcesFoundMs=${sourcesFoundMs ?: ""}"
         }
     }
     data object Search : Screen("search") {
@@ -164,10 +171,12 @@ sealed class Screen(val route: String) {
     }
     data object LiveTv : Screen("live_tv")
     /** Live TV › Sources (Spec 34 L7e); [ADD_ARG] true opens the Add source dialog on entry. */
-    data object LiveTvSources : Screen("live_tv_sources?add={add}") {
+    data object LiveTvSources : Screen("live_tv_sources?add={add}&scan={scan}") {
         const val ADD_ARG = "add"
+        /** Spec 73 D3: opened right after the pack was added, the scan's country list shows at once. */
+        const val SCAN_ARG = "scan"
 
-        fun createRoute(add: Boolean): String = "live_tv_sources?add=$add"
+        fun createRoute(add: Boolean, scan: Boolean = false): String = "live_tv_sources?add=$add&scan=$scan"
     }
     data object Library : Screen("library")
     data object Settings : Screen("settings") {
@@ -177,6 +186,9 @@ sealed class Screen(val route: String) {
          * lands. Not a route argument: every surface matches the bare "settings" route.
          */
         const val ENTRY_KEY = "settings_entry"
+
+        /** The release (versionCode) a [ENTRY_KEY] of CHANGELOG opens the page of; cleared with it. */
+        const val ENTRY_RELEASE_KEY = "settings_entry_release"
     }
     data object AddonManager : Screen("addon_manager")
     data object CloudStreamManager : Screen("cloudstream_manager")

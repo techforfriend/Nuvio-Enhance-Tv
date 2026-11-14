@@ -2,6 +2,7 @@ package com.nuvio.tv.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -32,9 +33,10 @@ class ProfileDataStore @Inject constructor(
     private val dataStore = context.profileDataStore
 
     private val profilesJsonKey = stringPreferencesKey("profiles_json")
-    private val activeProfileIdKey = intPreferencesKey("active_profile_id")
+    private val activeProfileIdKey = ACTIVE_PROFILE_ID_KEY
     private val hasEverSelectedProfileKey = booleanPreferencesKey("profile_has_ever_selected")
     private val rememberLastProfileEnabledKey = booleanPreferencesKey("remember_last_profile_enabled")
+    private val returnToPickerEnabledKey = booleanPreferencesKey("return_to_picker_enabled")
 
 
     val profilesList: Flow<List<UserProfile>> = dataStore.data.map { prefs ->
@@ -50,6 +52,11 @@ class ProfileDataStore @Inject constructor(
         prefs[activeProfileIdKey] ?: 1
     }
 
+    /** Spec 64 D14: the active profile was removed and the id fell back to 1 ([fallBackIfActiveRemoved]). */
+    val activeProfileFellBack: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[ACTIVE_PROFILE_FELL_BACK_KEY] == true
+    }
+
     val hasEverSelectedProfile: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[hasEverSelectedProfileKey] ?: false
     }
@@ -58,9 +65,15 @@ class ProfileDataStore @Inject constructor(
         prefs[rememberLastProfileEnabledKey] ?: false
     }
 
+    /** Spec 62 H3 (D8): return to Who's watching after 30 min without use and on wake; on by default. */
+    val returnToPickerEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[returnToPickerEnabledKey] ?: true
+    }
+
     suspend fun setActiveProfile(id: Int) {
         dataStore.edit { prefs ->
             prefs[activeProfileIdKey] = id
+            prefs.remove(ACTIVE_PROFILE_FELL_BACK_KEY)
             prefs[hasEverSelectedProfileKey] = true
         }
     }
@@ -68,6 +81,12 @@ class ProfileDataStore @Inject constructor(
     suspend fun setRememberLastProfileEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[rememberLastProfileEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setReturnToPickerEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[returnToPickerEnabledKey] = enabled
         }
     }
 
@@ -90,9 +109,7 @@ class ProfileDataStore @Inject constructor(
             val current = parseProfiles(prefs[profilesJsonKey]).toMutableList()
             current.removeAll { it.id == id }
             prefs[profilesJsonKey] = serializeProfiles(current)
-            if ((prefs[activeProfileIdKey] ?: 1) == id) {
-                prefs[activeProfileIdKey] = 1
-            }
+            prefs.fallBackIfActiveRemoved(current.map(UserProfile::id))
         }
     }
 
@@ -100,10 +117,7 @@ class ProfileDataStore @Inject constructor(
         dataStore.edit { prefs ->
             val normalizedProfiles = normalizeProfiles(profiles)
             prefs[profilesJsonKey] = serializeProfiles(normalizedProfiles)
-            val activeId = prefs[activeProfileIdKey] ?: 1
-            if (normalizedProfiles.none { it.id == activeId }) {
-                prefs[activeProfileIdKey] = 1
-            }
+            prefs.fallBackIfActiveRemoved(normalizedProfiles.map(UserProfile::id))
         }
     }
 
@@ -137,6 +151,21 @@ class ProfileDataStore @Inject constructor(
 
     private fun serializeProfiles(profiles: List<UserProfile>): String {
         return wireJson.encodeToString(profiles.map { ProfileJson.fromDomain(it) })
+    }
+}
+
+internal val ACTIVE_PROFILE_ID_KEY = intPreferencesKey("active_profile_id")
+internal val ACTIVE_PROFILE_FELL_BACK_KEY = booleanPreferencesKey("active_profile_fell_back")
+
+/**
+ * When the active profile is not among [remainingIds] (deleted, or dropped by sync), falls the
+ * active id back to 1 and records that it did (Spec 64 D14): the app must then ask Who's watching
+ * again instead of carrying on as the primary without its PIN. `setActiveProfile` clears the record.
+ */
+internal fun MutablePreferences.fallBackIfActiveRemoved(remainingIds: Collection<Int>) {
+    if ((this[ACTIVE_PROFILE_ID_KEY] ?: 1) !in remainingIds) {
+        this[ACTIVE_PROFILE_ID_KEY] = 1
+        this[ACTIVE_PROFILE_FELL_BACK_KEY] = true
     }
 }
 

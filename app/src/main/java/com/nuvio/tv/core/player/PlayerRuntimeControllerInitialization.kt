@@ -56,12 +56,14 @@ import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.extractor.ts.TsExtractor
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.nuvio.tv.R
+import com.nuvio.tv.core.di.trimImageMemoryCacheForPlayback
 import com.nuvio.tv.data.local.AudioLanguageOption
 import com.nuvio.tv.data.local.Dv7HandlingMode
 import com.nuvio.tv.data.local.FrameRateMatchingMode
@@ -82,7 +84,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import androidx.media3.common.Tracks
 
 
-private const val MPV_AFR_SETTLE_DELAY_MS = 2_000L
 // AFR review F1: absolute cap on how long playback start may wait for the AFR
 // preflight. In-probe timeouts (NextLib 6s + extractor 4s budgets) are advisory
 // against blocked native calls; the extractor now also has a force-release
@@ -278,9 +279,6 @@ internal fun PlayerRuntimeController.disposeExoPlayerBeforeRebuild(): Boolean {
     return releasedExistingPlayer
 }
 
-// AFR settle hold duration (Exo parity with mpvDelayStartAfterAfrSwitch).
-private const val AFR_EXO_SETTLE_HOLD_MS = 2_000L
-
 /**
  * Applies a [PlayerStartupPlaybackPolicy] start action through the fork's AFR gates.
  * [start] is whether the action starts playback (always true except a paused
@@ -290,12 +288,15 @@ private const val AFR_EXO_SETTLE_HOLD_MS = 2_000L
  *    start is suppressed; resumePlaybackAfterTrackAfrIfHeld() (deadline-bounded, with
  *    its own settle delay) resumes playback when the gate releases.
  *  - Display-AFR settle hold (AFR review R5 / community 0.7.14 QMS stutter report):
- *    when the preflight actually changed the display mode, hold the first start
- *    ~2 s so the A/V pipeline does not begin inside the HDMI mode transition. On
- *    QMS-capable chains the seamless switch reports complete almost instantly, so
- *    an immediate start can otherwise start the hardware clock mid-transition and
- *    latch bad frame pacing for the whole title. Timer-released, never event-gated
- *    — cannot deadlock startup; no-switch starts are unaffected.
+ *    when the preflight actually changed the display mode, hold the first start for
+ *    the "Wait after display switch" setting (Spec 62 H1, default 2 s) so the A/V
+ *    pipeline does not begin inside the HDMI mode transition. On QMS-capable chains
+ *    the seamless switch reports complete almost instantly, so an immediate start can
+ *    otherwise start the hardware clock mid-transition and latch bad frame pacing for
+ *    the whole title. While it runs (afrSettleHoldInFlight) every other start site
+ *    stands down: the tunneled post-READY seek's second READY and the first frame
+ *    used to start playback at once, skipping the hold. Timer-released, never
+ *    event-gated — cannot deadlock startup; no-switch starts are unaffected.
  */
 private fun PlayerRuntimeController.startPlaybackThroughAfrGates(
     player: ExoPlayer,
@@ -303,11 +304,22 @@ private fun PlayerRuntimeController.startPlaybackThroughAfrGates(
     holdForAfrSettle: Boolean
 ) {
     if (!start) return
-    if (afrTrackSwitchInFlight) return
-    if (holdForAfrSettle) {
+    if (afrStartGateHeld) return
+    val settleHoldMs = afrSettleHoldMs(currentPlayerSettings.afrSettleHoldSeconds)
+    if (holdForAfrSettle && settleHoldMs > 0L) {
+        // Park the player as the track gate does: an in-place auto-retry before the first READY
+        // may already have set playWhenReady (review d3f0b468). A no-op on the normal path.
+        player.playWhenReady = false
+        afrSettleHoldInFlight = true
+        // The nt12 path reuses the ExoPlayer across streams: the generation, not the
+        // instance, says this hold still belongs to the current stream.
+        val generation = afrTrackGeneration
         scope.launch {
-            kotlinx.coroutines.delay(AFR_EXO_SETTLE_HOLD_MS)
-            if (_exoPlayer === player && !userPausedManually) {
+            kotlinx.coroutines.delay(settleHoldMs)
+            if (afrTrackGeneration != generation) return@launch
+            afrSettleHoldInFlight = false
+            // A track-AFR switch that began meanwhile starts playback on its own release.
+            if (_exoPlayer === player && !userPausedManually && !afrTrackSwitchInFlight) {
                 player.play()
             }
         }
@@ -328,7 +340,13 @@ internal fun PlayerRuntimeController.initializePlayer(
     // the stale coroutine would dispose this one's player or build the old URL.
     cancelPlayerInit()
     if (url.isEmpty()) {
-        _uiState.update { it.copy(error = context.getString(R.string.player_error_no_stream_url), showLoadingOverlay = false) }
+        // Spec 75: an attempt of its own (NO_URL fails at Getting the link), not the previous one's marks.
+        stepClock.start(android.os.SystemClock.elapsedRealtime(), stepSourcesFoundMs, url = null)
+        val failure = playbackFailure(
+            cause = com.nuvio.tv.core.stream.FailureCause.NO_URL,
+            message = context.getString(R.string.player_error_no_stream_url)
+        )
+        _uiState.update { it.copy(error = failure, showLoadingOverlay = false) }
         return
     }
 
@@ -351,12 +369,19 @@ internal fun PlayerRuntimeController.initializePlayer(
             if (allowEngineFailover) {
                 startupEngineFailoverTriggered = false
             }
+            // Spec 61 Q3: settled before the first suspension, so a same-stream restart fired
+            // during this prelude never reads the previous stream's engine
+            // (currentStreamEngineForRestart). The session engine is set once resolved, below.
+            runtimeInternalPlayerEngineOverride = overrideInternalPlayerEngine
+            sessionPlayerEngine = null
             trackSelection.autoSubtitleSelected = false
             hasScannedTextTracksOnce = false
+            backgroundHeldMpvHopReason = null
             lastPlaybackDiagnostics = LastPlaybackDiagnostics.EMPTY
             playbackFatalErrorRecorded = false
             playbackAnalyticsDiagnostics.reset()
-            resetLoadingOverlayForNewStream()
+            resetLoadingOverlayForNewStream(streamUrl = url)
+            trimImageMemoryCacheForPlayback(context)
             if (startPaused) {
                 userPausedManually = true
                 shouldEnforceAutoplayOnFirstReady = false
@@ -370,13 +395,13 @@ internal fun PlayerRuntimeController.initializePlayer(
             // fires inherited the previous stream's row - a wrong answer, worse
             // than the dash.
             currentAudioPathDescription = null
-            mpvDelayStartAfterAfrSwitch = false
             // nt6 AFR option 1: fresh stream, fresh track-AFR state.
             // P-F3: bump the generation so an in-flight track-AFR coroutine
             // from the previous stream stands down in its finally.
             afrTrackGeneration++
             trackAfrAttemptedForCurrentStream = false
             afrTrackSwitchInFlight = false
+            afrSettleHoldInFlight = false
             afrModeAppliedPreStart = false
             afrSeededRateRaw = 0f
             // Seek review F3: never carry a preview position into a new player /
@@ -417,15 +442,14 @@ internal fun PlayerRuntimeController.initializePlayer(
             var effectiveInternalPlayerEngine = startupEngineBeforeAuto(
                 override = overrideInternalPlayerEngine,
                 setting = playerSettings.internalPlayerEngine,
-                isBluRayTransportStream = PlayerMediaSourceFactory.isBluRayTransportStream(url, currentFilename)
+                startsOnMpvByName = PlayerMediaSourceFactory.startsOnMpvByName(url, currentFilename)
             )
             if (effectiveInternalPlayerEngine == InternalPlayerEngine.AUTO) {
                 effectiveInternalPlayerEngine = resolveAutoInternalPlayerEngine()
             }
-            runtimeInternalPlayerEngineOverride = overrideInternalPlayerEngine
             // The settings observer re-derives the engine as override ?: this ?: setting on every
             // settings write, so the engine this start runs is kept here: an automatic choice (AUTO
-            // or the G2 Blu-ray start) would flip back, and an engine changed in Settings over the
+            // or a start-on-mpv name) would flip back, and an engine changed in Settings over the
             // paused film (Spec 33 D7 pause chip) would swap the surface under the live player.
             sessionPlayerEngine = sessionEngineToKeep(
                 override = overrideInternalPlayerEngine,
@@ -446,6 +470,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                 null
             }
             if (networkTest != null) {
+                // Spec 75: the test's own requests to this URL are not the play's link or
+                // connection; the attempt (and its step times) starts after the hold.
+                stepClock.start(android.os.SystemClock.elapsedRealtime(), stepSourcesFoundMs, url)
                 playerSettings = withPerPlayNetwork(playerSettingsDataStore.playerSettings.first(), url)
                 currentPlayerSettings = playerSettings
                 // Spec 59 D3: an alias to a service already measured is no test result to show.
@@ -515,9 +542,18 @@ internal fun PlayerRuntimeController.initializePlayer(
                             Log.w(PlayerRuntimeController.TAG, "AFR preflight exceeded absolute deadline; starting playback without it")
                             afrJob.cancel()
                         }
-                    if (mpvDelayStartAfterAfrSwitch) {
-                        Log.d(PlayerRuntimeController.TAG, "AFR display mode switched; delaying MPV start by ${MPV_AFR_SETTLE_DELAY_MS}ms")
-                        delay(MPV_AFR_SETTLE_DELAY_MS)
+                    // Spec 62 H1 (D9): the same "Wait after display switch" hold as Exo's paths, for
+                    // what is left of it since the last real switch, whoever made it (Spec 85: the
+                    // preflight above finds the panel already in mode after ExoPlayer's pre-start
+                    // switch and a hop to mpv).
+                    val mpvSettleHoldMs = afrSettleHoldRemainingMs(
+                        holdMs = afrSettleHoldMs(playerSettings.afrSettleHoldSeconds),
+                        lastSwitchElapsedMs = lastAfrModeSwitchElapsedMs,
+                        nowElapsedMs = android.os.SystemClock.elapsedRealtime()
+                    )
+                    if (mpvSettleHoldMs > 0L) {
+                        Log.d(PlayerRuntimeController.TAG, "AFR settle hold: delaying MPV start by ${mpvSettleHoldMs}ms (rest of the hold since the last display switch)")
+                        delay(mpvSettleHoldMs)
                     }
                     setLoadingStatus(
                         phase = "mpv_buffering",
@@ -553,6 +589,8 @@ internal fun PlayerRuntimeController.initializePlayer(
             snapLastSuspectWallMs = 0L
             snapEarlyResetLastAtMs = 0L
             stormRecoveryTotalThisPlayback = 0
+            freezeRecoverySeekAtMs = null
+            freezeFailoverDone = false
             rebufferTotalMs = 0L
             rebufferStartedAtMs = 0L
             lastSeekWallMs = 0L
@@ -593,6 +631,16 @@ internal fun PlayerRuntimeController.initializePlayer(
                     effectiveDv7Mode = playerSettings.dv7HandlingMode
                 }
             }
+            // Spec 61 Q9: a stream the DV_HDR10 recovery rungs forced plays exactly as the
+            // manual HDR10 base-layer mode (extractor base layer + RPU strip, conversion off).
+            // The renderer's mapDV7ToHevc alone does nothing in the vendored AAR. A profile 5
+            // stream (no base layer) only gets conversion disarmed and the DV ladder latched.
+            val dv7Hdr10ForcedForUrl = dv7ToHevcForcedStreamUrls.contains(url)
+            val dvConversionDisarmedForUrl = dv7Hdr10ForcedForUrl ||
+                dvConversionDisarmedStreamUrls.contains(url)
+            if (dv7Hdr10ForcedForUrl) {
+                effectiveDv7Mode = Dv7HandlingMode.HDR10_BASE_LAYER
+            }
 
             // Experimental: explicit libdovi conversion-mode override. Only applies
             // when DV7 handling is Convert to DV8.1 (the modes are libdovi conversion
@@ -628,13 +676,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                     extractorHookReady = DoviBridge.isExtractorHookReadyInBuild
                 )
             }
-            // A stream that previously failed with conversion armed is forced to the HEVC
-            // base layer via dv7ToHevcForcedStreamUrls; that override must also disarm the
-            // conversion/extractor path, otherwise the retry rebuilds the exact same broken
-            // pipeline (stock extractor + no vendored MKV path) and fails identically.
-            val dv7ConversionDisarmedForUrl = dv7ToHevcForcedStreamUrls.contains(url)
+            // A recovery retry must not rebuild the conversion pipeline that just failed.
             isExperimentalDv7ToDv81ActiveForCurrentPlayback =
-                dv7ToDv81SettingActive && dv7ToDv81Probe.supported && !dv7ConversionDisarmedForUrl
+                dv7ToDv81SettingActive && dv7ToDv81Probe.supported && !dvConversionDisarmedForUrl
             // AUTO fallback: if AUTO chose DV81 but the probe failed for this stream,
             // downgrade to HDR10_BASE_LAYER so the user still gets a picture.
             if (playerSettings.dv7HandlingMode == Dv7HandlingMode.AUTO &&
@@ -652,6 +696,8 @@ internal fun PlayerRuntimeController.initializePlayer(
                 PlayerRuntimeController.TAG,
                 "DV7_DOVI: mode=${playerSettings.dv7HandlingMode} " +
                         "effectiveMode=$effectiveDv7Mode " +
+                        "forcedHdr10=$dv7Hdr10ForcedForUrl " +
+                        "conversionDisarmed=$dvConversionDisarmedForUrl " +
                         "dv81Active=$dv7ToDv81SettingActive " +
                         "dv5Compat=${playerSettings.dv5ToDv81Enabled} " +
                         "buildNative=${DoviBridge.isNativeEnabledInBuild} " +
@@ -1010,6 +1056,10 @@ internal fun PlayerRuntimeController.initializePlayer(
                         DefaultTsPayloadReaderFactory.FLAG_IGNORE_SPLICE_INFO_STREAM
                 )
                 .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
+                // Spec 61 Q4: the non-Matroska extractors (TS carries PGS too) leave picture
+                // subtitles raw as well. The media source factory's own setSubtitleParserFactory
+                // does not reach this instance: the wrappers around it do not forward the call.
+                .setSubtitleParserFactory(RenderTimeSubtitles.extractionParsers(DefaultSubtitleParserFactory()))
 
             // Manual Convert-to-DV8.1 uses mode 2; if a prior attempt at this stream
             // failed to play, force mode 1 this time (before the HDR10 fallback).
@@ -1027,11 +1077,12 @@ internal fun PlayerRuntimeController.initializePlayer(
             subtitleDelayUs.set(_uiState.value.subtitleDelayMs.toLong() * 1000L)
 
             // ── Fallback Codec Setup ──
-            // mapDv7ToHevc is now driven by effective mode (HDR10_BASE_LAYER strips DV7),
-            // OR the error handler's per-stream override (preserved for retry-after-failure).
+            // mapDv7ToHevc follows the effective mode or a recovery retry. It also gates the DV
+            // recovery ladder (errorRecoveryStreamState), so a retry that fails again does not
+            // loop; the renderer itself ignores it in this AAR.
             val mapDv7ToHevcEnabled = effectiveDv7Mode == Dv7HandlingMode.HDR10_BASE_LAYER ||
-                    dv7ToHevcForcedStreamUrls.contains(url)
-            val isHdr10BaseLayerModeActive = when (playerSettings.dv7HandlingMode) {
+                    dvConversionDisarmedForUrl
+            val isHdr10BaseLayerModeActive = dv7Hdr10ForcedForUrl || when (playerSettings.dv7HandlingMode) {
                 Dv7HandlingMode.AUTO -> dv7AutoResult?.displayDv != true
                 else -> effectiveDv7Mode == Dv7HandlingMode.HDR10_BASE_LAYER ||
                         effectiveDv7Mode == Dv7HandlingMode.STRIP_DV
@@ -1146,10 +1197,10 @@ internal fun PlayerRuntimeController.initializePlayer(
                     applyCenterMixLevel(_uiState.value.centerMixLevelDb)
                     updateAudioControlAvailability()
                 }
-            ).setExtensionRendererMode(effectiveDecoderPriority)
+            ).apply { mapDv7ToHevc = mapDv7ToHevcEnabled }
+                .setExtensionRendererMode(effectiveDecoderPriority)
                 .setEnableDecoderFallback(true)
                 .setMediaCodecSelector(codecSelector)
-                .applyMapDv7ToHevcIfSupported(mapDv7ToHevcEnabled)
 
             // The app-level factory performs DV7 conversion for the in-band-RPU containers
             // (MP4/fMP4/TS); MKV goes through the vendored extractor. Pass-through for non-DV.
@@ -1466,13 +1517,16 @@ internal fun PlayerRuntimeController.initializePlayer(
                         updatePlaybackTimeline(duration = playerDuration.coerceAtLeast(0L))
                         // Only mark playbackEnded for real finishes so PlayerScreen does not
                         // dispatch next-episode navigation for short debrid/error placeholders.
-                        val naturalEnded = playbackState == Player.STATE_ENDED &&
+                        // A forced end (Spec 61 Q2) leaves the player READY: its ended state is held
+                        // until the progress tick re-arms it after a seek back.
+                        val naturalEnded = exoEndOverrunHandled || playbackState == Player.STATE_ENDED &&
                             shouldTreatAsNaturalPlaybackCompletion(
                                 hasRenderedFirstFrame = hasRenderedFirstFrame,
-                                hasFatalError = !_uiState.value.error.isNullOrBlank(),
+                                hasFatalError = _uiState.value.error != null,
                                 durationMs = playerDuration.coerceAtLeast(0L).let { d ->
                                     maxOf(d, lastKnownDuration)
-                                }
+                                },
+                                releaseVideo = releaseVideo
                             )
                         _uiState.update {
                             it.copy(
@@ -1585,8 +1639,10 @@ internal fun PlayerRuntimeController.initializePlayer(
                                 readyTransition.nextState.shouldEnforceAutoplayOnFirstReady
                             if (readyTransition.nextState.hasRenderedFirstFrame && isTunneledPlayback()) {
                                 hasRenderedFirstFrame = true
+                                blackStartRebuiltStreamUrls.remove(currentStreamUrl)
                                 cancelStartupWatchdog()
                                 retractStartupWatchdogErrorAfterFirstFrame()
+                                clearFailoverNoticeAfterFirstFrame()
                             }
                             when (val action = readyTransition.action) {
                                 is PlayerStartupPlaybackPolicy.ReadyAction.TunneledFirstReady -> {
@@ -1690,9 +1746,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                                 )
                                 val endDiagnostics = currentDiagnostics
                                 lastPlaybackDiagnostics = endDiagnostics
-                                scope.launch {
-                                    runCatching { playerSettingsDataStore.setLastPlaybackDiagnostics(endDiagnostics) }
-                                }
+                                persistLastPlaybackDiagnostics(endDiagnostics)
                             }
                             // Marks watched + auto-play next only for real episode finishes;
                             // short debrid/error placeholders are ignored (see #2819).
@@ -1788,8 +1842,11 @@ internal fun PlayerRuntimeController.initializePlayer(
                         }
                         val isFirstFrame = !hasRenderedFirstFrame  // capture BEFORE flipping
                         hasRenderedFirstFrame = true
+                        // Spec 86 R1: the black-picture rebuild is one per black start, not per session.
+                        blackStartRebuiltStreamUrls.remove(currentStreamUrl)
                         cancelStartupWatchdog()
                         retractStartupWatchdogErrorAfterFirstFrame()
+                        clearFailoverNoticeAfterFirstFrame()
                         // T14: a receiver that came back during this build (its device add
                         // landed before the callback or the player existed) is caught here;
                         // the check is idempotent and rebuilds only on a pinned/live mismatch.
@@ -1815,7 +1872,8 @@ internal fun PlayerRuntimeController.initializePlayer(
                         // nt6: while a track-format AFR switch is settling, hold
                         // the start; resumePlaybackAfterTrackAfrIfHeld() starts
                         // playback when the gate releases (deadline-bounded).
-                        if (!startPaused && !userPausedManually && !afrTrackSwitchInFlight) {
+                        // Spec 62 H1: the preflight settle hold's timer starts it likewise.
+                        if (!startPaused && !userPausedManually && !afrStartGateHeld) {
                             playWhenReady = true
                             play()
                         }
@@ -1839,7 +1897,10 @@ internal fun PlayerRuntimeController.initializePlayer(
                     override fun onPlayerError(error: PlaybackException) {
                         if (isReleasingPlayer && error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT) return
                         cancelFirstFrameWatchdog()
-                        val detailedError = error.toDisplayMessage(context)
+                        // Spec 75 S4: the failure as it stands now (cause, step line, facts); the
+                        // rungs carry it, a failover records its mark, the box shows it.
+                        val failure = playbackFailureOf(error)
+                        val detailedError = failure.message
                         cancelStableProgressReset()
                         // Spec 21 P1: the rung order lives in PlayerErrorRecoveryPolicy; this
                         // listener runs the route.
@@ -1867,6 +1928,11 @@ internal fun PlayerRuntimeController.initializePlayer(
                                 }
                                 return
                             }
+                            // Spec 86 R6: re-anchor in place, ahead of the budget below.
+                            PlayerErrorRecoveryPolicy.Route.LiveEdge -> {
+                                recoverBehindLiveWindow(this@apply)
+                                return
+                            }
                         }
 
                         // nt6 fix B: every rung re-initialises playback and each is
@@ -1887,7 +1953,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         if (bitstreamRetryScheduled) return
                         if (autoRecoveryBudgetAvailable &&
                             rungs.any { rung ->
-                                executeErrorRecoveryRung(rung, error, detailedError, positionMs)
+                                executeErrorRecoveryRung(rung, error, failure, positionMs)
                             }
                         ) {
                             return
@@ -1912,22 +1978,16 @@ internal fun PlayerRuntimeController.initializePlayer(
                         )
                         lastPlaybackDiagnostics = errorDiagnostics
                         playbackFatalErrorRecorded = true
-                        scope.launch {
-                            runCatching {
-                                playerSettingsDataStore.setLastPlaybackDiagnostics(errorDiagnostics)
-                            }
-                        }
+                        persistLastPlaybackDiagnostics(errorDiagnostics)
 
                         // Fatal error: stop any next-episode auto-play that may have been
                         // armed by a short placeholder ENDED or residual post-play state.
                         cancelNextEpisodeAutoPlayOnFatalError()
                         _uiState.update {
                             it.copy(
-                                // Wiring-gap fix: surface the mapped, human-readable
-                                // message (toDisplayMessage) instead of the raw
-                                // extractor dump; detailedError still flows to
-                                // diagnostics above.
-                                error = error.toDisplayMessage(context),
+                                // The plain-words box (Spec 75 S4); detailedError still
+                                // flows to diagnostics above.
+                                error = failure,
                                 showLoadingOverlay = false,
                                 showPauseOverlay = false,
                                 playbackEnded = false,
@@ -1957,6 +2017,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         eventTime: AnalyticsListener.EventTime,
                         audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig
                     ) {
+                        stepClock.soundOpened(android.os.SystemClock.elapsedRealtime())
                         // Audio review F9: the single cheapest observability win.
                         // Whether audio is passed through, decoded to PCM, or
                         // transcoded was previously invisible everywhere in-app.
@@ -2246,14 +2307,11 @@ internal fun PlayerRuntimeController.initializePlayer(
             // A superseded init (already cancelled) can still throw a plain
             // exception from its tail; it must not fail over either.
             currentCoroutineContext().ensureActive()
-            if (
-                attemptStartupExhaustedSourceFailover(
-                    detailedError = e.message ?: context.getString(com.nuvio.tv.R.string.player_error_initialize_failed)
-                )
-            ) {
+            val displayError = e.toDisplayMessage(context, context.getString(com.nuvio.tv.R.string.player_error_initialize_failed))
+            val failure = engineFailure(displayError)
+            if (attemptStartupExhaustedSourceFailover(failure)) {
                 return@launch
             }
-            val displayError = e.toDisplayMessage(context, context.getString(com.nuvio.tv.R.string.player_error_initialize_failed))
             val diagnostics = LastPlaybackDiagnostics(
                 timestampMs = System.currentTimeMillis(),
                 host = currentStreamUrl.safeHost(),
@@ -2262,12 +2320,10 @@ internal fun PlayerRuntimeController.initializePlayer(
             )
             lastPlaybackDiagnostics = diagnostics
             playbackFatalErrorRecorded = true
-            scope.launch {
-                runCatching { playerSettingsDataStore.setLastPlaybackDiagnostics(diagnostics) }
-            }
+            persistLastPlaybackDiagnostics(diagnostics)
             _uiState.update {
                 it.copy(
-                    error = displayError,
+                    error = failure,
                     showLoadingOverlay = false
                 )
             }
@@ -2322,16 +2378,17 @@ internal suspend fun PlayerRuntimeController.resolveAutoInternalPlayerEngine(): 
 }
 
 /**
- * Start engine before AUTO resolution: a manual override wins; else Blu-ray .m2ts/.mts start on
- * mpv (format-capability G2: ExoPlayer cannot open them; mpv's FFmpeg demuxes BDAV and decodes
- * the HDMV tracks, audio as PCM since mpv has no passthrough); else the setting (may be AUTO).
+ * Start engine before AUTO resolution: a manual override wins; else a file ExoPlayer cannot open
+ * starts on mpv ([PlayerMediaSourceFactory.startsOnMpvByName]: Blu-ray .m2ts/.mts, format-capability
+ * G2, mpv's FFmpeg demuxes BDAV and decodes the HDMV tracks, audio as PCM since mpv has no
+ * passthrough; WMV/ASF, Spec 85 G8); else the setting (may be AUTO).
  */
 internal fun startupEngineBeforeAuto(
     override: InternalPlayerEngine?,
     setting: InternalPlayerEngine,
-    isBluRayTransportStream: Boolean
+    startsOnMpvByName: Boolean
 ): InternalPlayerEngine = override
-    ?: if (isBluRayTransportStream) InternalPlayerEngine.MVP_PLAYER else setting
+    ?: if (startsOnMpvByName) InternalPlayerEngine.MVP_PLAYER else setting
 
 /**
  * The engine the settings observer keeps for the session: the one this start runs; null under a
@@ -2341,6 +2398,34 @@ internal fun sessionEngineToKeep(
     override: InternalPlayerEngine?,
     effective: InternalPlayerEngine
 ): InternalPlayerEngine? = effective.takeIf { override == null }
+
+/**
+ * Spec 61 Q3 (NM 8dd8e5500): the engine a restart of the same stream asks for. A retry, a
+ * fallback rung or a crash recovery stays on the engine the stream plays in: the one picked in
+ * the player or by the startup failover ([override]), else the one this start resolved
+ * ([session]), so an mpv-to-ExoPlayer failover is not undone by the next network retry and an
+ * engine changed in Settings mid-film waits for the next stream. Null only before any start.
+ */
+internal fun sameStreamRestartEngine(
+    override: InternalPlayerEngine?,
+    session: InternalPlayerEngine?
+): InternalPlayerEngine? = override ?: session
+
+internal fun PlayerRuntimeController.currentStreamEngineForRestart(): InternalPlayerEngine? =
+    sameStreamRestartEngine(override = runtimeInternalPlayerEngineOverride, session = sessionPlayerEngine)
+
+/**
+ * Called where the stream identity changes (another source or episode): from here until the new
+ * stream's initializePlayer runs, a restart of "the current stream" is a restart of the new one,
+ * and must not carry the previous stream's engine (red team d5df2bbf F3).
+ */
+internal fun PlayerRuntimeController.forgetStreamEngineForNewStream() {
+    runtimeInternalPlayerEngineOverride = null
+    sessionPlayerEngine = null
+    // Spec 85 G1: the new stream (a re-pick of the same URL included) gets its own one automatic
+    // engine switch; the guard only has to stop a loop within one stream's starts.
+    engineHopStreamUrls.clear()
+}
 
 internal fun resolvePreferredAudioLanguages(
     preferredAudioLanguage: String,
@@ -2431,11 +2516,15 @@ internal fun PlayerRuntimeController.prepareStreamStartSubtitles(playerSettings:
     resetAddonSubtitleStateForNewStream()
 }
 
-internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
+/** [streamUrl]: the URL this build opens (the step clock counts only its calls, Spec 75). */
+internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream(streamUrl: String = currentStreamUrl) {
     // N6 V2: drop the previous session's resolved serving host so a new
     // stream (initial play or any switch) never shows the prior title's
     // CDN host during TTFF.
     PlaybackConnectionEvents.clearResolvedHost()
+    // Spec 75 S3: every player build is a new attempt of the step line (a retry re-measures).
+    PlaybackConnectionEvents.stepClock = stepClock
+    stepClock.start(android.os.SystemClock.elapsedRealtime(), stepSourcesFoundMs, streamUrl)
     cancelFirstFrameWatchdog()
     cancelStallWatchdog()
     cancelStartupWatchdog()
@@ -2446,6 +2535,7 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
         progress = null
     )
     hasRenderedFirstFrame = false
+    exoEndOverrunHandled = false
     startPrimeTargetMs = null
     videoNeedsWarmDecoder = false
     hasMarkedCurrentEpisodeCompleted = false
@@ -2488,7 +2578,8 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
             loadingMessage = preparingMessage,
             loadingProgress = null,
             osdTechBadges = emptyList(),
-            audioOutputMode = null
+            audioOutputMode = null,
+            isHdrOutput = false
         )
     }
 }
@@ -2575,6 +2666,22 @@ internal class SubtitleOffsetRenderersFactory(
     private val onFfmpegAudioRendererChanged: (FfmpegAudioRenderer?) -> Unit
 ) : DefaultRenderersFactory(context) {
 
+    /**
+     * The renderer's DV7-to-HEVC mapping flag. Set this, never the final [setMapDV7ToHevc]
+     * directly: [buildVideoRenderers] rebuilds the platform video renderer from a fresh
+     * builder and can only read the flag from here (the base class keeps it private). The
+     * vendored lib-exoplayer AAR stores the flag but never acts on it (its getDecoderInfos
+     * ignores the argument), so HDR10 base-layer playback comes from the extractors
+     * (hdr10BaseLayerMode, RPU strip); this keeps the renderer consistent if a rebuilt AAR
+     * honours it. The factory's other renderer-only video settings are never set in this
+     * app, so the builder's defaults already equal the factory's.
+     */
+    var mapDv7ToHevc: Boolean = false
+        set(value) {
+            field = value
+            setMapDV7ToHevc(value)
+        }
+
     override fun buildVideoRenderers(
         context: Context,
         extensionRendererMode: Int,
@@ -2616,6 +2723,7 @@ internal class SubtitleOffsetRenderersFactory(
                     .setMaxDroppedFramesToNotify(
                         DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY
                     )
+                    .setMapDV7ToHevc(mapDv7ToHevc)
                 out.add(Vc1PtsRepairVideoRenderer(vc1RestampBuilder))
             } else {
                 out.add(vc1RestampRenderer)
@@ -2783,6 +2891,8 @@ internal class SubtitleOffsetRenderersFactory(
         )
         val startIndex = out.size
         super.buildTextRenderers(context, normalizingOutput, outputLooper, extensionRendererMode, out)
+        // Before the wrap below hides the TextRenderer type.
+        RenderTimeSubtitles.enableRenderTimeDecoding(out, startIndex)
         for (index in startIndex until out.size) {
             out[index] = SubtitleOffsetRenderer(
                 baseRenderer = out[index],
@@ -3001,8 +3111,8 @@ private fun friendlyVideoCodecName(mimeType: String?, codecs: String?): String? 
 private fun createDolbyVisionFallbackCodecSelector(
     convertToDv81Active: Boolean = false
 ): MediaCodecSelector {
-    // Stripping DV7 to its HEVC base layer is handled by the renderer (setMapDV7ToHevc),
-    // which only touches profile 7. We must NOT force video/dolby-vision to the HEVC
+    // HDR10 base-layer playback comes from the extractors (hdr10BaseLayerMode, RPU strip);
+    // the renderer's setMapDV7ToHevc is a no-op in the vendored AAR. We must NOT force video/dolby-vision to the HEVC
     // decoder here: that also catches DV5, which has no HDR10 base layer and ends up
     // decoded without its reshaping (wrong colors). DV5 keeps the DV decoder.
     return MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
@@ -3032,13 +3142,6 @@ private fun createDolbyVisionFallbackCodecSelector(
         }
         defaults
     }
-}
-private fun DefaultRenderersFactory.applyMapDv7ToHevcIfSupported(enabled: Boolean): DefaultRenderersFactory {
-    return runCatching {
-        val method = javaClass.getMethod("setMapDV7ToHevc", Boolean::class.javaPrimitiveType)
-        method.invoke(this, enabled)
-        this
-    }.getOrElse { this }
 }
 
 private class SafeBandwidthMeter(
@@ -3103,6 +3206,15 @@ private fun describeAudioEncoding(encoding: Int): String = when (encoding) {
     else -> "Encoding $encoding"
 }
 
+/**
+ * The current stream's DV source profile: the one the extractors recorded (the MKV transformer
+ * and the MP4/TS track output record it when converting or stripping, i.e. whenever they rewrite
+ * the codec string), else [preferredCodecs], else the selected video track's codec string.
+ */
+internal fun PlayerRuntimeController.currentDvSourceProfile(preferredCodecs: String? = null): Int? =
+    DolbyVisionConversionStats.getLastSourceProfile()
+        ?: DvCodecString.profile(preferredCodecs ?: currentVideoTrackCodecs)
+
 private fun PlayerRuntimeController.recordFirstFrameDiagnostics(
     player: ExoPlayer,
     currentDiagnostics: LastPlaybackDiagnostics,
@@ -3112,10 +3224,7 @@ private fun PlayerRuntimeController.recordFirstFrameDiagnostics(
     val conversionCalls = DoviBridge.getConversionCallCount()
     val conversionSucceeded = DoviBridge.getConversionSuccessCount()
     val signalingRewrites = DolbyVisionConversionStats.getCodecStringRewriteCount()
-    // Codec-string fallback for a path that recorded no source profile (the MKV transformer and
-    // the MP4/TS track output record one when converting or stripping a DV track).
-    val sourceProfile = DolbyVisionConversionStats.getLastSourceProfile()
-        ?: DvCodecString.profile(currentVideoTrackCodecs)
+    val sourceProfile = currentDvSourceProfile()
     val clickToFirstFrameMs = launchStartedAtElapsedMs
         ?.let { (SystemClock.elapsedRealtime() - it).coerceAtLeast(0L) }
         ?: -1L
@@ -3230,12 +3339,10 @@ private fun PlayerRuntimeController.recordFirstFrameDiagnostics(
     )
     lastPlaybackDiagnostics = finalDiagnostics
     osdVideoHdrType = finalDiagnostics.videoHdrType
+    // Spec 62 D7: the output type also picks the HDR subtitle style (PlayerUiState.isHdrOutput).
+    _uiState.update { it.copy(isHdrOutput = isHdrOutputType(finalDiagnostics.videoHdrType)) }
     refreshOsdTechBadges()
-    scope.launch {
-        runCatching {
-            playerSettingsDataStore.setLastPlaybackDiagnostics(finalDiagnostics)
-        }
-    }
+    persistLastPlaybackDiagnostics(finalDiagnostics)
     return finalDiagnostics
 }
 

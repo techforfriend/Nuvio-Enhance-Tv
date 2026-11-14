@@ -31,7 +31,8 @@ data class EpgProgramme(
 /**
  * What one XMLTV file leaves after a parse: every channel, and per channel the programmes
  * overlapping [windowStartMs, windowEndMs) plus the first one starting at or after the window end,
- * sorted by start (Spec 34 D14 look-ahead retention: the last in-window programme still has a next).
+ * sorted by start (Spec 34 D14 look-ahead retention: the last in-window programme still has a next;
+ * not kept when the per-channel cap dropped part of the window).
  * [complete] is false when the file was cut short (malformed XML, size cap): what was read is kept.
  */
 @Serializable
@@ -61,24 +62,33 @@ data class EpgSnapshot(
  * (both D5 sources carry it).
  *
  * [newParser] is `android.util.Xml::newPullParser` in the app; JVM tests pass kxml2's parser.
+ * [maxProgrammesPerChannel] bounds each channel's in-window list: the default fits the now/next
+ * look-ahead; a day window (Spec 67 guide grid) passes a larger one.
  */
 class XmltvNowNextParser(
     private val newParser: () -> XmlPullParser,
-    private val maxInputBytes: Long = MAX_INPUT_BYTES
+    private val maxInputBytes: Long = MAX_INPUT_BYTES,
+    private val maxProgrammesPerChannel: Int = MAX_PROGRAMMES_PER_CHANNEL
 ) {
+    init {
+        require(maxProgrammesPerChannel > 0) { "maxProgrammesPerChannel must be positive" }
+    }
 
     private class Slot {
         val inWindow = ArrayList<EpgProgramme>()
         var afterWindow: EpgProgramme? = null
+        /** The cap dropped an in-window programme: the window's tail is missing. */
+        var capped = false
     }
 
+    /** Parses [input] keeping the window [windowStartMs, windowStartMs + lookAheadMs) (the app passes a day window). */
     fun parse(
         input: InputStream,
-        nowMs: Long,
+        windowStartMs: Long,
         lookAheadMs: Long = DEFAULT_LOOK_AHEAD_MS,
         keepChannel: (String) -> Boolean = { true }
     ): EpgSnapshot {
-        val windowEnd = nowMs + lookAheadMs
+        val windowEnd = windowStartMs + lookAheadMs
         val channels = LinkedHashMap<String, EpgChannel>()
         val slots = HashMap<String, Slot>()
         // kxml reaches END_DOCUMENT on a truncated file without an error: complete only once </tv> closes.
@@ -96,7 +106,7 @@ class XmltvNowNextParser(
                         "channel" -> readChannel(parser)?.let { ch ->
                             if (channels.size < MAX_CHANNELS || ch.id in channels) channels[ch.id] = ch
                         }
-                        "programme" -> readProgramme(parser, nowMs, windowEnd, keepChannel, slots)
+                        "programme" -> readProgramme(parser, windowStartMs, windowEnd, keepChannel, slots)
                     }
                 }
                 event = parser.next()
@@ -110,9 +120,13 @@ class XmltvNowNextParser(
             failed = true
         }
         val programmes = slots
-            .mapValues { (_, slot) -> slot.inWindow.sortedBy { it.startMs } + listOfNotNull(slot.afterWindow) }
+            // A capped channel's first-after-window programme would read as the next of its last kept
+            // one and hide where its data ends (day schedule), so it goes.
+            .mapValues { (_, slot) ->
+                slot.inWindow.sortedBy { it.startMs } + listOfNotNull(slot.afterWindow.takeUnless { slot.capped })
+            }
             .filterValues { it.isNotEmpty() }
-        return EpgSnapshot(channels, programmes, nowMs, windowEnd, complete = rootClosed && !failed)
+        return EpgSnapshot(channels, programmes, windowStartMs, windowEnd, complete = rootClosed && !failed)
     }
 
     private fun readChannel(parser: XmlPullParser): EpgChannel? {
@@ -158,8 +172,8 @@ class XmltvNowNextParser(
         val list = slot.inWindow
         val replaceAt: Int? = when {
             start >= windowEnd -> if ((slot.afterWindow?.startMs ?: Long.MAX_VALUE) > start) -1 else null
-            list.size < MAX_PROGRAMMES_PER_CHANNEL -> -1
-            else -> list.indices.maxBy { list[it].startMs }.takeIf { list[it].startMs > start }
+            list.size < maxProgrammesPerChannel -> -1
+            else -> list.indices.maxBy { list[it].startMs }.takeIf { list[it].startMs > start }.also { slot.capped = true }
         }
         if (replaceAt == null) {
             skipElement(parser)

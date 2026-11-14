@@ -17,9 +17,11 @@ import java.nio.charset.StandardCharsets
  * LAN server behind the stream-badge QR page ([StreamBadgeWebPage]). Request
  * fields accepted here are exactly the ones that page sends: import/active/delete
  * POSTs {sourceUrl}. GET /api/settings feeds the page's badge list. The page
- * edits badge rules only, so rules are all this server reads and saves.
+ * edits badge rules only, so rules are all this server reads and saves. One instance is one QR
+ * session: every route lives under `/b/<token>/` (Spec 68 X3).
  */
 class StreamBadgeConfigServer(
+    private val token: String,
     private val currentRulesProvider: () -> StreamBadgeRules,
     private val onRulesChanged: (StreamBadgeRules) -> Unit,
     private val context: Context? = null,
@@ -27,15 +29,23 @@ class StreamBadgeConfigServer(
     port: Int = DEFAULT_PORT
 ) : NanoHTTPD(port) {
 
-    override fun serve(session: IHTTPSession): Response {
+    /** The QR address on this device's [ip]. */
+    fun url(ip: String): String = "http://$ip:$listeningPort$PATH_PREFIX$token/"
+
+    override fun serve(session: IHTTPSession): Response =
+        route(session).withTokenPathHeaders(session.method)
+
+    private fun route(session: IHTTPSession): Response {
         session.rejectUntrustedRequest()?.let { return it }
+        val path = pathAfterToken(session.uri, PATH_PREFIX, token)
+            ?: return session.notFoundOutsideSession()
         return when {
-            session.method == Method.GET && session.uri == "/" -> serveWebPage()
-            session.method == Method.GET && session.uri == "/logo.png" -> pngOrNotFound(logoProvider?.invoke())
-            session.method == Method.GET && session.uri == "/api/settings" -> serveSettings()
-            session.method == Method.POST && session.uri == "/api/badges/import" -> handleBadgeImport(session)
-            session.method == Method.POST && session.uri == "/api/badges/active" -> handleBadgeActive(session)
-            session.method == Method.POST && session.uri == "/api/badges/delete" -> handleBadgeDelete(session)
+            session.method == Method.GET && path.isEmpty() -> serveWebPage()
+            session.method == Method.GET && path == "logo.png" -> pngOrNotFound(logoProvider?.invoke())
+            session.method == Method.GET && path == "api/settings" -> serveSettings()
+            session.method == Method.POST && path == "api/badges/import" -> handleBadgeImport(session)
+            session.method == Method.POST && path == "api/badges/active" -> handleBadgeActive(session)
+            session.method == Method.POST && path == "api/badges/delete" -> handleBadgeDelete(session)
             else -> notFoundResponse()
         }
     }
@@ -163,6 +173,7 @@ class StreamBadgeConfigServer(
 
     companion object {
         private const val TAG = "StreamBadgeConfigServer"
+        private const val PATH_PREFIX = "/b/"
 
         /** First port tried; above TorrServer's, clear of AddonConfigServer's 8080 range. */
         const val DEFAULT_PORT = TorrServerBinary.PORT + 1
@@ -180,6 +191,7 @@ class StreamBadgeConfigServer(
             maxAttempts: Int = 10
         ): StreamBadgeConfigServer? = startOnFirstAvailablePort(startPort, maxAttempts) { port ->
             StreamBadgeConfigServer(
+                token = newSessionToken(),
                 currentRulesProvider = currentRulesProvider,
                 onRulesChanged = onRulesChanged,
                 context = context,

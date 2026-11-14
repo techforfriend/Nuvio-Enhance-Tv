@@ -72,7 +72,9 @@ internal fun PlayerRuntimeController.recordLoadingDiagnosticEvent(
     )
 }
 
+/** Called only at a first frame (Exo rendered/ready, MPV ready), so it also ends the Picture step (Spec 75). */
 internal fun PlayerRuntimeController.finishLoadingDiagnostics(phase: String) {
+    stepClock.pictureShown(SystemClock.elapsedRealtime())
     recordLoadingDiagnosticEvent(phase = phase, message = null, progress = 1f)
 }
 

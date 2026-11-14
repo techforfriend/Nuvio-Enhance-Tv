@@ -46,7 +46,9 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.livetv.data.ChannelRepository
+import com.nuvio.tv.livetv.player.DrmFailure
 import com.nuvio.tv.livetv.player.FailureKind
+import com.nuvio.tv.livetv.player.LiveDrm
 import com.nuvio.tv.livetv.player.LiveFailure
 import com.nuvio.tv.livetv.parse.EpgProgramme
 import com.nuvio.tv.livetv.player.LiveTuneState
@@ -135,21 +137,26 @@ internal fun LiveTvPreview(
                 if (tune is LiveTuneState.Tuning) LiveTvTuning(tune, number(channel.key))
             }
         }
-        // A SurfaceView ignores Compose clipping: page-black corners round the picture instead.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawBehind {
-                    val r = live.previewRadius.toPx()
-                    val mask = Path().apply {
-                        fillType = PathFillType.EvenOdd
-                        addRect(size.toRect())
-                        addRoundRect(RoundRect(size.toRect(), CornerRadius(r)))
-                    }
-                    drawPath(mask, NuvioPrimitives.black)
-                }
-        )
+        LiveTvCornerMask(radius = live.previewRadius)
     }
+}
+
+/** A SurfaceView ignores Compose clipping: page-black corners of [radius] round the picture under it instead. */
+@Composable
+internal fun LiveTvCornerMask(radius: Dp) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawBehind {
+                val r = radius.toPx()
+                val mask = Path().apply {
+                    fillType = PathFillType.EvenOdd
+                    addRect(size.toRect())
+                    addRoundRect(RoundRect(size.toRect(), CornerRadius(r)))
+                }
+                drawPath(mask, NuvioPrimitives.black)
+            }
+    )
 }
 
 /** The tuning veil (`.lvpv .tune`): the last frame dimmed, a spinner, "Tuning X", CH [number] · stream i of m. */
@@ -172,7 +179,8 @@ internal fun LiveTvTuning(tune: LiveTuneState.Tuning, number: String?, modifier:
         )
         val parts = listOfNotNull(
             ch,
-            tune.streams.takeIf { it > 0 }?.let { stringResource(R.string.live_tv_stream_of, tune.stream, it) }
+            tune.streams.takeIf { it > 0 }?.let { stringResource(R.string.live_tv_stream_of, tune.stream, it) },
+            tune.keySystem?.let(::keySystemLabel)
         )
         if (parts.isNotEmpty()) {
             Text(
@@ -229,8 +237,12 @@ internal fun LiveTvUnavailable(
         // The addon's stream lookup failed (its fixed reason is the last error).
         state.streams == 0 && state.failure.kind == FailureKind.NETWORK -> stringResource(R.string.live_tv_lookup_failed)
         state.streams == 0 -> stringResource(R.string.live_tv_no_streams)
-        state.failure.kind == FailureKind.DRM ->
-            pluralStringResource(R.plurals.live_tv_all_streams_drm, state.streams, state.streams)
+        // Spec 74 D4: say how many needed a licence, so a licence refusal and a dead clear stream are told apart.
+        state.tried >= state.streams && state.licensed >= state.streams ->
+            pluralStringResource(R.plurals.live_tv_all_streams_need_licence, state.streams, state.streams)
+        state.tried >= state.streams && state.licensed > 0 ->
+            pluralStringResource(R.plurals.live_tv_all_streams_failed, state.streams, state.streams) + FACT_SEPARATOR +
+                pluralStringResource(R.plurals.live_tv_streams_need_licence, state.licensed, state.licensed)
         state.tried >= state.streams -> pluralStringResource(R.plurals.live_tv_all_streams_failed, state.streams, state.streams)
         else -> stringResource(R.string.live_tv_streams_tried, state.tried, state.streams)
     }
@@ -296,23 +308,46 @@ internal fun LiveTvUnavailable(
     }
 }
 
-/** The unavailable box's "last error": a lookup's fixed reason, an HTTP status, else the kind. */
+/**
+ * The unavailable box's "last error": a lookup's fixed reason, a licence failure (Spec 74 D5: who
+ * refused and how; never the licence URL, keys or headers), an HTTP status, else the kind.
+ */
 @Composable
 private fun liveFailureText(failure: LiveFailure): String {
     failure.detail?.let { return it }
-    failure.httpCode?.let { code ->
-        return HTTP_REASONS[code]?.let { "$code $it" } ?: stringResource(R.string.live_tv_error_http, code)
-    }
+    if (failure.kind == FailureKind.DRM) return licenceFailureText(failure)
+    failure.httpCode?.let { return httpStatusText(it) }
     return stringResource(
         when (failure.kind) {
             FailureKind.NETWORK -> R.string.live_tv_error_network
             FailureKind.STALL -> R.string.live_tv_error_stall
             FailureKind.PARSE -> R.string.live_tv_error_parse
-            FailureKind.DRM -> R.string.live_tv_error_drm
+            FailureKind.DRM -> R.string.live_tv_error_licence_not_accepted
             FailureKind.BLOCKED, FailureKind.DEAD -> R.string.live_tv_error_network
         }
     )
 }
+
+@Composable
+private fun httpStatusText(code: Int): String =
+    HTTP_REASONS[code]?.let { "$code $it" } ?: stringResource(R.string.live_tv_error_http, code)
+
+@Composable
+private fun licenceFailureText(failure: LiveFailure): String {
+    val code = failure.httpCode
+    return when {
+        failure.drm == DrmFailure.UNSUPPORTED -> LiveDrm.displayName(failure.keySystem)
+            ?.let { stringResource(R.string.live_tv_error_no_drm, it) }
+            ?: stringResource(R.string.live_tv_error_no_drm_unknown)
+        failure.drm == DrmFailure.NO_LICENCE -> stringResource(R.string.live_tv_error_no_licence)
+        failure.drm == DrmFailure.REFUSED && code != null ->
+            stringResource(R.string.live_tv_error_licence_refused, httpStatusText(code))
+        else -> stringResource(R.string.live_tv_error_licence_not_accepted)
+    }
+}
+
+/** A key system as the tuning line and the options stream row name it (Spec 74 D6); "DRM" when it has no known name. */
+internal fun keySystemLabel(keySystem: String): String = LiveDrm.displayName(keySystem) ?: "DRM"
 
 /** RFC 9110 reason phrases for the statuses the live policy treats as fatal (D7). */
 private val HTTP_REASONS = mapOf(
@@ -391,7 +426,7 @@ internal fun LiveTvInfo(
                 maxLines = 2
             )
         } else {
-            LiveTvKeyHints(modifier = Modifier.padding(top = 6.dp))
+            LiveTvKeyHints(schedule = row.hasSchedule, modifier = Modifier.padding(top = 6.dp))
         }
     }
 }
@@ -491,9 +526,9 @@ internal fun LiveTvNextLine(next: EpgProgramme, timeFormat: DateFormat) {
     }
 }
 
-/** `.lvhint`: OK Full screen, HOLD OK Options, CH ± Zap (outlined keys). */
+/** `.lvhint`: OK Full screen, HOLD OK Options, CH ± Zap (outlined keys), ► Schedule when [schedule] (Spec 67 D3 Q1). */
 @Composable
-private fun LiveTvKeyHints(modifier: Modifier = Modifier) {
+private fun LiveTvKeyHints(schedule: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -502,6 +537,9 @@ private fun LiveTvKeyHints(modifier: Modifier = Modifier) {
         LiveTvKeyHint(listOf(stringResource(R.string.live_tv_hint_ok)), stringResource(R.string.live_tv_hint_full_screen))
         LiveTvKeyHint(listOf(stringResource(R.string.live_tv_hint_hold_ok)), stringResource(R.string.live_tv_hint_options))
         LiveTvKeyHint(listOf(stringResource(R.string.live_tv_hint_ch)), stringResource(R.string.live_tv_hint_zap))
+        if (schedule) {
+            LiveTvKeyHint(listOf(stringResource(R.string.live_tv_hint_right)), stringResource(R.string.live_tv_hint_schedule))
+        }
     }
 }
 

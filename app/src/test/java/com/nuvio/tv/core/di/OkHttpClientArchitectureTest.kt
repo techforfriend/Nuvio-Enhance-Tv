@@ -1,5 +1,10 @@
 package com.nuvio.tv.core.di
 
+import android.content.Context
+import com.nuvio.tv.core.network.AddonHostGuard
+import com.nuvio.tv.core.network.tls.AddonCertPins
+import com.nuvio.tv.core.network.tls.AddonTlsTrust
+import com.nuvio.tv.core.network.tls.platformTrustManager
 import com.nuvio.tv.data.remote.api.AddonApi
 import io.mockk.every
 import io.mockk.mockk
@@ -14,8 +19,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import retrofit2.Retrofit
 import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSession
@@ -23,15 +31,21 @@ import javax.net.ssl.SSLSession
 /**
  * W2.1 single-home contracts. The shared interceptor helpers are the facts
  * every DI client composes, so their behavior is pinned here against real
- * HTTP round-trips. The @Api/@Validated providers themselves need an Android
- * Context (cache dirs) and stay provider-only; the @Image/@BackendAuth
- * providers are context-free and are pinned directly
+ * HTTP round-trips. The @Image/@BackendAuth/@Download providers are
+ * context-free and are pinned directly; @Api's TLS and cache directory are
+ * pinned through a mocked Context (Spec 68 X7). The @Validated provider stays
+ * provider-only
  * (@Validated's 30s cap is the same one-line shape; a Robolectric pin can ride
  * if this file ever gains Robolectric).
  */
 class OkHttpClientArchitectureTest {
 
     private lateinit var server: MockWebServer
+
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private val addonTls = AddonTlsTrust(platformTrustManager()) { AddonCertPins.EMPTY }
 
     @Before
     fun setUp() {
@@ -134,7 +148,7 @@ class OkHttpClientArchitectureTest {
 
     @Test
     fun `download client keeps the streaming shape`() {
-        val client = NetworkModule.provideDownloadOkHttpClient()
+        val client = NetworkModule.provideDownloadOkHttpClient(addonTls)
         // No callTimeout — downloads span body reads; a total bound here would
         // kill large files (consumers time-bound themselves).
         assertEquals(0, client.callTimeoutMillis)
@@ -142,6 +156,26 @@ class OkHttpClientArchitectureTest {
         // No cache and no guard: binary payloads must not hit the JSON gate
         // or the 2MB response cap.
         assertNull(client.cache)
+    }
+
+    @Test
+    fun `addon clients use the validated addon TLS, never trust-all`() {
+        // Spec 68 X7: @Api and @Download validate certificates (platform, or a pin the user
+        // trusted for that host); no client may go back to accepting any certificate.
+        val context = mockk<Context> { every { cacheDir } returns tmp.root }
+        val api = NetworkModule.provideApiOkHttpClient(context, addonTls, AddonHostGuard())
+        val download = NetworkModule.provideDownloadOkHttpClient(addonTls)
+        val unverifiedSession = mockk<SSLSession> {
+            every { peerCertificates } throws SSLPeerUnverifiedException("no peer certificate")
+        }
+        for (client in listOf(api, download)) {
+            assertSame(addonTls.trustManager, client.x509TrustManager)
+            assertSame(addonTls.hostnameVerifier, client.hostnameVerifier)
+            assertFalse(client.hostnameVerifier.verify("addon.example", unverifiedSession))
+            assertTrue(client.x509TrustManager!!.acceptedIssuers.isNotEmpty())
+        }
+        // The trust-all era's cache (http_cache) is not reused.
+        assertEquals(ADDON_HTTP_CACHE_DIR, api.cache!!.directory.name)
     }
 
     @Test

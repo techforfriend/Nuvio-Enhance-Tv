@@ -139,6 +139,7 @@ ${tabButtons}
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="referrer" content="no-referrer">
 <title>${context.getString(R.string.app_name)} - $pageTitle</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
@@ -1067,7 +1068,7 @@ ${tabButtons}
 <body>
 <div class="page">
   <div class="header">
-    <img src="/logo.png" alt="NuvioTV" class="header-logo">
+    <img src="logo.png" alt="NuvioTV" class="header-logo">
     <p>$pageSubtitle</p>
   </div>
 
@@ -1119,6 +1120,8 @@ ${tabButtons}
 <div class="connection-bar" id="connectionBar">${context.getString(R.string.web_connection_lost)}</div>
 
 <script>
+// Every route lives under this session's /a/<token>/ path (Spec 68 X3); requests stay relative to it.
+var base = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 var addons = [];
 var originalAddons = [];
 var catalogs = [];
@@ -1591,7 +1594,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 
 async function loadState() {
   try {
-    var res = await fetchWithTimeout('/api/state', {}, 5000);
+    var res = await fetchWithTimeout(base + 'api/state', {}, 5000);
     var state = await res.json();
     addons = state.addons || [];
     catalogs = state.catalogs || [];
@@ -2015,7 +2018,7 @@ async function saveChanges() {
     .filter(function(c) { return c.isDisabled; })
     .map(function(c) { return c.disableKey; });
   try {
-    var res = await fetchWithTimeout('/api/addons', {
+    var res = await fetchWithTimeout(base + 'api/addons', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
@@ -2136,7 +2139,7 @@ async function pollStatus(changeId) {
     }
 
     try {
-      var res = await fetchWithTimeout('/api/status/' + changeId, {}, 4000);
+      var res = await fetchWithTimeout(base + 'api/status/' + changeId, {}, 4000);
       var data = await res.json();
       consecutiveErrors = 0;
 
@@ -2441,7 +2444,7 @@ async function firstTmdbSearchResult(sourceType, query) {
 async function loadTmdbMetadata(sourceType, tmdbId) {
   if (!tmdbId || sourceType === 'DISCOVER') return null;
   try {
-    var res = await fetchWithTimeout('/api/tmdb/metadata?sourceType=' + encodeURIComponent(sourceType) + '&id=' + encodeURIComponent(tmdbId), {}, 8000);
+    var res = await fetchWithTimeout(base + 'api/tmdb/metadata?sourceType=' + encodeURIComponent(sourceType) + '&id=' + encodeURIComponent(tmdbId), {}, 8000);
     if (!res.ok) return null;
     return await res.json();
   } catch (e) {
@@ -2452,7 +2455,7 @@ async function loadTmdbMetadata(sourceType, tmdbId) {
 async function searchTmdbSources(sourceType, query) {
   if (!query || (sourceType !== 'COMPANY' && sourceType !== 'COLLECTION')) return [];
   try {
-    var res = await fetchWithTimeout('/api/tmdb/search?sourceType=' + encodeURIComponent(sourceType) + '&query=' + encodeURIComponent(query), {}, 8000);
+    var res = await fetchWithTimeout(base + 'api/tmdb/search?sourceType=' + encodeURIComponent(sourceType) + '&query=' + encodeURIComponent(query), {}, 8000);
     if (!res.ok) return [];
     var data = await res.json();
     return Array.isArray(data) ? data : [];

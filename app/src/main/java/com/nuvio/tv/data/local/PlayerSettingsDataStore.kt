@@ -159,11 +159,60 @@ data class SubtitleStyleSettings(
     val backgroundColor: Int = Color.Transparent.toArgb(),
     val edgeStyle: SubtitleEdgeStyle = SubtitleEdgeStyle.OUTLINE,
     val outlineColor: Int = Color.Black.toArgb(),
-    val outlineWidth: Int = 2 // 1-5
+    val outlineWidth: Int = 2, // 1-5
+    // Spec 62 H2 (D7): the separate style for HDR / Dolby Vision output.
+    val hdrStyleEnabled: Boolean = false,
+    val hdrTextColor: Int = Color.White.toArgb(),
+    /** The real output brightness, [HDR_BRIGHTNESS_MIN]..[HDR_BRIGHTNESS_MAX] percent. */
+    val hdrBrightnessPercent: Int = HDR_BRIGHTNESS_DEFAULT,
+    val hdrDimPlayerControls: Boolean = false
 ) {
+    /**
+     * The HDR style applies: HDR output with the HDR style on. One gate for the drawn colours, the
+     * in-player editor (it edits the HDR colour and brightness) and the controls dim.
+     */
+    fun hdrStyleApplies(hdrOutput: Boolean): Boolean = hdrOutput && hdrStyleEnabled
+
+    /**
+     * The style cues are drawn with: while the HDR style applies, the HDR text colour, and text,
+     * background and outline colours scaled by the HDR brightness (alpha kept).
+     */
+    fun forOutput(hdrOutput: Boolean): SubtitleStyleSettings {
+        if (!hdrStyleApplies(hdrOutput)) return this
+        val percent = coerceHdrBrightness(hdrBrightnessPercent)
+        return copy(
+            textColor = scaleRgb(hdrTextColor, percent),
+            backgroundColor = scaleRgb(backgroundColor, percent),
+            outlineColor = scaleRgb(outlineColor, percent)
+        )
+    }
+
+    /** The style the in-player editor shows: the undimmed HDR text colour while the HDR style applies. */
+    fun editableForOutput(hdrOutput: Boolean): SubtitleStyleSettings =
+        if (hdrStyleApplies(hdrOutput)) copy(textColor = hdrTextColor) else this
+
+    /** The factor player controls and panels draw at: the HDR brightness when Dim player controls applies, else 1. */
+    fun playerControlsBrightness(hdrOutput: Boolean): Float =
+        if (hdrStyleApplies(hdrOutput) && hdrDimPlayerControls) coerceHdrBrightness(hdrBrightnessPercent) / 100f else 1f
+
     companion object {
         /** Also the stored read's default, so a reset and a fresh profile agree. */
         const val DEFAULT_SIZE = 100
+        const val HDR_BRIGHTNESS_MIN = 30
+        const val HDR_BRIGHTNESS_MAX = 100
+        const val HDR_BRIGHTNESS_STEP = 10
+        const val HDR_BRIGHTNESS_DEFAULT = 60
+
+        /** The one home of the brightness rule: 30-100, on the 10 % steps the steppers move by. */
+        fun coerceHdrBrightness(percent: Int): Int {
+            val clamped = percent.coerceIn(HDR_BRIGHTNESS_MIN, HDR_BRIGHTNESS_MAX)
+            return (clamped + HDR_BRIGHTNESS_STEP / 2) / HDR_BRIGHTNESS_STEP * HDR_BRIGHTNESS_STEP
+        }
+
+        private fun scaleRgb(argb: Int, percent: Int): Int {
+            fun channel(shift: Int) = ((argb shr shift) and 0xFF) * percent / 100
+            return (argb and 0xFF000000.toInt()) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+        }
     }
 }
 
@@ -244,6 +293,11 @@ enum class AudioOutputChannels(
     }
 }
 
+/** Spec 62 H1 (D6): "Wait after display switch", 0-10 s; the default is the old fixed 2 s hold. */
+const val AFR_SETTLE_HOLD_MIN_SECONDS = 0
+const val AFR_SETTLE_HOLD_MAX_SECONDS = 10
+const val AFR_SETTLE_HOLD_DEFAULT_SECONDS = 2
+
 /**
  * Data class representing player settings
  */
@@ -317,6 +371,8 @@ data class PlayerSettings(
     // Display settings
     val frameRateMatchingMode: FrameRateMatchingMode = FrameRateMatchingMode.OFF,
     val resolutionMatchingEnabled: Boolean = false,
+    /** Spec 62 H1: hold before playback starts after a real display-mode switch, 0 = off. */
+    val afrSettleHoldSeconds: Int = AFR_SETTLE_HOLD_DEFAULT_SECONDS,
     // Stream selection settings
     val streamAutoPlayMode: StreamAutoPlayMode = StreamAutoPlayMode.MANUAL,
     val streamAutoPlaySource: StreamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES,
@@ -631,6 +687,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val frameRateMatchingKey = booleanPreferencesKey("frame_rate_matching")
     private val frameRateMatchingModeKey = stringPreferencesKey("frame_rate_matching_mode")
     private val resolutionMatchingEnabledKey = booleanPreferencesKey("resolution_matching_enabled")
+    private val afrSettleHoldSecondsKey = intPreferencesKey("afr_settle_hold_seconds")
     private val streamAutoPlayModeKey = stringPreferencesKey("stream_auto_play_mode")
     private val streamAutoPlaySourceKey = stringPreferencesKey("stream_auto_play_source")
     private val streamAutoPlaySelectedAddonsKey = stringSetPreferencesKey("stream_auto_play_selected_addons")
@@ -695,6 +752,10 @@ class PlayerSettingsDataStore @Inject constructor(
     private val subtitleEdgeStyleKey = stringPreferencesKey("subtitle_edge_style")
     private val subtitleOutlineColorKey = intPreferencesKey("subtitle_outline_color")
     private val subtitleOutlineWidthKey = intPreferencesKey("subtitle_outline_width")
+    private val subtitleHdrStyleEnabledKey = booleanPreferencesKey("subtitle_hdr_style_enabled")
+    private val subtitleHdrTextColorKey = intPreferencesKey("subtitle_hdr_text_color")
+    private val subtitleHdrBrightnessPercentKey = intPreferencesKey("subtitle_hdr_brightness_percent")
+    private val subtitleHdrDimPlayerControlsKey = booleanPreferencesKey("subtitle_hdr_dim_player_controls")
 
     // Buffer settings keys
     private val minBufferMsKey = intPreferencesKey("min_buffer_ms")
@@ -871,6 +932,8 @@ class PlayerSettingsDataStore @Inject constructor(
                     runCatching { FrameRateMatchingMode.valueOf(it) }.getOrNull()
                 } ?: if (prefs[frameRateMatchingKey] == true) FrameRateMatchingMode.START_STOP else FrameRateMatchingMode.OFF,
                 resolutionMatchingEnabled = prefs[resolutionMatchingEnabledKey] ?: false,
+                afrSettleHoldSeconds = (prefs[afrSettleHoldSecondsKey] ?: AFR_SETTLE_HOLD_DEFAULT_SECONDS)
+                    .coerceIn(AFR_SETTLE_HOLD_MIN_SECONDS, AFR_SETTLE_HOLD_MAX_SECONDS),
                 streamAutoPlayMode = prefs[streamAutoPlayModeKey]?.let {
                     runCatching { StreamAutoPlayMode.valueOf(it) }.getOrDefault(StreamAutoPlayMode.MANUAL)
                 } ?: StreamAutoPlayMode.MANUAL,
@@ -963,7 +1026,13 @@ class PlayerSettingsDataStore @Inject constructor(
                     backgroundColor = prefs[subtitleBackgroundColorKey] ?: Color.Transparent.toArgb(),
                     edgeStyle = resolveSubtitleEdgeStyle(prefs[subtitleEdgeStyleKey], prefs[subtitleOutlineEnabledKey]),
                     outlineColor = prefs[subtitleOutlineColorKey] ?: Color.Black.toArgb(),
-                    outlineWidth = prefs[subtitleOutlineWidthKey] ?: 2
+                    outlineWidth = prefs[subtitleOutlineWidthKey] ?: 2,
+                    hdrStyleEnabled = prefs[subtitleHdrStyleEnabledKey] ?: false,
+                    hdrTextColor = prefs[subtitleHdrTextColorKey] ?: Color.White.toArgb(),
+                    hdrBrightnessPercent = SubtitleStyleSettings.coerceHdrBrightness(
+                        prefs[subtitleHdrBrightnessPercentKey] ?: SubtitleStyleSettings.HDR_BRIGHTNESS_DEFAULT
+                    ),
+                    hdrDimPlayerControls = prefs[subtitleHdrDimPlayerControlsKey] ?: false
                 ),
                 bufferSettings = BufferSettings(
                     minBufferMs = prefs[minBufferMsKey] ?: BufferSettings.DEFAULT_MIN_BUFFER_MS,
@@ -1238,6 +1307,13 @@ class PlayerSettingsDataStore @Inject constructor(
         }
     }
 
+    suspend fun setAfrSettleHoldSeconds(seconds: Int) {
+        device.edit { prefs ->
+            prefs[afrSettleHoldSecondsKey] =
+                seconds.coerceIn(AFR_SETTLE_HOLD_MIN_SECONDS, AFR_SETTLE_HOLD_MAX_SECONDS)
+        }
+    }
+
     suspend fun setStreamAutoPlayMode(mode: StreamAutoPlayMode) {
         store().edit { prefs ->
             prefs[streamAutoPlayModeKey] = mode.name
@@ -1441,6 +1517,14 @@ class PlayerSettingsDataStore @Inject constructor(
     }
     suspend fun setSubtitleOutlineColor(color: Int) { store().edit { it[subtitleOutlineColorKey] = color } }
     suspend fun setSubtitleOutlineWidth(width: Int) { store().edit { it[subtitleOutlineWidthKey] = width.coerceIn(1, 5) } }
+    suspend fun setSubtitleHdrStyleEnabled(enabled: Boolean) { store().edit { it[subtitleHdrStyleEnabledKey] = enabled } }
+    suspend fun setSubtitleHdrTextColor(color: Int) { store().edit { it[subtitleHdrTextColorKey] = color } }
+    suspend fun setSubtitleHdrBrightnessPercent(percent: Int) {
+        store().edit { it[subtitleHdrBrightnessPercentKey] = SubtitleStyleSettings.coerceHdrBrightness(percent) }
+    }
+    suspend fun setSubtitleHdrDimPlayerControls(enabled: Boolean) {
+        store().edit { it[subtitleHdrDimPlayerControlsKey] = enabled }
+    }
 
     suspend fun setUseForcedSubtitles(enabled: Boolean) {
         store().edit { prefs ->

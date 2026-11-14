@@ -72,6 +72,89 @@ class EpgMatcherTest {
     }
 
     @Test
+    fun `a feed-joined id wins over the plain id, in any guide order`() {
+        // open-epg keys regional feeds as stem + feed (`BBCOneLondon.uk`), iptv-org as `BBCOne.uk@London`.
+        val plain = source("a", "uk", "BBCOne.uk" to listOf("BBC One"))
+        val regional = source("b", "uk", "BBCOneLondon.uk" to listOf("BBC One London"))
+        val ch = channel("b1", "BBC One London", tvgId = "BBCOne.uk@London")
+        assertEquals(EpgRef("b", "BBCOneLondon.uk"), EpgMatcher.match(listOf(ch), listOf(plain, regional), emptyMap())["b1"])
+        // Only the plain id there: it still matches.
+        assertEquals(EpgRef("a", "BBCOne.uk"), EpgMatcher.match(listOf(ch), listOf(plain), emptyMap())["b1"])
+    }
+
+    @Test
+    fun `a loose id matches epgshare01 ids in any guide, after the same key's exact id`() {
+        // A guide of no country (a user-added URL) never reaches the name step; the loose id carries it.
+        val es = source("es", null, "BBC.Two.HD.uk" to listOf("BBC Two HD"), "CNN.HD.us2" to listOf("CNN HD"))
+        val two = channel("t", "BBC Two Ⓖ", tvgId = "BBCTwo.uk")
+        val cnn = channel("c", "CNN", tvgId = "CNN.us@East")
+        val m = EpgMatcher.match(listOf(two, cnn), listOf(es), emptyMap())
+        assertEquals(EpgRef("es", "BBC.Two.HD.uk"), m["t"])
+        assertEquals(EpgRef("es", "CNN.HD.us2"), m["c"])
+        // The same key's exact id in a later guide beats its loose id in an earlier one.
+        val exact = source("oe", "uk", "BBCTwo.uk" to listOf("BBC Two"))
+        assertEquals(EpgRef("oe", "BBCTwo.uk"), EpgMatcher.match(listOf(two), listOf(es, exact), emptyMap())["t"])
+        // A live loose hit beats a stale exact one.
+        val liveEs = source("es", null, "BBC.Two.HD.uk" to listOf("BBC Two HD"), withProgrammes = setOf("BBC.Two.HD.uk"))
+        assertEquals(EpgRef("es", "BBC.Two.HD.uk"), EpgMatcher.match(listOf(two), listOf(exact, liveEs), emptyMap())["t"])
+    }
+
+    @Test
+    fun `bracketed feeds keep their own loose ids`() {
+        val es = source(
+            "es", null,
+            "HBO.(Pacific).us2" to listOf("HBO Pacific"),
+            "HBO.HD.us2" to listOf("HBO HD"),
+            withProgrammes = setOf("HBO.(Pacific).us2", "HBO.HD.us2")
+        )
+        val east = channel("e", "HBO", tvgId = "HBO.us@East")
+        val pacific = channel("p", "HBO", tvgId = "HBO.us@Pacific")
+        val m = EpgMatcher.match(listOf(east, pacific), listOf(es), emptyMap())
+        assertEquals(EpgRef("es", "HBO.HD.us2"), m["e"])
+        assertEquals(EpgRef("es", "HBO.(Pacific).us2"), m["p"])
+    }
+
+    @Test
+    fun `a feed's loose id beats the plain id's exact hit in an earlier guide`() {
+        val oe = source("oe", "uk", "Dave.uk" to listOf("Dave"), withProgrammes = setOf("Dave.uk"))
+        val es = source("es", "uk", "Dave.+1.uk" to listOf("Dave +1"), withProgrammes = setOf("Dave.+1.uk"))
+        val ch = channel("d", "Dave +1", tvgId = "Dave.uk@Plus1")
+        assertEquals(EpgRef("es", "Dave.+1.uk"), EpgMatcher.match(listOf(ch), listOf(oe, es), emptyMap())["d"])
+    }
+
+    @Test
+    fun `a loose id hit comes before a name hit in an earlier guide`() {
+        val byName = source("pw", "uk", "123" to listOf("BBC Two"), withProgrammes = setOf("123"))
+        val es = source("es", null, "BBC.Two.HD.uk" to listOf("BBC Two HD"), withProgrammes = setOf("BBC.Two.HD.uk"))
+        val ch = channel("t", "BBC Two", tvgId = "BBCTwo.uk")
+        assertEquals(EpgRef("es", "BBC.Two.HD.uk"), EpgMatcher.match(listOf(ch), listOf(byName, es), emptyMap())["t"])
+    }
+
+    @Test
+    fun `a guide id loses its country suffix once, not a second dotted word`() {
+        val au = source("au", "au", "ABC.TV.au" to emptyList())
+        val m = EpgMatcher.match(
+            listOf(channel("a", "ABC", tvgId = "X.au"), channel("b", "ABC TV", tvgId = "Y.au")), listOf(au), emptyMap()
+        )
+        assertNull(m["a"])
+        assertEquals(EpgRef("au", "ABC.TV.au"), m["b"])
+    }
+
+    @Test
+    fun `a loose id never crosses countries`() {
+        val es = source("es", null, "NTV.HD.in" to listOf("NTV HD"))
+        assertNull(EpgMatcher.match(listOf(channel("n", "NTV ⓨ", tvgId = "NTV.bd@SD")), listOf(es), emptyMap())["n"])
+    }
+
+    @Test
+    fun `a digit after a guide id's country leaves the name step its stem`() {
+        // epgshare01 CA2 / US2 ids, guide country from the file name.
+        val ca2 = source("es", "ca", "Global.Toronto.ca2" to emptyList())
+        val ch = channel("g", "Global Toronto", tvgId = "CIIIDT.ca")
+        assertEquals(EpgRef("es", "Global.Toronto.ca2"), EpgMatcher.match(listOf(ch), listOf(ca2), emptyMap())["g"])
+    }
+
+    @Test
     fun `a stale tvg-id hit does not shadow a live name hit in another source`() {
         // free-epg.de first: its id hit has no programmes; epg.pw's name hit does.
         val stale = source("free-epg-in", "in", "StarJalsha.in" to listOf("Star Jalsha"))
@@ -188,6 +271,22 @@ class EpgMatcherTest {
         assertEquals(EpgRef("other", "CBSNews247.us"), EpgMatcher.match(listOf(ch), listOf(stalePluto, liveById), emptyMap())["c"])
         val livePluto = source("pluto", null, "6350fdd266e9ea0007bedec5" to listOf("CBS News 24/7"), withProgrammes = setOf("6350fdd266e9ea0007bedec5"))
         assertEquals(EpgRef("pluto", "6350fdd266e9ea0007bedec5"), EpgMatcher.match(listOf(ch), listOf(liveById, livePluto), emptyMap())["c"])
+    }
+
+    @Test
+    fun `Plex and Samsung TV Plus stream ids match their guides' channel ids, any case`() {
+        // i.mjh.nz ids as served 2026-11-10: Plex lower-case hex pairs, Samsung upper-case codes.
+        val plex = source("plex", null, "6a1610bebdf296985fd95603-66635fc0ca7b22f4c3a2d743" to listOf("CW Forever"))
+        val samsung = source("samsung", null, "IN4000600Q" to listOf("Bollygold"))
+        val cw = channel("cw", "CW Forever").copy(
+            streams = listOf(LiveStream("https://jmp2.uk/plex-6a1610bebdf296985fd95603-66635fc0ca7b22f4c3a2d743.m3u8"))
+        )
+        val bolly = channel("b", "Bollygold (1080p)", tvgId = "Bollygold.in@HD").copy(
+            streams = listOf(LiveStream("https://jmp2.uk/stvp-IN4000600Q"))
+        )
+        val got = EpgMatcher.match(listOf(cw, bolly), listOf(plex, samsung), emptyMap())
+        assertEquals(EpgRef("plex", "6a1610bebdf296985fd95603-66635fc0ca7b22f4c3a2d743"), got["cw"])
+        assertEquals(EpgRef("samsung", "IN4000600Q"), got["b"])
     }
 
     @Test

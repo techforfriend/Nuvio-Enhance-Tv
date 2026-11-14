@@ -7,7 +7,6 @@ package com.nuvio.tv.ui.screens.player
 
 import com.nuvio.tv.ui.components.marquee.LocalMarqueeToast
 import com.nuvio.tv.ui.components.marquee.MarqueeLoadingScreen
-import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.marquee.formatRatingScore
 import com.nuvio.tv.ui.util.localizedGenreLabel
 import com.nuvio.tv.ui.theme.NuvioMotion
@@ -47,6 +46,12 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.produceState
+import com.nuvio.tv.core.stream.RecentFailures
+import com.nuvio.tv.domain.model.Stream
+import com.nuvio.tv.ui.components.sources.SourceFailureMark
+import com.nuvio.tv.ui.components.sources.SourceFailureMarks
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,7 +72,6 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -110,9 +114,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import com.nuvio.tv.core.player.findCurrentStreamIndex
 import com.nuvio.tv.ui.components.rememberAmbientAccentProvider
 import com.nuvio.tv.ui.components.sources.SourceRowMarker
+import com.nuvio.tv.ui.components.sources.SourcesPanelSheet
 import com.nuvio.tv.ui.components.sources.StreamSourcesPanel
 import com.nuvio.tv.ui.components.rememberRawSvgPainter
 import com.nuvio.tv.core.player.AspectMode
+import com.nuvio.tv.core.player.FailoverNotice
+import com.nuvio.tv.core.player.triedFor
 import com.nuvio.tv.core.player.NuvioMpvSurfaceView
 import com.nuvio.tv.core.player.PlaybackTimelineState
 import com.nuvio.tv.core.player.PlayerEvent
@@ -203,7 +210,8 @@ fun PlayerScreen(
         onBackPress(uiState.currentVideoId, uiState.currentSeason, uiState.currentEpisode, uiState.backTreatsSwitchAsAutoPlay, completed)
     }
     val exitPlayerFromError: () -> Unit = exitPlayerFromError@{
-        if (exitDispatched) return@exitPlayerFromError
+        // The error box's Go Back during an external handoff (Spec 86 R3): the handoff leaves itself.
+        if (exitDispatched || externalHandoffInProgress) return@exitPlayerFromError
         exitDispatched = true
         viewModel.stopAndRelease()
         onPlaybackErrorBack()
@@ -216,6 +224,27 @@ fun PlayerScreen(
 
     val currentOnPlaybackEnded by rememberUpdatedState(onPlaybackEnded)
     val currentOnBackPress by rememberUpdatedState(onBackPress)
+    // The More tray's External player and the error box's (Spec 86 R3).
+    val openExternalPlayer: () -> Unit = {
+        if (!externalHandoffInProgress) {
+            externalHandoffInProgress = true
+            val timeline = viewModel.playbackTimeline.value
+            val completed = timeline.isCompleted()
+            viewModel.launchInExternalPlayer(context, timeline.currentPosition) { launched ->
+                externalHandoffInProgress = false
+                if (launched && !exitDispatched) {
+                    exitDispatched = true
+                    currentOnBackPress(
+                        uiState.currentVideoId,
+                        uiState.currentSeason,
+                        uiState.currentEpisode,
+                        uiState.backTreatsSwitchAsAutoPlay,
+                        completed
+                    )
+                }
+            }
+        }
+    }
     val nextEpisodeForEndPrompt = uiState.nextEpisode?.takeIf { it.hasAired }
     val shouldConfirmNextEpisodeOnEnd =
         uiState.playbackEnded &&
@@ -253,6 +282,47 @@ fun PlayerScreen(
         }
     }
 
+    // The open sheet of each stream list (Sources; an episode's streams; Spec 65 P1): Back closes
+    // it first, and it never outlives its panel. One state per panel, so a sheet left by one is
+    // never drawn, even for a frame, by the other.
+    val sourcesPanelShown = uiState.showSourcesPanel && uiState.error == null
+    val episodeStreamsShown = uiState.showEpisodesPanel && uiState.showEpisodeStreams && uiState.error == null
+    // Spec 75 S6: the Sources panels mark a source that failed in the last day; the store is read as
+    // a panel opens and again when this session's dead set grows (each failover records first).
+    val recentFailures by produceState(
+        RecentFailures.EMPTY,
+        sourcesPanelShown || episodeStreamsShown,
+        uiState.deadSourceStreamUrls
+    ) {
+        if (sourcesPanelShown || episodeStreamsShown) {
+            value = viewModel.recentFailures()
+        }
+    }
+    val failureStrings = remember(context) { contextFailureStrings(context) }
+    val sourceMarkFor: (Stream) -> SourceFailureMark? = remember(recentFailures, uiState.deadSourceStreamUrls, failureStrings) {
+        val dead = uiState.deadSourceStreamUrls
+        { stream -> SourceFailureMarks.forRow(stream, recentFailures, dead, failureStrings) }
+    }
+    val episodeMarkFor: (Stream) -> SourceFailureMark? = remember(recentFailures, failureStrings) {
+        { stream -> SourceFailureMarks.forRow(stream, recentFailures, emptySet(), failureStrings) }
+    }
+    var sourcesSheet by remember { mutableStateOf<SourcesPanelSheet?>(null) }
+    var episodeSheet by remember { mutableStateOf<SourcesPanelSheet?>(null) }
+    val savedStreamFilters by viewModel.savedStreamFilters.collectAsState(
+        initial = com.nuvio.tv.core.stream.SavedStreamFilters.NONE
+    )
+    LaunchedEffect(sourcesPanelShown) { if (!sourcesPanelShown) sourcesSheet = null }
+    // Spec 75 S5: each failover's toast names the reason; the only signal when the loading screen
+    // is off. Existing Toast pattern (Arshad 2026-08-30: a silent swap confuses).
+    LaunchedEffect(uiState.failoverNotice) {
+        val notice = uiState.failoverNotice ?: return@LaunchedEffect
+        android.widget.Toast.makeText(
+            context,
+            PlaybackFailureCopy.failoverToast(notice.mark, contextFailureStrings(context)),
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+    LaunchedEffect(episodeStreamsShown) { if (!episodeStreamsShown) episodeSheet = null }
     val handleBackPress = handleBackPress@{
         if (externalHandoffInProgress) return@handleBackPress
         if (uiState.networkTestHold != null) {
@@ -286,13 +356,17 @@ fun PlayerScreen(
         } else if (uiState.showSubtitleDelayOverlay) {
             viewModel.onEvent(PlayerEvent.OnHideSubtitleDelayOverlay)
         } else if (uiState.showSourcesPanel) {
-            if (uiState.currentStreamUrl.isNullOrBlank()) {
+            if (sourcesSheet != null) {
+                sourcesSheet = null
+            } else if (uiState.currentStreamUrl.isNullOrBlank()) {
                 exitPlayer()
             } else {
                 viewModel.onEvent(PlayerEvent.OnDismissSourcesPanel)
             }
         } else if (uiState.showEpisodesPanel) {
-            if (uiState.showEpisodeStreams) {
+            if (uiState.showEpisodeStreams && episodeSheet != null) {
+                episodeSheet = null
+            } else if (uiState.showEpisodeStreams) {
                 viewModel.onEvent(PlayerEvent.OnBackFromEpisodeStreams)
             } else {
                 viewModel.onEvent(PlayerEvent.OnDismissEpisodesPanel)
@@ -746,6 +820,8 @@ fun PlayerScreen(
                         uiState.showMoreDialog ||
                         shouldConfirmNextEpisodeOnEnd ||
                         uiState.runtimeMismatch != null ||
+                        // Spec 75 S4: the error box's two buttons take D-pad Left/Right (no seek).
+                        uiState.error != null ||
                         uiState.postPlayMode is PostPlayMode.StillWatching
                 if (panelOrDialogOpen) return@onKeyEvent false
 
@@ -933,6 +1009,13 @@ fun PlayerScreen(
             !uiState.showSpeedPanel &&
             !uiState.showChaptersPanel &&
             uiState.postPlayMode !is PostPlayMode.StillWatching
+        // Spec 62 H2d (D7): with Dim player controls on, everything drawn over HDR video draws at the
+        // HDR brightness. Opt-in per overlay: a new overlay over the picture adds `.then(controlsDim)`.
+        // PlayerOsd dims itself (it reads uiState). Outside it: the video surfaces (and the cues they
+        // draw), the loading and error screens (not over the picture) and the black scrims (no RGB).
+        val controlsDim = rememberPlayerControlsDim(uiState.playerControlsBrightness)
+        // The post-play cards slide in by half their width: their layer takes the slide overflow.
+        val postPlayDim = rememberPlayerControlsDim(uiState.playerControlsBrightness, slideOverflow = true)
         // Video Player
         if (uiState.internalPlayerEngine == InternalPlayerEngine.MVP_PLAYER) {
             MpvPlayerSurface(
@@ -940,7 +1023,7 @@ fun PlayerScreen(
                 isPlaying = uiState.isPlaying,
                 isBuffering = uiState.isBuffering,
                 aspectMode = uiState.aspectMode,
-                subtitleStyle = uiState.subtitleStyle,
+                subtitleStyle = uiState.effectiveSubtitleStyle,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -953,7 +1036,7 @@ fun PlayerScreen(
                     aspectMode = uiState.aspectMode,
                     useLibass = uiState.useLibass,
                     libassRenderType = uiState.libassRenderType,
-                    subtitleStyle = uiState.subtitleStyle,
+                    subtitleStyle = uiState.effectiveSubtitleStyle,
                     ownSsaStyle = isSelectedSubtitleAss && !uiState.useLibass,
                     onBindSubtitleView = viewModel::bindExoSubtitleView,
                     modifier = Modifier.fillMaxSize()
@@ -972,8 +1055,15 @@ fun PlayerScreen(
         // Spec 33 D6 (stage t-hold): the network test hold shows even with the loading overlay
         // or its status turned off, since the start waits on it for a minute or two.
         val networkTestHold = uiState.networkTestHold
+        val loadingVisible = (uiState.showLoadingOverlay || networkTestHold != null) && uiState.error == null
+        // Spec 75 S5: the notice clears at the first frame, as the screen starts fading out; the
+        // fade keeps the last one drawn so the block does not jump.
+        val liveNotice = uiState.failoverNotice.takeIf { networkTestHold == null }
+        val heldNotice = remember { mutableStateOf<FailoverNotice?>(null) }
+        if (loadingVisible) SideEffect { heldNotice.value = liveNotice }
+        val failoverNotice = if (loadingVisible) liveNotice else heldNotice.value
         MarqueeLoadingScreen(
-            visible = (uiState.showLoadingOverlay || networkTestHold != null) && uiState.error == null,
+            visible = loadingVisible,
             backdropUrl = uiState.backdrop,
             // The series name over the episode, as the OSD title.
             title = uiState.contentName?.takeIf { isEpisode } ?: uiState.title,
@@ -1015,6 +1105,11 @@ fun PlayerScreen(
             filename = if (networkTestHold != null) stringResource(R.string.network_test_hold_note) else viewModel.currentFilename,
             progress = uiState.loadingProgress,
             reserveStatusLines = true,
+            // Spec 75 S5: a failover names its reason whatever the Loading status setting says.
+            notice = failoverNotice?.let { notice ->
+                remember(notice, playerContext) { PlaybackFailureCopy.failoverLine(notice, contextFailureStrings(playerContext)) }
+            },
+            footer = failoverNotice?.previousSteps?.let { steps -> @Composable { PreviousSourceStepLine(steps) } },
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2f)
@@ -1064,6 +1159,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.5f)
+                .then(controlsDim)
         ) {
             OsdClockHost(viewModel = viewModel, playbackSpeed = uiState.playbackSpeed)
         }
@@ -1123,7 +1219,7 @@ fun PlayerScreen(
             uiState = uiState,
             viewModel = viewModel,
             osdVisible = osdVisible,
-            modifier = Modifier.zIndex(2.65f)
+            modifier = Modifier.zIndex(2.65f).then(controlsDim)
         )
 
         // While the OSD shows, the panel ends above its tray and seek bar (clipped; the full
@@ -1140,6 +1236,7 @@ fun PlayerScreen(
                 )
                 .clipToBounds()
                 .zIndex(2.7f)
+                .then(controlsDim)
         )
 
         // Buffering indicator — isolated in its own composable scope so that
@@ -1150,23 +1247,36 @@ fun PlayerScreen(
             showLoadingOverlay = uiState.showLoadingOverlay,
             isTorrentStream = uiState.isTorrentStream,
             torrentBufferingMessage = uiState.torrentBufferingMessage,
-            torrentBufferingProgress = uiState.torrentBufferingProgress
+            torrentBufferingProgress = uiState.torrentBufferingProgress,
+            contentModifier = controlsDim
         )
 
-        // Playback error (sandbox u6 stage 15): Detail's message block over the backdrop and
-        // veil, Go Back focused (it exits as built; Back does the same, handleBackPress).
-        uiState.error?.let { error ->
-            val errorFocusRequester = remember { FocusRequester() }
-            MarqueeMessage(
-                eyebrow = null,
-                title = stringResource(R.string.player_error_title),
-                body = AnnotatedString(error),
-                actionLabel = stringResource(R.string.player_go_back),
-                onAction = exitPlayerFromError,
-                focusRequester = errorFocusRequester,
-                actionGlow = osdAccent,
+        // Playback error (sandbox u6 stage 15, Spec 75 S4): the message block over the backdrop
+        // and veil, the cause in plain words + step line; Spec 86 R3: the cause's fix buttons lead
+        // the row, then Go Back (it exits as built; Back does the same, handleBackPress) and Details.
+        uiState.error?.let { failure ->
+            LaunchedEffect(failure) { viewModel.onFailureBoxShown() }
+            // Re-read when the list lands or a source is marked dead (Next source), or the engine changes.
+            val options = remember(failure, uiState.sourceAllStreams, uiState.deadSourceStreamUrls, uiState.internalPlayerEngine) {
+                viewModel.failureBoxOptions()
+            }
+            PlaybackFailureBox(
+                failure = failure,
+                options = options,
+                onAction = onAction@{ action ->
+                    // The external handoff stops this player once its subtitles are cached.
+                    if (externalHandoffInProgress) return@onAction
+                    when (action) {
+                        FailureBoxAction.RETRY -> viewModel.retryFromFailureBox()
+                        FailureBoxAction.SWITCH_ENGINE -> viewModel.switchEngineFromFailureBox()
+                        FailureBoxAction.NEXT_SOURCE -> viewModel.playNextSourceFromFailureBox()
+                        FailureBoxAction.EXTERNAL_PLAYER -> openExternalPlayer()
+                    }
+                },
+                onGoBack = exitPlayerFromError,
                 backdropUrl = uiState.backdrop,
-                modifier = Modifier.zIndex(3f)
+                modifier = Modifier.zIndex(3f),
+                tried = uiState.exhaustedFailover.triedFor(failure)
             )
         }
 
@@ -1183,7 +1293,7 @@ fun PlayerScreen(
                 accent = osdAccent,
                 onPickAnother = { viewModel.onEvent(PlayerEvent.OnRuntimeMismatchChoice(playAnyway = false)) },
                 onPlayAnyway = { viewModel.onEvent(PlayerEvent.OnRuntimeMismatchChoice(playAnyway = true)) },
-                modifier = Modifier.zIndex(3f)
+                modifier = Modifier.zIndex(3f).then(controlsDim)
             )
         }
 
@@ -1192,7 +1302,8 @@ fun PlayerScreen(
             NextEpisodeEndPromptOverlay(
                 nextEpisode = endPromptEpisode,
                 onContinue = continueToNextEpisodeFromEndPrompt,
-                onReturnToDetails = returnToDetailsFromEndPrompt
+                onReturnToDetails = returnToDetailsFromEndPrompt,
+                modifier = controlsDim
             )
         }
 
@@ -1259,6 +1370,7 @@ fun PlayerScreen(
                 .offset { IntOffset(0, -skipLift.roundToPx()) }
                 .graphicsLayer { alpha = skipAsideAlpha }
                 .zIndex(2.1f)
+                .then(controlsDim)
         )
         // The post-play card (Next, still watching, Spec 45's Previous search) yields to these.
         val postPlayCardAllowed = uiState.error == null &&
@@ -1281,6 +1393,7 @@ fun PlayerScreen(
                 bottom = if (uiState.showControls) osdTokens.postPlayBottomControls else 30.dp
             )
             .zIndex(2.1f)
+            .then(postPlayDim)
         PreviousEpisodeSearchCard(
             episode = uiState.previousEpisodeSearch.takeIf { postPlayCardAllowed },
             blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
@@ -1308,7 +1421,7 @@ fun PlayerScreen(
             onAnimationComplete = {
                 viewModel.onEvent(PlayerEvent.OnParentalGuideHide)
             },
-            modifier = Modifier.align(Alignment.TopStart)
+            modifier = Modifier.align(Alignment.TopStart).then(controlsDim)
         )
 
         DisplayModeOverlay(
@@ -1326,6 +1439,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .zIndex(2.2f)
+                .then(controlsDim)
         )
 
         // Degraded toast (data st8): once per playback, 6 s, once the picture is up (as above).
@@ -1337,6 +1451,7 @@ fun PlayerScreen(
                 .align(Alignment.TopCenter)
                 .padding(top = NuvioTheme.marquee.osd.toastTop)
                 .zIndex(2.7f)
+                .then(controlsDim)
         )
 
         // Player OSD (wave U3b, PlayerOsd.kt): top band (title, tech badges, clock) + seek bar,
@@ -1386,26 +1501,7 @@ fun PlayerScreen(
             onSwitchEngine = { viewModel.onEvent(PlayerEvent.OnSwitchInternalPlayerEngine) },
             onPlayNextEpisode = { viewModel.onEvent(PlayerEvent.OnPlayNextEpisode) },
             onPlayPreviousEpisode = { viewModel.onEvent(PlayerEvent.OnPlayPreviousEpisode) },
-            onOpenExternalPlayer = {
-                if (!externalHandoffInProgress) {
-                    externalHandoffInProgress = true
-                    val timeline = viewModel.playbackTimeline.value
-                    val completed = timeline.isCompleted()
-                    viewModel.launchInExternalPlayer(context, timeline.currentPosition) { launched ->
-                        externalHandoffInProgress = false
-                        if (launched && !exitDispatched) {
-                            exitDispatched = true
-                            currentOnBackPress(
-                                uiState.currentVideoId,
-                                uiState.currentSeason,
-                                uiState.currentEpisode,
-                                uiState.backTreatsSwitchAsAutoPlay,
-                                completed
-                            )
-                        }
-                    }
-                }
-            },
+            onOpenExternalPlayer = openExternalPlayer,
             onInteraction = {
                 viewModel.scheduleHideControls()
                 viewModel.onUserInteraction()
@@ -1421,6 +1517,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 80.dp)
+                .then(controlsDim)
         ) {
             AspectRatioIndicator(text = uiState.aspectRatioIndicatorText)
         }
@@ -1432,6 +1529,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 128.dp)
+                .then(controlsDim)
         ) {
             StreamSourceIndicator(text = uiState.streamSourceIndicatorText)
         }
@@ -1443,6 +1541,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .zIndex(2.35f)
+                .then(controlsDim)
         ) {
             PlayerEngineSwitchIndicator(
                 title = stringResource(R.string.player_engine_switching_title),
@@ -1470,6 +1569,7 @@ fun PlayerScreen(
                 .align(Alignment.TopCenter)
                 .padding(top = NuvioTheme.marquee.playerPanel.stripTop)
                 .zIndex(2.3f)
+                .then(controlsDim)
         ) {
             SubtitleDelayStrip(
                 subtitleDelayMs = uiState.subtitleDelayMs,
@@ -1501,7 +1601,7 @@ fun PlayerScreen(
                 !uiState.showMoreDialog,
             enter = fadeIn(animationSpec = tween(150)),
             exit = fadeOut(animationSpec = tween(150)),
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier.align(Alignment.BottomCenter).then(controlsDim)
         ) {
             OsdMiniSeek(viewModel = viewModel, chapters = uiState.chapters, glow = osdAccent)
         }
@@ -1530,7 +1630,8 @@ fun PlayerScreen(
             exit = slideOutHorizontally(
                 animationSpec = tween(220),
                 targetOffsetX = { it }
-            )
+            ),
+            modifier = controlsDim
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 // Sandbox u6 stages 2-3: the episode list, or (OK on an episode) that episode's
@@ -1555,11 +1656,25 @@ fun PlayerScreen(
                         sourceChips = uiState.episodeSourceChips,
                         showFileSizeBadges = uiState.showFileSizeBadges,
                         useAddonFormatting = uiState.useAddonFormatting,
+                        failureMarkFor = episodeMarkFor,
                         accent = osdAccent,
+                        sheet = episodeSheet,
+                        onSheetChange = { episodeSheet = it },
+                        returnFocusOnSheetClose = episodeStreamsShown,
                         onListSelected = { viewModel.onEvent(PlayerEvent.OnEpisodeListSelected(it)) },
+                        onFilterChange = { viewModel.onEvent(PlayerEvent.OnEpisodeFilterChanged(it)) },
+                        saved = savedStreamFilters,
+                        onSaveFilter = viewModel::saveStreamFilter,
+                        onTogglePin = viewModel::toggleStreamPin,
                         onRefresh = { viewModel.onEvent(PlayerEvent.OnReloadEpisodeStreams) },
                         onStreamSelected = { viewModel.onEvent(PlayerEvent.OnEpisodeStreamSelected(it)) },
                         onRetry = { viewModel.onEvent(PlayerEvent.OnReloadEpisodeStreams) },
+                        // Episode rows: the preferred source's menu (Spec 65 P6).
+                        onPreferSource = if (viewModel.canPreferSource) {
+                            { viewModel.onEvent(PlayerEvent.OnPreferSource(it)) }
+                        } else {
+                            null
+                        },
                         contextParts = listOfNotNull(episodeCode, uiState.episodeStreamsTitle?.takeIf { it.isNotBlank() }),
                         missingUpstreams = uiState.episodeMissingUpstreams,
                         modifier = panelModifier
@@ -1603,7 +1718,8 @@ fun PlayerScreen(
             exit = slideOutHorizontally(
                 animationSpec = tween(220),
                 targetOffsetX = { it }
-            )
+            ),
+            modifier = controlsDim
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 // Sandbox u6 stage 1: the U5 panel; the playing source carries "Playing" and takes
@@ -1627,11 +1743,25 @@ fun PlayerScreen(
                     markedIndex = playingRow,
                     focusMarkedRow = true,
                     accent = osdAccent,
+                    sheet = sourcesSheet,
+                    onSheetChange = { sourcesSheet = it },
+                    // The panel slides out still composed: a sheet cleared then must not pull focus back in.
+                    returnFocusOnSheetClose = sourcesPanelShown,
                     onListSelected = { viewModel.onEvent(PlayerEvent.OnSourceListSelected(it)) },
+                    onFilterChange = { viewModel.onEvent(PlayerEvent.OnSourceFilterChanged(it)) },
+                    saved = savedStreamFilters,
+                    onSaveFilter = viewModel::saveStreamFilter,
+                    onTogglePin = viewModel::toggleStreamPin,
                     onRefresh = { viewModel.onEvent(PlayerEvent.OnReloadSourceStreams) },
                     onStreamSelected = { viewModel.onEvent(PlayerEvent.OnSourceStreamSelected(it)) },
                     onRetry = { viewModel.onEvent(PlayerEvent.OnReloadSourceStreams) },
-                    deadStreamUrls = uiState.deadSourceStreamUrls,
+                    // Only while an episode plays: a film's rows get no menu (Spec 65 D16).
+                    onPreferSource = if (viewModel.canPreferSource && uiState.currentSeason != null && uiState.currentEpisode != null) {
+                        { viewModel.onEvent(PlayerEvent.OnPreferSource(it)) }
+                    } else {
+                        null
+                    },
+                    failureMarkFor = sourceMarkFor,
                     missingUpstreams = uiState.sourceMissingUpstreams,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -1667,6 +1797,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.6f)
+                .then(controlsDim)
         )
 
         SubtitleSelectionOverlay(
@@ -1675,7 +1806,8 @@ fun PlayerScreen(
             selectedInternalIndex = uiState.selectedSubtitleTrackIndex,
             addonSubtitles = uiState.addonSubtitles,
             selectedAddonSubtitle = uiState.selectedAddonSubtitle,
-            subtitleStyle = uiState.subtitleStyle,
+            subtitleStyle = uiState.editableSubtitleStyle,
+            isEditingHdrStyle = uiState.isEditingHdrSubtitleStyle,
             subtitleDelayMs = uiState.subtitleDelayMs,
             installedSubtitleAddonOrder = uiState.installedSubtitleAddonOrder,
             isLoadingAddons = uiState.isLoadingAddonSubtitles,
@@ -1690,6 +1822,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.6f)
+                .then(controlsDim)
         )
 
         PlayerOverlayScaffold(
@@ -1708,6 +1841,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.35f)
+                .then(controlsDim)
         ) {
             val panelTokens = NuvioTheme.marquee.playerPanel
             // Stage 9: a flat scrim under the centred shell.
@@ -1742,6 +1876,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.6f)
+                .then(controlsDim)
         )
 
         SpeedSelectionPanel(
@@ -1751,6 +1886,7 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.6f)
+                .then(controlsDim)
         )
     }
 }
@@ -2198,7 +2334,9 @@ private fun PlayerBufferingIndicator(
     showLoadingOverlay: Boolean,
     isTorrentStream: Boolean,
     torrentBufferingMessage: String?,
-    torrentBufferingProgress: Float
+    torrentBufferingProgress: Float,
+    /** On the spinner block only, so a layer (the HDR dim) never spans the screen while it animates. */
+    contentModifier: Modifier = Modifier
 ) {
     if (!isBuffering || showLoadingOverlay) return
 
@@ -2206,43 +2344,45 @@ private fun PlayerBufferingIndicator(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        if (isTorrentStream && torrentBufferingMessage != null) {
-            // Torrent rebuffer: spinner + download stats + progress bar
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                LoadingIndicator()
-                Spacer(modifier = Modifier.height(NuvioTheme.spacing.md))
-                Text(
-                    text = torrentBufferingMessage,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.8f)
-                )
-                if (torrentBufferingProgress > 0f) {
-                    Spacer(modifier = Modifier.height(NuvioTheme.spacing.sm))
-                    Box(
-                        modifier = Modifier
-                            .width(200.dp)
-                            .height(3.dp)
-                            .background(
-                                color = Color.White.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(NuvioTheme.radii.xxs)
-                            )
-                    ) {
+        Box(modifier = contentModifier) {
+            if (isTorrentStream && torrentBufferingMessage != null) {
+                // Torrent rebuffer: spinner + download stats + progress bar
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    LoadingIndicator()
+                    Spacer(modifier = Modifier.height(NuvioTheme.spacing.md))
+                    Text(
+                        text = torrentBufferingMessage,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                    if (torrentBufferingProgress > 0f) {
+                        Spacer(modifier = Modifier.height(NuvioTheme.spacing.sm))
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(torrentBufferingProgress.coerceIn(0f, 1f))
+                                .width(200.dp)
                                 .height(3.dp)
                                 .background(
-                                    color = Color.White.copy(alpha = 0.85f),
+                                    color = Color.White.copy(alpha = 0.2f),
                                     shape = RoundedCornerShape(NuvioTheme.radii.xxs)
                                 )
-                        )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(torrentBufferingProgress.coerceIn(0f, 1f))
+                                    .height(3.dp)
+                                    .background(
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        shape = RoundedCornerShape(NuvioTheme.radii.xxs)
+                                    )
+                            )
+                        }
                     }
                 }
+            } else {
+                LoadingIndicator()
             }
-        } else {
-            LoadingIndicator()
         }
     }
 }

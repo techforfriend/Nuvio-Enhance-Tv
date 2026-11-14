@@ -3,9 +3,12 @@ package com.nuvio.tv.livetv.ui
 import com.nuvio.tv.livetv.data.ChannelIdentity
 import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.parse.EpgSnapshot
+import com.nuvio.tv.livetv.source.GuidePreset
 import com.nuvio.tv.livetv.source.LiveSource
 import com.nuvio.tv.livetv.source.LiveSourceManager
+import com.nuvio.tv.livetv.source.PackSummary
 import com.nuvio.tv.livetv.source.SourceKind
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
@@ -37,11 +40,46 @@ data class SourceRow(
 )
 
 /**
- * A guide offered on Sources: the Pluto guide (Spec 38 S2 stage 6) or the India guides (Spec 49
- * D27 F5). [channels] = listed channels it covers; [sourceName] = the one source holding them all,
- * null when several do.
+ * A guide preset offered on Sources (Spec 55 S2; the Pluto row of Spec 38 S2 stage 6 and the India
+ * row of Spec 49 D27 F5 are two of them). [channels] = listed channels it fits; [sourceName] =
+ * the one source holding them all, null when several do.
  */
-data class GuideSuggestion(val channels: Int, val sourceName: String?)
+data class PresetSuggestion(val preset: GuidePreset, val channels: Int, val sourceName: String?)
+
+/**
+ * One header guide Sources offers (Spec 55 S1): [country] read from its file name, [channels] =
+ * the playlist's listed channels of that country (0 when none or unknown), [name] = the row name
+ * adding it gives ("epgshare01 United Kingdom", else its host).
+ */
+data class HeaderGuide(val url: String, val country: String?, val channels: Int, val name: String)
+
+/**
+ * A playlist's header guides that no source holds yet (Spec 55 D4/D5): [guides] largest country
+ * first; [byCountry] as [com.nuvio.tv.livetv.source.HeaderGuides.byCountry]; [channels] and
+ * [countries] = the playlist's listed channels and how many countries they come from; [hosts] =
+ * where the guides live. [shown] = no source holds any of its header guides (the SUGGESTED row,
+ * D5b); either way the playlist row offers Choose guides.
+ */
+data class HeaderSuggestion(
+    val sourceId: String,
+    val sourceName: String,
+    val guides: List<HeaderGuide>,
+    val byCountry: Boolean,
+    val channels: Int,
+    val countries: Int,
+    val hosts: List<String>,
+    val shown: Boolean
+) {
+    /** D4: few guides = the row's button adds them all; more = it opens Choose guides. */
+    val addsAll: Boolean get() = guides.size <= LiveSourceManager.FEW_HEADER_GUIDES
+}
+
+/**
+ * The channel pack offer (Spec 73 D2 empty state, D6 SUGGESTED row): [summary] = the list repo's
+ * figures (null until read, or when they cannot be read: no figures shown); [adding] = Add pack is
+ * downloading; [error] = why the last add failed (the empty state shows it), null otherwise.
+ */
+data class PackOffer(val summary: PackSummary? = null, val adding: Boolean = false, val error: String? = null)
 
 /** One hidden channel, for Sources > Hidden channels. */
 data class HiddenRow(val key: String, val name: String, val sourceName: String?)
@@ -73,7 +111,9 @@ object LiveTvSourcesModel {
                 source = source,
                 listed = if (guide) guides[source.id]?.channels?.size else source.channelCount,
                 matched = if (guide) source.channelCount else null,
-                health = health(source, lost[source.id] ?: 0, source.id in refreshing),
+                // Spec 73 D15 (Q5): the pack's lost channels are the ones its scans hid (or its daily
+                // list dropped), expected churn its row line reports; they keep their Source lost tag.
+                health = health(source, if (source.kind == SourceKind.PACK) 0 else lost[source.id] ?: 0, source.id in refreshing),
                 preview = if (source.id == LiveSourceManager.PRESET_ID) {
                     channels.filter { it.sourceId == source.id && it.lostAtMs == null }.map { it.name }
                 } else {
@@ -84,35 +124,76 @@ object LiveTvSourcesModel {
     }
 
     /**
-     * The Pluto guide suggestion: shown while a source's listed (not lost) channels hold a
-     * `jmp2.uk/plu-` stream and no source has the guide's URL; null otherwise.
+     * The guide presets ([presets], default [LiveSourceManager.GUIDE_PRESETS]) Sources offers: each
+     * whose fit (a service's stream URL id, or a country) some listed (not lost) channel has and
+     * none of whose guide URLs a source holds; most channels first, preset order on ties. More
+     * than [FOLD_PRESETS] fold into one row (D11).
      */
-    fun plutoSuggestion(sources: List<LiveSource>, channels: List<Channel>): GuideSuggestion? {
-        if (sources.any { it.url == LiveSourceManager.PLUTO_GUIDE.url }) return null
-        return suggestion(sources, channels.filter { it.lostAtMs == null && ChannelIdentity.plutoIds(it).isNotEmpty() })
+    fun presetSuggestions(
+        sources: List<LiveSource>,
+        channels: List<Channel>,
+        presets: List<GuidePreset> = LiveSourceManager.GUIDE_PRESETS
+    ): List<PresetSuggestion> {
+        val held = sources.mapTo(HashSet()) { it.url }
+        val open = presets.filter { preset -> preset.guides.none { it.url in held } }
+        if (open.isEmpty()) return emptyList()
+        val listed = channels.filter { it.lostAtMs == null }
+        // Each channel's stream URLs are scanned once, not once per service preset.
+        val services = listed.map(ChannelIdentity::services)
+        val countries = listed.map { ChannelIdentity.normalizeCountry(it.country) }
+        return open.mapNotNull { preset ->
+            val fits = listed.filterIndexed { i, _ ->
+                if (preset.service != null) preset.service in services[i] else countries[i] == preset.country
+            }
+            if (fits.isEmpty()) return@mapNotNull null
+            val holder = fits.mapTo(HashSet()) { it.sourceId }.singleOrNull()
+            PresetSuggestion(preset, fits.size, holder?.let { id -> sources.firstOrNull { it.id == id }?.name })
+        }.sortedByDescending { it.channels }
+    }
+
+    /** D11: more preset suggestions than this fold into one "Guides for your channels" row. */
+    const val FOLD_PRESETS = 3
+
+    /** One per playlist whose recorded header guides ([LiveSource.headerGuides]) are not all held by URL. */
+    fun headerSuggestions(sources: List<LiveSource>, channels: List<Channel>): List<HeaderSuggestion> {
+        val held = sources.mapTo(HashSet()) { it.url }
+        return sources.mapNotNull { source ->
+            val header = source.headerGuides ?: return@mapNotNull null
+            val remaining = header.urls.filterNot { it in held }
+            if (remaining.isEmpty()) return@mapNotNull null
+            val perCountry = channels
+                .filter { it.sourceId == source.id && it.lostAtMs == null }
+                .mapNotNull { ChannelIdentity.normalizeCountry(it.country) }
+                .groupingBy { it }
+                .eachCount()
+            val guides = remaining.mapNotNull { url ->
+                val http = url.toHttpUrlOrNull() ?: return@mapNotNull null
+                val country = LiveSourceManager.guessCountry(http)
+                HeaderGuide(url, country, country?.let { perCountry[it] } ?: 0, guideName(http.host, country))
+            }.sortedByDescending { it.channels }
+            if (guides.isEmpty()) return@mapNotNull null
+            HeaderSuggestion(
+                sourceId = source.id,
+                sourceName = source.name,
+                guides = guides,
+                byCountry = header.byCountry,
+                channels = channels.count { it.sourceId == source.id && it.lostAtMs == null },
+                countries = perCountry.size,
+                hosts = guides.mapNotNull { it.url.toHttpUrlOrNull()?.host }.distinct(),
+                shown = remaining.size == header.urls.size
+            )
+        }
     }
 
     /**
-     * The India guides suggestion (Spec 49 D27 F5): shown while listed (not lost) channels come from
-     * India and no source has either guide's URL; null otherwise.
+     * "epgshare01 United Kingdom": the host's first label (unless shorter than 3 letters) and the
+     * country; a guide with no country is named by its host, as Add source URL names one.
      */
-    fun indiaSuggestion(sources: List<LiveSource>, channels: List<Channel>): GuideSuggestion? {
-        val urls = LiveSourceManager.INDIA_GUIDES.map { it.url }
-        if (sources.any { it.url in urls }) return null
-        return suggestion(
-            sources,
-            channels.filter { it.lostAtMs == null && ChannelIdentity.normalizeCountry(it.country) == INDIA }
-        )
+    internal fun guideName(host: String, country: String?): String {
+        if (country == null) return host
+        val label = host.removePrefix("www.").substringBefore('.').takeIf { it.length >= 3 } ?: host
+        return "$label ${LiveTvModel.countryName(country)}"
     }
-
-    private fun suggestion(sources: List<LiveSource>, covered: List<Channel>): GuideSuggestion? {
-        if (covered.isEmpty()) return null
-        val holders = covered.mapTo(HashSet()) { it.sourceId }
-        val name = holders.singleOrNull()?.let { id -> sources.firstOrNull { it.id == id }?.name }
-        return GuideSuggestion(covered.size, name)
-    }
-
-    private const val INDIA = "in"
 
     internal fun health(source: LiveSource, lost: Int, refreshing: Boolean): SourceHealth = when {
         refreshing -> SourceHealth.Refreshing

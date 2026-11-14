@@ -388,7 +388,7 @@ internal fun PlayerRuntimeController.toSubtitleConfiguration(subtitle: Subtitle)
     
     val baseUri = android.net.Uri.parse(subtitle.url)
     val subtitleUri = baseUri.buildUpon()
-        .appendQueryParameter("nuvio_type", "subtitle")
+        .appendQueryParameter(SUBTITLE_URI_MARKER, "subtitle")
         .build()
 
     return MediaItem.SubtitleConfiguration.Builder(subtitleUri)
@@ -432,8 +432,15 @@ internal fun PlayerRuntimeController.selectAddonSubtitle(subtitle: Subtitle) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // mpv applies the stream's http-header-fields to every fetch, sub-add included,
+                // so a URL fallback only where the credentials may go (Spec 68 X1).
+                val fallbackUrl = mpvSubtitleFallbackUrl(subtitle.url, currentStreamUrl)
+                if (fallbackUrl == null) {
+                    Log.w(PlayerRuntimeController.TAG, "Failed to cache subtitle for MPV; foreign host, no URL fallback", e)
+                    return@launch
+                }
                 Log.w(PlayerRuntimeController.TAG, "Failed to cache normalized subtitle for MPV, falling back to URL", e)
-                subtitle.url
+                fallbackUrl
             }
 
             val added = mpvView?.addAndSelectExternalSubtitle(

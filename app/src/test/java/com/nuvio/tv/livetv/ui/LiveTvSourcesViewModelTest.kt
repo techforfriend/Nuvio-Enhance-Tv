@@ -1,14 +1,29 @@
 package com.nuvio.tv.livetv.ui
 
+import com.nuvio.tv.livetv.source.PackScanStore
+import com.nuvio.tv.livetv.source.PackScanner
+import com.nuvio.tv.livetv.source.PackStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.flowOf
 import com.nuvio.tv.MainDispatcherRule
 import com.nuvio.tv.livetv.data.ChannelRepository
 import com.nuvio.tv.livetv.data.GuideRepository
 import com.nuvio.tv.livetv.data.HiddenChannelStore
+import com.nuvio.tv.livetv.model.Channel
+import com.nuvio.tv.livetv.model.LiveStream
 import com.nuvio.tv.livetv.source.IptvMetadataRepository
 import com.nuvio.tv.livetv.source.LiveSource
 import com.nuvio.tv.livetv.source.LiveSourceManager
 import com.nuvio.tv.livetv.source.SourceFetcher
 import com.nuvio.tv.livetv.source.SourceKind
+import com.nuvio.tv.livetv.source.ChannelPack
+import com.nuvio.tv.livetv.source.PackSummary
+import com.nuvio.tv.livetv.source.PackChannel
+import com.nuvio.tv.livetv.source.PackState
+import com.nuvio.tv.livetv.source.PackStream
+import kotlinx.coroutines.launch
+import org.junit.Assert.assertNull
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -40,19 +55,37 @@ class LiveTvSourcesViewModelTest {
     val tmp = TemporaryFolder()
 
     private val io = UnconfinedTestDispatcher()
+    private val sourceList = MutableStateFlow<List<LiveSource>>(emptyList())
+    private val packSaves = MutableStateFlow(0)
     private val manager = mockk<LiveSourceManager>().also {
-        every { it.sources } returns MutableStateFlow(emptyList())
+        every { it.sources } returns sourceList
+        every { it.packSaves } returns packSaves
         coEvery { it.load() } just runs
+        coEvery { it.packSummary() } returns null
     }
     private val source = LiveSource("s1", SourceKind.M3U, "example.org", "https://example.org/list.m3u", 0L, 0L, channelCount = 3)
     private val checked = LiveSourceManager.Checked(source, 3, LiveSourceManager.Loaded.Channels(emptyList()))
+
+    /** A real scanner over this test's folder that never probes (S3b's tests drive the scan UI). */
+    private fun scanner() = PackScanner(
+        PackStore(tmp.root, io),
+        PackScanStore(tmp.root, io),
+        { _, _, _ -> true },
+        { _, _ -> false },
+        flowOf(false),
+        CoroutineScope(SupervisorJob() + io),
+        { 0L }
+    )
 
     private fun viewModel() = LiveTvSourcesViewModel(
         manager,
         ChannelRepository(tmp.root, { 0L }, io),
         GuideRepository(tmp.root, io),
         IptvMetadataRepository(tmp.root, SourceFetcher(OkHttpClient(), io), { 0L }, io, "http://127.0.0.1:1/"),
-        HiddenChannelStore(tmp.root, io)
+        HiddenChannelStore(tmp.root, io),
+        scanner(),
+        PackStore(tmp.root, io),
+        PackScanStore(tmp.root, io)
     )
 
     @Test
@@ -114,47 +147,172 @@ class LiveTvSourcesViewModelTest {
         assertEquals(AddCheck.Refused("Already added"), vm.addCheck.value)
     }
 
+    private val packSource = LiveSource(ChannelPack.SOURCE_ID, SourceKind.PACK, ChannelPack.NAME, ChannelPack.BASE_URL, 0L, 0L)
+
     @Test
-    fun `Add guide stores the Pluto guide, reports Added, then refreshes it`() = runTest(mainDispatcherRule.dispatcher) {
-        val guide = LiveSourceManager.PLUTO_GUIDE.copy(addedAtMs = 1L)
-        coEvery { manager.addPlutoGuide() } returns guide
-        coEvery { manager.refresh(guide.id) } returns guide
+    fun `the pack is offered with its figures until it is added`() = runTest(mainDispatcherRule.dispatcher) {
+        coEvery { manager.packSummary() } returns PackSummary(21037, 177, 1_600_000)
         val vm = viewModel()
-        vm.addPlutoGuide()
+        backgroundScope.launch { vm.packOffer.collect {} }
         advanceUntilIdle()
-        assertEquals(SourcesEvent.Added(guide.id, guide.name), vm.event.first())
-        coVerify(exactly = 1) { manager.refresh(guide.id) }
+        assertEquals(PackOffer(PackSummary(21037, 177, 1_600_000)), vm.packOffer.value)
+        sourceList.value = listOf(packSource)
+        advanceUntilIdle()
+        assertNull(vm.packOffer.value)
+        // Removed here: offered again, figures already read.
+        sourceList.value = emptyList()
+        advanceUntilIdle()
+        assertEquals(PackOffer(PackSummary(21037, 177, 1_600_000)), vm.packOffer.value)
+        coVerify(exactly = 1) { manager.packSummary() }
     }
 
     @Test
-    fun `Add guides stores both India guides, reports the first as Added, then refreshes each`() = runTest(mainDispatcherRule.dispatcher) {
-        val guides = LiveSourceManager.INDIA_GUIDES.map { it.copy(addedAtMs = 1L) }
-        coEvery { manager.addIndiaGuides() } returns guides
-        guides.forEach { coEvery { manager.refresh(it.id) } returns it }
+    fun `the pack already added is not offered and its figures are not fetched`() = runTest(mainDispatcherRule.dispatcher) {
+        sourceList.value = listOf(packSource)
         val vm = viewModel()
-        vm.addIndiaGuides()
+        backgroundScope.launch { vm.packOffer.collect {} }
         advanceUntilIdle()
-        assertEquals(SourcesEvent.Added(guides[0].id, guides[0].name), vm.event.first())
-        guides.forEach { coVerify(exactly = 1) { manager.refresh(it.id) } }
+        assertNull(vm.packOffer.value)
+        coVerify(exactly = 0) { manager.packSummary() }
     }
 
     @Test
-    fun `a failed India guide write reports it and refreshes nothing`() = runTest(mainDispatcherRule.dispatcher) {
-        coEvery { manager.addIndiaGuides() } returns null
+    fun `Add pack reports Added or the refusal, one download at a time`() = runTest(mainDispatcherRule.dispatcher) {
+        val gate = CompletableDeferred<LiveSourceManager.AddResult>()
+        coEvery { manager.addPack() } coAnswers { gate.await() } andThen LiveSourceManager.AddResult.Refused("HTTP 404")
         val vm = viewModel()
-        vm.addIndiaGuides()
+        backgroundScope.launch { vm.packOffer.collect {} }
         advanceUntilIdle()
-        assertEquals(SourcesEvent.IndiaAddFailed, vm.event.first())
-        coVerify(exactly = 0) { manager.refresh(any()) }
+        vm.addPack()
+        advanceUntilIdle()
+        assertTrue(vm.packOffer.value!!.adding)
+        vm.addPack() // ignored while the first runs
+        gate.complete(LiveSourceManager.AddResult.Added(packSource))
+        advanceUntilIdle()
+        assertEquals(SourcesEvent.Added(ChannelPack.SOURCE_ID, ChannelPack.NAME), vm.event.first())
+        assertEquals(false, vm.packOffer.value!!.adding)
+        vm.addPack()
+        advanceUntilIdle()
+        assertEquals(SourcesEvent.PackAddFailed("HTTP 404"), vm.event.first())
+        coVerify(exactly = 2) { manager.addPack() }
     }
 
     @Test
-    fun `a failed Pluto guide write reports it and refreshes nothing`() = runTest(mainDispatcherRule.dispatcher) {
-        coEvery { manager.addPlutoGuide() } returns null
-        val vm = viewModel()
-        vm.addPlutoGuide()
+    fun `the scan facts wait for the pack's file, not its record, and follow each download`() = runTest(mainDispatcherRule.dispatcher) {
+        val saves = MutableStateFlow(0)
+        val running = MutableStateFlow(false)
+        var onDisk = emptyList<PackChannel>() // the pack file as the read sees it
+        val reads = mutableListOf<Int>()
+        val facts = MutableStateFlow<PackScanFacts?>(null)
+        // Not backgroundScope: advanceUntilIdle does not run a queue of background tasks alone.
+        val collecting = launch {
+            packScanFacts(sourceList, saves, running) {
+                reads += saves.value
+                PackScanModel.facts(onDisk, emptyMap(), null, null)
+            }.collect { facts.value = it }
+        }
         advanceUntilIdle()
-        assertEquals(SourcesEvent.PlutoAddFailed, vm.event.first())
+        assertNull(facts.value)
+        // An add writes the record, then the file, then counts the download (S3c: keyed on the
+        // record alone, the list read the missing file once and opened empty for good).
+        sourceList.value = listOf(packSource)
+        advanceUntilIdle()
+        assertNull(facts.value)
+        onDisk = listOf(packChannel("a", "ca"))
+        saves.value = 1
+        advanceUntilIdle()
+        assertEquals(setOf<String?>("ca"), facts.value!!.world)
+        // A refresh's completed download and a scan's start and end are read again; nothing else is.
+        onDisk = onDisk + packChannel("b", "us")
+        saves.value = 2
+        advanceUntilIdle()
+        assertEquals(setOf<String?>("ca", "us"), facts.value!!.world)
+        running.value = true
+        advanceUntilIdle()
+        running.value = false
+        advanceUntilIdle()
+        sourceList.value = listOf(packSource.copy(lastRefreshMs = 5L))
+        advanceUntilIdle()
+        assertEquals(listOf(0, 1, 2, 2, 2), reads)
+        // Removed: no facts.
+        sourceList.value = emptyList()
+        advanceUntilIdle()
+        assertNull(facts.value)
+        collecting.cancel()
+    }
+
+    private fun packChannel(key: String, country: String) =
+        PackChannel("pack#ch:$key", key, country = country, streams = listOf(PackStream("https://x/$key", PackState.ALIVE)))
+
+    @Test
+    fun `a scan that ends while Sources is open is reported for its result panel`() = runTest(mainDispatcherRule.dispatcher) {
+        val vm = viewModel()
+        advanceUntilIdle()
+        assertTrue(vm.startScan(setOf("ca")))
+        advanceUntilIdle()
+        val event = vm.event.first()
+        assertTrue("$event", event is SourcesEvent.ScanEnded && event.record.countries == listOf("ca") && !event.record.cancelled)
+    }
+
+    private val pluto = LiveSourceManager.GUIDE_PRESETS.single { it.key == "pluto" }
+    private val india = LiveSourceManager.GUIDE_PRESETS.single { it.key == "in" }
+
+    /** A view model whose playlists offer the Pluto and India presets. */
+    private suspend fun offering(): LiveTvSourcesViewModel {
+        val playlist = LiveSource("p", SourceKind.M3U, "List", "https://example.org/p.m3u", 0L, 1L)
+        every { manager.sources } returns MutableStateFlow(listOf(playlist))
+        val repo = ChannelRepository(tmp.root, { 0L }, io)
+        repo.replaceSource(
+            "p",
+            listOf(
+                Channel("p#a", "p", "A", streams = listOf(LiveStream("https://jmp2.uk/plu-5ee92e72fb286e0007285fec.m3u8"))),
+                Channel("p#b", "p", "B", country = "in", streams = listOf(LiveStream("https://example.org/b.m3u8")))
+            )
+        )
+        return LiveTvSourcesViewModel(
+            manager,
+            repo,
+            GuideRepository(tmp.root, io),
+            IptvMetadataRepository(tmp.root, SourceFetcher(OkHttpClient(), io), { 0L }, io, "http://127.0.0.1:1/"),
+            HiddenChannelStore(tmp.root, io),
+            scanner(),
+            PackStore(tmp.root, io),
+            PackScanStore(tmp.root, io)
+        )
+    }
+
+    @Test
+    fun `Add guides stores the chosen offered presets, reports the first as Added, then refreshes each`() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val guides = (pluto.guides + india.guides).map { it.copy(addedAtMs = 1L) }
+            coEvery { manager.addPresetGuides(listOf(pluto, india)) } returns guides
+            guides.forEach { coEvery { manager.refresh(it.id) } returns it }
+            val vm = offering()
+            // uiState derives on Dispatchers.Default: wait for the offer, not for virtual time.
+            assertEquals(listOf("pluto", "in"), vm.uiState.first { it.presets.isNotEmpty() }.presets.map { it.preset.key })
+            // A key not on offer is ignored.
+            vm.addPresets(listOf("in", "pluto", "plex"))
+            advanceUntilIdle()
+            assertEquals(SourcesEvent.Added(guides[0].id, guides[0].name), vm.event.first())
+            guides.forEach { coVerify(exactly = 1) { manager.refresh(it.id) } }
+        }
+
+    @Test
+    fun `nothing on offer adds nothing`() = runTest(mainDispatcherRule.dispatcher) {
+        val vm = viewModel()
+        vm.addPresets(listOf("pluto"))
+        advanceUntilIdle()
+        coVerify(exactly = 0) { manager.addPresetGuides(any()) }
+    }
+
+    @Test
+    fun `a failed preset guide write reports it and refreshes nothing`() = runTest(mainDispatcherRule.dispatcher) {
+        coEvery { manager.addPresetGuides(any()) } returns null
+        val vm = offering()
+        vm.uiState.first { it.presets.isNotEmpty() }
+        vm.addPresets(listOf("pluto"))
+        advanceUntilIdle()
+        assertEquals(SourcesEvent.PresetAddFailed, vm.event.first())
         coVerify(exactly = 0) { manager.refresh(any()) }
     }
 

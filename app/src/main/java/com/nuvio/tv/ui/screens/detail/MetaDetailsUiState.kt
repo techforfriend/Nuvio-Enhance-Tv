@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.detail
 
 import com.nuvio.tv.core.player.ParentalWarning
+import com.nuvio.tv.core.profile.ActiveRatingLimit
 import com.nuvio.tv.domain.model.DetailImdbRatingsVisibility
 import com.nuvio.tv.domain.model.Meta
 import com.nuvio.tv.domain.model.MetaPreview
@@ -62,7 +63,11 @@ data class MetaDetailsUiState(
     val episodeRatingsError: String? = null,
     val userMessage: String? = null,
     val userMessageIsError: Boolean = false,
-    val about: DetailAboutExtras = DetailAboutExtras()
+    val about: DetailAboutExtras = DetailAboutExtras(),
+    /** Spec 64: the active profile's rating limit, read at each load start; null = no limit. */
+    val ratingLimit: ActiveRatingLimit? = null,
+    /** Spec 64 D13: set instead of [meta] when the title is outside [ratingLimit]. */
+    val ratingBlock: DetailRatingBlock? = null
 )
 
 /** What the About sheet loads when it first opens (Spec 26g); [metaId] names the title it is for. */
@@ -100,4 +105,6 @@ sealed class MetaDetailsEvent {
     data object OnLifecyclePause : MetaDetailsEvent()
     data object OnLifecycleResume : MetaDetailsEvent()
     data object OnAboutOpened : MetaDetailsEvent()
+    /** OK on a cast member or studio under a rating limit (Spec 64 D12): the toast, no page. */
+    data object OnRatingLimitedLink : MetaDetailsEvent()
 }

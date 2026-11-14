@@ -4,11 +4,13 @@ import android.content.Context
 import android.util.Log
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.data.remote.api.AddonApi
+import com.nuvio.tv.data.remote.api.GitHubFileApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import com.nuvio.tv.data.remote.api.IntroDbApi
 import com.nuvio.tv.data.remote.api.ImdbTapframeApi
 import com.nuvio.tv.data.remote.api.ParentalGuideApi
 import com.nuvio.tv.data.remote.api.SeriesGraphApi
+import com.nuvio.tv.data.remote.api.TheIntroDbApi
 import com.nuvio.tv.core.tmdb.TmdbNoKeyInterceptor
 import com.nuvio.tv.data.remote.api.TmdbApi
 import com.nuvio.tv.LocaleCache
@@ -33,16 +35,15 @@ import okio.ForwardingSource
 import retrofit2.Converter
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import com.nuvio.tv.core.network.AddonHostGuard
+import com.nuvio.tv.core.network.AddonHostGuardInterceptor
 import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.core.network.NetworkTransportReader
+import com.nuvio.tv.core.network.tls.AddonTlsTrust
 import java.io.File
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /**
  * Builds the value sent in the `Accept-Language` request header so addons can
@@ -92,17 +93,11 @@ internal fun redactCredentialQueryParams(message: String): String =
         pattern.replace(acc) { match -> match.groupValues[1] + "REDACTED" }
     }
 
-/** Trust-all X509TrustManager — one home for the @Api/@Download compatibility TLS. */
-private fun trustAllManager(): X509TrustManager = object : X509TrustManager {
-    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-}
-
-private fun trustAllSslContext(manager: X509TrustManager): SSLContext =
-    SSLContext.getInstance("TLS").apply {
-        init(null, arrayOf<TrustManager>(manager), SecureRandom())
-    }
+/**
+ * The @Api client's HTTP cache directory. Spec 68 X7 renamed it from `http_cache`, whose entries
+ * were fetched under trust-all; LegacyFeatureDataCleanup deletes the old one.
+ */
+internal const val ADDON_HTTP_CACHE_DIR = "http_cache_addon"
 
 private fun appVersionTag(): String = BuildConfig.VERSION_NAME.ifBlank { "dev" }
 
@@ -150,12 +145,46 @@ internal fun noStoreOnErrorNetworkInterceptor(): Interceptor = Interceptor { cha
 }
 
 /**
- * Max bytes accepted in a JSON response from an untrusted (addon) host,
- * counting DECOMPRESSED bytes. Sibling precedent: the LAN config servers'
+ * Default max bytes accepted in a JSON response from an untrusted (addon) host,
+ * counting DECOMPRESSED bytes; a successful response to a request tagged with an
+ * [UntrustedBodyCap] gets that cap instead (Spec 82). Sibling precedent: the LAN config servers'
  * [com.nuvio.tv.core.server.MAX_POST_BODY_BYTES] — same CWE-400 class, different
  * surface, deliberately not merged (each surface owns its cap fact).
  */
 internal const val UNTRUSTED_JSON_BODY_CAP_BYTES = 2_000_000L
+
+/**
+ * A larger body cap for one kind of untrusted response, carried as a Retrofit `@Tag` on
+ * the request (Spec 82). The tag lives only in this process: a remote host cannot set
+ * or raise it. The private constructor keeps the set of caps to the ones named here.
+ *
+ * [maxValues] bounds what the bytes decode into: `{`, `[` and `,` outside strings. Each
+ * decoded element is either counted or the uncounted first member of a counted container,
+ * so the elements number at most about twice this count. Without it a raised byte cap lets
+ * `[{},{},...]` (3 bytes per element, every DTO field defaulted) decode into millions
+ * of objects and throw an OutOfMemoryError no fetch path catches.
+ */
+class UntrustedBodyCap private constructor(val maxBytes: Long, val maxValues: Long) {
+    companion object {
+        /**
+         * Addon meta (details): a long-running series lists every episode inline
+         * (Jeopardy!, 9,656 videos: 4.9 MB decompressed, ~10 values per video). The largest
+         * known meta is Cinemeta's Coronation Street, 14.08 MB: 88% of this cap (Spec 83 W1-02,
+         * deferred until a real meta crosses ~15 MB).
+         */
+        val META = UntrustedBodyCap(maxBytes = 16_000_000L, maxValues = 500_000L)
+
+        /**
+         * Addon stream lists (Spec 84 A5). AIOStreams adds a `streamData` block per stream for
+         * the AIO User-Agent: 3.2-6.9 KB and 131-291 values per stream on average over four
+         * titles (2026-11-11; largest single stream 12.8 KB / 794 values), so 2 MB failed an
+         * uncapped list at ~300-600 streams; 8 MB holds ~1,150-2,500. The value cap sits above
+         * 8 MB at the densest measured stream (0.062 values per byte), so a real list meets the
+         * byte cap first; it bounds a `{}` bomb at META's level.
+         */
+        val STREAMS = UntrustedBodyCap(maxBytes = 8_000_000L, maxValues = 500_000L)
+    }
+}
 
 /**
  * Max array/object nesting accepted in a JSON body from an untrusted host (KT-JSON-03).
@@ -173,12 +202,23 @@ internal const val UNTRUSTED_JSON_MAX_DEPTH = 64
  * counter rejects 0x00/0xFE/0xFF, which never occur in UTF-8 JSON but begin every
  * UTF-16/32 byte-order mark ResponseBody.string() would otherwise decode by.
  */
-internal class JsonNestingDepthCounter(private val maxDepth: Int) {
+internal class JsonNestingDepthCounter(
+    private val maxDepth: Int,
+    val maxValues: Long = Long.MAX_VALUE
+) {
     private var depth = 0
     private var inString = false
     private var escaped = false
+    private var values = 0L
 
-    /** Feeds one byte; false once the nesting exceeds [maxDepth] or the byte is not UTF-8 JSON. */
+    /** True once [accept] failed because the body holds more than [maxValues] values. */
+    var tooManyValues = false
+        private set
+
+    /**
+     * Feeds one byte; false once the nesting exceeds [maxDepth], the value count exceeds
+     * [maxValues], or the byte is not UTF-8 JSON.
+     */
     fun accept(byte: Byte): Boolean {
         if (byte == NUL || byte == UTF_INVALID_FE || byte == UTF_INVALID_FF) return false
         val c = byte.toInt().toChar()
@@ -189,10 +229,17 @@ internal class JsonNestingDepthCounter(private val maxDepth: Int) {
                 c == '"' -> inString = false
             }
             c == '"' -> inString = true
-            c == '[' || c == '{' -> if (++depth > maxDepth) return false
+            c == '[' || c == '{' -> if (++depth > maxDepth || !countValue()) return false
             c == ']' || c == '}' -> depth = (depth - 1).coerceAtLeast(0)
+            c == ',' -> if (!countValue()) return false
         }
         return true
+    }
+
+    private fun countValue(): Boolean {
+        if (++values <= maxValues) return true
+        tooManyValues = true
+        return false
     }
 
     private companion object {
@@ -213,18 +260,32 @@ private fun isJsonContentType(mediaType: MediaType): Boolean {
 }
 
 /**
+ * Static addon hosts serve their JSON as text/plain (raw.githubusercontent.com, gist, a
+ * Cloudflare Worker's default), and Stremio's client parses any successful body as JSON
+ * (Spec 84 A1). An HTML page sent as text/plain still fails, at the decoder.
+ */
+private fun isPlainText(mediaType: MediaType): Boolean =
+    mediaType.type == "text" && mediaType.subtype == "plain"
+
+/**
  * W2.2 untrusted-response guard (application layer on the @Api client —
  * sees post-redirect, decompressed, cache-hit bodies):
  *
- * 1. Successful responses must be JSON-family; an HTML/whatever error page
- *    fails fast as an IOException instead of reaching the JSON decoder.
+ * 1. Successful responses must be JSON-family or text/plain (static hosts,
+ *    [isPlainText]); an HTML/whatever error page fails fast as an IOException
+ *    instead of reaching the JSON decoder.
  * 2. EVERY response body — success or error — is wrapped in a counting
- *    source that throws past [maxBytes]. This is the error-body fix: Retrofit
+ *    source that throws past [maxBytes]; a SUCCESSFUL response to a request
+ *    tagged with an [UntrustedBodyCap] uses that tag's caps instead, so error
+ *    bodies always keep [maxBytes]. This is the error-body fix: Retrofit
  *    2.x heap-buffers non-2xx bodies UNCAPPED before app code runs
  *    (Utils.buffer), so a hostile host answering 500 + huge would balloon
  *    the heap before any catch. The cap aborts that mid-read.
- * 3. JSON-family (or untyped) bodies also throw past [maxDepth] nesting, before
- *    the decoder can recurse into it ([UNTRUSTED_JSON_MAX_DEPTH]).
+ * 3. Bodies read as JSON (JSON-family, untyped, or a successful text/plain one)
+ *    also throw past [maxDepth] nesting, before the decoder can recurse into it
+ *    ([UNTRUSTED_JSON_MAX_DEPTH]), and past the tag's [UntrustedBodyCap.maxValues]
+ *    when the raised cap applies. A text/plain error body keeps its HTTP status for
+ *    the caller, like any other non-JSON error page: only the byte cap applies.
  *
  * Null content-type or null body passes (204s, hosts that omit the header).
  */
@@ -232,20 +293,25 @@ internal fun untrustedResponseGuardInterceptor(
     maxBytes: Long = UNTRUSTED_JSON_BODY_CAP_BYTES,
     maxDepth: Int = UNTRUSTED_JSON_MAX_DEPTH
 ): Interceptor = Interceptor { chain ->
-    val response = chain.proceed(chain.request())
+    val request = chain.request()
+    val response = chain.proceed(request)
+    val tagCap = if (response.isSuccessful) request.tag(UntrustedBodyCap::class.java) else null
+    val cap = tagCap?.maxBytes ?: maxBytes
     val body = response.body
     val contentType = body.contentType()
-    if (response.isSuccessful && contentType != null && !isJsonContentType(contentType)) {
+    val readAsJson = contentType == null || isJsonContentType(contentType) ||
+        (response.isSuccessful && isPlainText(contentType))
+    if (response.isSuccessful && !readAsJson) {
         body.close()
         throw IOException("Rejected non-JSON response from untrusted host: $contentType")
     }
-    val depthCounter = if (contentType == null || isJsonContentType(contentType)) {
+    val depthCounter = if (readAsJson) {
         val charset = contentType?.charset()
         if (charset != null && charset !in DEPTH_SAFE_CHARSETS) {
             body.close()
             throw IOException("Rejected JSON in charset $charset from untrusted host")
         }
-        JsonNestingDepthCounter(maxDepth)
+        JsonNestingDepthCounter(maxDepth, tagCap?.maxValues ?: Long.MAX_VALUE)
     } else {
         null
     }
@@ -259,9 +325,9 @@ internal fun untrustedResponseGuardInterceptor(
             // Utils.buffer on an error path with uncertain close discipline;
             // closing here bounds the held exchange deterministically instead
             // of waiting for the 30s callTimeout watchdog.
-            if (read > maxBytes) {
+            if (read > cap) {
                 runCatching { body.close() }
-                throw IOException("Response body exceeds ${maxBytes / 1_000_000}MB cap from untrusted host")
+                throw IOException("Response body exceeds ${cap / 1_000_000}MB cap from untrusted host")
             }
             if (depthCounter != null) {
                 val newBytes = Buffer()
@@ -269,6 +335,9 @@ internal fun untrustedResponseGuardInterceptor(
                 while (!newBytes.exhausted()) {
                     if (!depthCounter.accept(newBytes.readByte())) {
                         runCatching { body.close() }
+                        if (depthCounter.tooManyValues) {
+                            throw IOException("Rejected JSON from untrusted host: more than ${depthCounter.maxValues} values")
+                        }
                         throw IOException("Rejected JSON from untrusted host: nests deeper than $maxDepth levels or is not UTF-8")
                     }
                 }
@@ -312,7 +381,7 @@ internal fun redactingLoggingInterceptor(): HttpLoggingInterceptor =
 
 /**
  * Cache instrument: an APPLICATION interceptor sees cache hits; a network
- * interceptor never does. Answers whether http_cache serves anything and
+ * interceptor never does. Answers whether the addon cache (ADDON_HTTP_CACHE_DIR) serves anything and
  * whether addons declare anything cacheable. One line per API call, not per
  * media chunk. Installed in debug builds only since the ke8 CACHE_SIZES
  * readout replaced it as the release-side observability seam.
@@ -372,25 +441,36 @@ object NetworkModule {
     fun provideWireConverterFactory(json: Json): Converter.Factory =
         json.asConverterFactory("application/json".toMediaType())
 
+    /**
+     * Spec 70 R3's per-host guard, one per process (Spec 68 P6): addon Trust resets its breaker and
+     * the Addons page reads its certificate flags. Internal like the class, so the @Api provider is too.
+     */
+    @Provides
+    @Singleton
+    internal fun provideAddonHostGuard(): AddonHostGuard = AddonHostGuard()
+
     @Provides
     @Singleton
     @Api
-    fun provideApiOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
-        val trustAllManager = trustAllManager()
-        val sslContext = trustAllSslContext(trustAllManager)
-        // Trust-all is a compatibility measure for self-hosted addons and
-        // stale TV trust stores; fixed commercial endpoints use @Validated
-        // instead (main review F20).
+    internal fun provideApiOkHttpClient(
+        @ApplicationContext context: Context,
+        addonTls: AddonTlsTrust,
+        hostGuard: AddonHostGuard
+    ): OkHttpClient {
+        // Spec 68 X7: validated TLS; a self-signed self-hosted addon works once the user trusts
+        // its certificate (per-host pin). Fixed commercial endpoints use @Validated (F20).
         return OkHttpClient.Builder()
             .dns(IPv4FirstDns())
-            .sslSocketFactory(sslContext.socketFactory, trustAllManager)
-            .hostnameVerifier { _, _ -> true }
-            .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024)) // 50 MB disk cache
+            .sslSocketFactory(addonTls.sslSocketFactory, addonTls.trustManager)
+            .hostnameVerifier(addonTls.hostnameVerifier)
+            .cache(Cache(File(context.cacheDir, ADDON_HTTP_CACHE_DIR), 50L * 1024 * 1024)) // 50 MB disk cache
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             // W2.1 API shape: many-small-hosts addon JSON must not hang a call
             // forever (a slow-drip server defeats per-read timeouts).
             .callTimeout(30, TimeUnit.SECONDS)
+            // Spec 70 R3: per-host 429 pause + breaker, first so a skipped call never reaches the network.
+            .addInterceptor(AddonHostGuardInterceptor(hostGuard, deviceOnline = { NetworkTransportReader.hasInternet(context) }))
             .addInterceptor(identityHeadersInterceptor())
             .addInterceptor(untrustedResponseGuardInterceptor())
             .apply { if (BuildConfig.DEBUG) addInterceptor(cacheInstrumentInterceptor()) }
@@ -408,17 +488,14 @@ object NetworkModule {
     @Provides
     @Singleton
     @Download
-    fun provideDownloadOkHttpClient(): OkHttpClient {
-        // Trust-all like @Api: subtitle URLs are addon-supplied and point back
-        // at the same self-hosted-host class @Api's rationale covers (review
-        // 2026-08-29-075635 major — dropping it silently broke self-signed
-        // subtitle hosts).
-        val trustAllManager = trustAllManager()
-        val sslContext = trustAllSslContext(trustAllManager)
+    fun provideDownloadOkHttpClient(addonTls: AddonTlsTrust): OkHttpClient {
+        // Same TLS as @Api (Spec 68 X7): subtitle and Live TV source URLs are addon-supplied. A
+        // self-signed host trusted for an addon is trusted here too; any other self-signed host
+        // is refused until X8.
         return OkHttpClient.Builder()
             .dns(IPv4FirstDns())
-            .sslSocketFactory(sslContext.socketFactory, trustAllManager)
-            .hostnameVerifier { _, _ -> true }
+            .sslSocketFactory(addonTls.sslSocketFactory, addonTls.trustManager)
+            .hostnameVerifier(addonTls.hostnameVerifier)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor(identityHeadersInterceptor())
@@ -445,10 +522,10 @@ object NetworkModule {
 
     /**
      * TLS-validating client for fixed commercial endpoints (TMDB et al.).
-     * The shared client above disables certificate/hostname validation as a
-     * compatibility measure for self-hosted addons and stale TV trust stores;
-     * api.themoviedb.org has valid certs and no self-hosting variability, so it
-     * should not inherit that bypass (main review F20).
+     * The addon clients above also accept certificates the user trusted for a
+     * self-hosted addon (Spec 68 X7 pins); api.themoviedb.org has valid certs and
+     * no self-hosting variability, so it takes plain platform validation (main
+     * review F20).
      */
     @Provides
     @Singleton
@@ -552,6 +629,17 @@ object NetworkModule {
     fun provideIntroDbApi(@Named("introDb") retrofit: Retrofit): IntroDbApi =
         retrofit.create(IntroDbApi::class.java)
 
+    @Provides
+    @Singleton
+    @Named("theIntroDb")
+    fun provideTheIntroDbRetrofit(@Validated okHttpClient: OkHttpClient, wireConverterFactory: Converter.Factory): Retrofit =
+        retrofit(baseUrlOr(BuildConfig.THEINTRODB_API_URL, "https://localhost/"), okHttpClient, wireConverterFactory)
+
+    @Provides
+    @Singleton
+    fun provideTheIntroDbApi(@Named("theIntroDb") retrofit: Retrofit): TheIntroDbApi =
+        retrofit.create(TheIntroDbApi::class.java)
+
     // --- SeriesGraph API ---
 
     @Provides
@@ -588,4 +676,10 @@ object NetworkModule {
     @Singleton
     fun provideGitHubReleaseApi(@Named("github") retrofit: Retrofit): GitHubReleaseApi =
         retrofit.create(GitHubReleaseApi::class.java)
+
+    /** Spec 81 T1: `tip.json` on the same public repo, through the same client. */
+    @Provides
+    @Singleton
+    fun provideGitHubFileApi(@Named("github") retrofit: Retrofit): GitHubFileApi =
+        retrofit.create(GitHubFileApi::class.java)
 }

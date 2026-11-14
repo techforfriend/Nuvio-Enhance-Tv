@@ -25,6 +25,8 @@ fun MetaPreviewDto.toDomainOrNull(catalogType: String, sourceAddonBaseUrl: Strin
         genres = genres ?: emptyList(),
         runtime = runtime,
         status = status?.trim()?.takeIf { it.isNotBlank() },
+        // Same source and shape as MetaMapper's ageRating, so a detail-meta merge keeps the value.
+        ageRating = appExtras?.certification?.trim()?.takeIf { it.isNotBlank() },
         released = released,
         country = country,
         imdbId = imdbId,

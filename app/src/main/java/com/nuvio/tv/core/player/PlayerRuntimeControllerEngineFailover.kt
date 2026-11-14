@@ -2,7 +2,9 @@ package com.nuvio.tv.core.player
 
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.Tracks
 import com.nuvio.tv.R
+import com.nuvio.tv.core.util.safeHost
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
@@ -15,17 +17,20 @@ internal fun PlayerRuntimeController.maybeAutoSwitchInternalPlayerOnStartupError
     if (!allowEngineFailover) return false
     if (!autoSwitchInternalPlayerOnErrorEnabled) return false
     if (startupEngineFailoverTriggered) return false
+    // Spec 85 G1: one automatic switch per URL per stream, either direction (D3's loop guard).
+    if (currentStreamUrl in engineHopStreamUrls) return false
     if (!isStartupPhaseForEngineFailover()) return false
 
-    // Task 1.6 (Option A): automatic engine failover is one-directional. Only
-    // an active MPV session (manual switch, the MPV/AUTO engine settings, or a
-    // Blu-ray .m2ts start, format-capability G2) may fail back to ExoPlayer
-    // (for .m2ts that fails too and next-source failover takes over). ExoPlayer startup failures are handled by
-    // the retry ladders and next-source failover instead of silently dropping
-    // into MPV, which loses this fork's passthrough/DV pipeline behaviour.
+    // Task 1.6 (Option A), narrowed by Spec 85 D1: an active MPV session (manual switch, the MPV/AUTO
+    // engine settings, or a start-on-mpv name, Spec 85 G8) may fail back to ExoPlayer (when ExoPlayer
+    // cannot open it either, next-source failover takes over). ExoPlayer goes to MPV only for a file
+    // it cannot play at all (hopToMpvForFormat: track, video-decoder and container triggers, never
+    // Dolby Vision); every other ExoPlayer startup failure stays with the retry ladders and
+    // next-source failover, since MPV loses this fork's passthrough/DV pipeline.
     val mpvActive = currentInternalPlayerEngine == InternalPlayerEngine.MVP_PLAYER ||
         (currentInternalPlayerEngine == InternalPlayerEngine.AUTO && mpvView != null)
     if (!mpvActive) return false
+    engineHopStreamUrls.add(currentStreamUrl)
     val targetEngine = InternalPlayerEngine.EXOPLAYER
     rememberCurrentTrackPreferenceForEngineSwitch()
     Log.w(PlayerRuntimeController.TAG, "Startup playback error; auto-switching engine: $detailedError")
@@ -49,7 +54,9 @@ internal fun PlayerRuntimeController.maybeAutoSwitchInternalPlayerOnStartupError
     pendingMpvHardRestartOnNextAttach = false
     rebuildCurrentStream(
         "startup engine failover",
-        positionMs = 0L,
+        // No frame came, so the start target is the carry (Spec 85: mpv was handed it and the
+        // pending resume cleared).
+        positionMs = mpvStartPositionMs,
         // A paused manual switch to mpv that fails over lands on Exo still paused (N7).
         paused = userPausedManually,
         engine = targetEngine,
@@ -63,14 +70,134 @@ internal fun PlayerRuntimeController.maybeAutoSwitchInternalPlayerOnStartupError
     return true
 }
 
+/** Spec 85 G2: whether this ExoPlayer start may still hop to mpv ([MpvEngineHopPolicy.hopAllowed]). */
+internal fun PlayerRuntimeController.mpvFormatHopAvailable(): Boolean = MpvEngineHopPolicy.hopAllowed(mpvHopGateInput())
+
+private fun PlayerRuntimeController.mpvHopGateInput() = MpvEngineHopPolicy.GateInput(
+    exoActive = currentInternalPlayerEngine == InternalPlayerEngine.EXOPLAYER && _exoPlayer != null,
+    firstFrameRendered = hasRenderedFirstFrame,
+    inBackground = isInBackground,
+    switchUsedForUrl = currentStreamUrl in engineHopStreamUrls,
+    videoMime = currentVideoTrackMimeType,
+    videoCodecs = currentVideoTrackCodecs,
+    dvSourceProfile = DolbyVisionConversionStats.getLastSourceProfile()
+)
+
+/**
+ * Spec 85 E1/E2/E6/E8: the track triggers ([MpvEngineHopPolicy.reasonForTracks]) on an ExoPlayer
+ * tracks update; true when the start hopped to mpv (the caller stops reading these tracks: the
+ * player is released). In the background a trigger is only held for resume
+ * ([maybeHopToMpvHeldInBackground]); the rest of the update runs as usual.
+ */
+internal fun PlayerRuntimeController.maybeHopToMpvForTracks(tracks: Tracks): Boolean {
+    // The gate first, so a closed one never reads the tracks.
+    if (!MpvEngineHopPolicy.hopAllowed(mpvHopGateInput().copy(inBackground = false))) return false
+    val reason = MpvEngineHopPolicy.reasonForTracks(
+        video = tracks.hopFacts(C.TRACK_TYPE_VIDEO),
+        audio = tracks.hopFacts(C.TRACK_TYPE_AUDIO),
+        adaptive = _exoPlayer?.currentManifest != null
+    ) ?: return false
+    // Held in the background: the player stays, so the caller reads the rest of the update.
+    return maybeHopToMpv(reason.name) && !isInBackground
+}
+
+/**
+ * Spec 85 G2, on resume: the track trigger the background held back. Its first-frame term is
+ * waived: a paused ExoPlayer with a live surface (ON_PAUSE) renders its first frame, but playback
+ * never ran. The other gate terms still apply. True when it hopped.
+ */
+internal fun PlayerRuntimeController.maybeHopToMpvHeldInBackground(): Boolean {
+    val reason = backgroundHeldMpvHopReason ?: return false
+    backgroundHeldMpvHopReason = null
+    if (!MpvEngineHopPolicy.hopAllowed(mpvHopGateInput().copy(firstFrameRendered = false))) return false
+    hopToMpvForFormat(reason)
+    return true
+}
+
+/**
+ * Spec 85 G2/G6/G7: the hop for a trigger met outside the error ladder's snapshot (a tracks
+ * update, the parsing probe's tail, the first-frame watchdog), gated now. In the background the
+ * reason is held for resume ([maybeHopToMpvHeldInBackground]). True when it hopped or is held;
+ * false leaves the caller's own fallback to run.
+ */
+internal fun PlayerRuntimeController.maybeHopToMpv(reason: String): Boolean {
+    val gate = mpvHopGateInput()
+    if (!MpvEngineHopPolicy.hopAllowed(gate.copy(inBackground = false))) return false
+    if (gate.inBackground) {
+        backgroundHeldMpvHopReason = reason
+        return true
+    }
+    hopToMpvForFormat(reason)
+    return true
+}
+
+/**
+ * Spec 85 G3: restart this ExoPlayer start on mpv at its start position, once per URL (G1). No
+ * engine-switch notice (no new visible element without a mockup). Synchronous, as the mpv->Exo
+ * failover is: the URL is marked in the same step that rebuilds, so no other rebuild can slip in
+ * between and leave a marked URL on ExoPlayer (releasing the player from its own onTracksChanged
+ * has precedent in the libass switch, a Main.immediate launch that runs inline). Keep it off a
+ * launch or yield.
+ *
+ * AFR: the frame rate ExoPlayer's tracks reported is dropped, so mpv's own preflight detects and
+ * switches the display and holds its start for the settle (it skips when a rate is already known);
+ * ExoPlayer's track-AFR coroutine stands down on the new stream generation.
+ *
+ * Track restore: on the first tracks update ExoPlayer has applied no restore yet, so nothing is
+ * carried and mpv restores this URL's pending carry or the title's saved choice as if the stream
+ * had started there (a carry of ExoPlayer's default pick would outrank the saved choice). Once an
+ * update has run the restore (a trigger the background held back), the effective selections are
+ * carried instead, since the restore consumed the saved choice.
+ */
+internal fun PlayerRuntimeController.hopToMpvForFormat(reason: String) {
+    engineHopStreamUrls.add(currentStreamUrl)
+    val positionMs = _exoPlayer?.let(::exoCarryPositionMs) ?: 0L
+    if (hasScannedTextTracksOnce) seedTrackPreferenceCarryForPlayerRebuild()
+    _uiState.update { it.copy(detectedFrameRate = 0f, detectedFrameRateSource = null) }
+    Log.w(
+        PlayerRuntimeController.TAG,
+        "FORMAT_HOP reason=$reason mime=${currentVideoTrackMimeType ?: "none"} " +
+            "codecs=${currentVideoTrackCodecs ?: "none"} host=${currentStreamUrl.safeHost()} positionMs=$positionMs"
+    )
+    rebuildCurrentStream(
+        "format hop $reason",
+        positionMs = positionMs,
+        paused = rebuildStartsPaused(),
+        engine = InternalPlayerEngine.MVP_PLAYER
+    )
+}
+
+private fun Tracks.hopFacts(trackType: Int): List<MpvEngineHopPolicy.TrackFact> =
+    groups.filter { it.type == trackType }.flatMap { group ->
+        (0 until group.length).map { i ->
+            val format = group.getTrackFormat(i)
+            MpvEngineHopPolicy.TrackFact(
+                mime = format.sampleMimeType,
+                codecs = format.codecs,
+                support = group.getTrackSupport(i),
+                selected = group.isTrackSelected(i)
+            )
+        }
+    }
+
+/**
+ * The engine a manual switch goes to: the other one; under AUTO, ExoPlayer when an mpv view is attached,
+ * else mpv. One home for the More tray's Switch engine and the error box's Play with (Spec 86 R3).
+ */
+internal fun manualEngineSwitchTarget(current: InternalPlayerEngine, mpvViewAttached: Boolean): InternalPlayerEngine =
+    when (current) {
+        InternalPlayerEngine.EXOPLAYER -> InternalPlayerEngine.MVP_PLAYER
+        InternalPlayerEngine.MVP_PLAYER -> InternalPlayerEngine.EXOPLAYER
+        InternalPlayerEngine.AUTO -> if (mpvViewAttached) InternalPlayerEngine.EXOPLAYER else InternalPlayerEngine.MVP_PLAYER
+    }
+
+internal fun PlayerRuntimeController.manualEngineSwitchTarget(): InternalPlayerEngine =
+    manualEngineSwitchTarget(currentInternalPlayerEngine, mpvViewAttached = mpvView != null)
+
 internal fun PlayerRuntimeController.switchInternalPlayerEngineManually() {
     if (currentStreamUrl.isBlank()) return
 
-    val targetEngine = when (currentInternalPlayerEngine) {
-        InternalPlayerEngine.EXOPLAYER -> InternalPlayerEngine.MVP_PLAYER
-        InternalPlayerEngine.MVP_PLAYER -> InternalPlayerEngine.EXOPLAYER
-        InternalPlayerEngine.AUTO -> if (mpvView != null) InternalPlayerEngine.EXOPLAYER else InternalPlayerEngine.MVP_PLAYER
-    }
+    val targetEngine = manualEngineSwitchTarget()
     val targetEngineLabel = targetEngineLabel(targetEngine)
     val switchMessage = context.getString(R.string.player_engine_switching_manual_message, targetEngineLabel)
 
@@ -83,6 +210,14 @@ internal fun PlayerRuntimeController.switchInternalPlayerEngineManually() {
     seedSourceSwitchResumeFromLivePosition()
 
     startupEngineFailoverTriggered = false
+    // Spec 85 G1: a manual switch to mpv re-arms its URL's one automatic switch (mpv may still fail
+    // back to ExoPlayer), as it re-arms the flag above; a manual switch to ExoPlayer uses it up, so
+    // the format hop never undoes the user's choice.
+    if (targetEngine == InternalPlayerEngine.MVP_PLAYER) {
+        engineHopStreamUrls.remove(currentStreamUrl)
+    } else {
+        engineHopStreamUrls.add(currentStreamUrl)
+    }
     userPausedManually = false
     resetErrorRetryState()
     hidePlayerEngineSwitchInfoJob?.cancel()

@@ -1,6 +1,7 @@
 package com.nuvio.tv.core.player
 
 import android.util.Log
+import com.nuvio.tv.core.util.safeHost
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -83,10 +84,10 @@ internal suspend fun PlayerRuntimeController.fetchAddonSubtitlesNow(
                 refreshOsdTechBadges()
             }
             val key = streamCacheKey
-            // Same gate as persistSelectedStreamForReuse/persistTorrentStreamForReuse:
-            // the cache is only read when last-link reuse is on. A stream the runtime guard
-            // rejected while this hash ran stays forgotten (Spec 42 P2).
-            if (key != null && streamReuseLastLinkEnabled && hashedStreamUrl !in rejectedStreamUrls) {
+            // As persistSelectedStreamForReuse/persistTorrentStreamForReuse: written whatever
+            // "Reuse last link" says (Spec 86 R12; the Last played markers read it). A stream the
+            // runtime guard rejected while this hash ran stays forgotten (Spec 42 P2).
+            if (key != null && !failedReleases.isExcludedUrl(hashedStreamUrl)) {
                 val state = _uiState.value
                 val torrentInfoHash = currentInfoHash
                 if (isTorrentStream && torrentInfoHash != null) {
@@ -476,7 +477,6 @@ internal fun PlayerRuntimeController.observeSubtitleSettings() {
             ) {
                 schedulePauseOverlay()
             }
-            streamReuseLastLinkEnabled = settings.streamReuseLastLinkEnabled
             autoSwitchInternalPlayerOnErrorEnabled = settings.autoSwitchInternalPlayerOnError
             addonSubtitlesEnabled = settings.addonSubtitlesEnabled
             currentInternalPlayerEngine = resolvedInternalPlayerEngine
@@ -697,7 +697,8 @@ internal fun PlayerRuntimeController.fetchSkipIntervals(id: String?, season: Int
     val effectiveId = currentVideoId?.takeIf { it.isNotBlank() } ?: id
 
     val imdbId = effectiveId.split(":").firstOrNull()?.takeIf { it.startsWith("tt") } ?: return
-    if (season == null || episode == null) return
+    // A movie has neither (TheIntroDB knows movies, Spec 61 Q7); half an episode is no key.
+    if ((season == null) != (episode == null)) return
 
     val key = "$imdbId:$season:$episode"
     if (skipIntroFetchedKey == key) return
@@ -809,15 +810,19 @@ internal fun PlayerRuntimeController.cancelStartupWatchdog() {
  * and on stream reset/reinit. Checks every [PlayerRuntimeController.STARTUP_WATCHDOG_TIMEOUT_MS]
  * and extends instead of firing while buffered-ahead keeps growing — a slow 4K cold
  * start that is still pulling data is not a wedge (T3, ysosrs 01b6b4bae) — up to the
- * hard ceiling [PlayerRuntimeController.STARTUP_WATCHDOG_CEILING_MS]. At fire it surfaces
- * an actionable error matched to track state (T3, ysosrs 859ecf718) instead of an
- * infinite spinner. Deliberately does NOT auto-retry: the known trigger is the vendor
+ * hard ceiling [PlayerRuntimeController.STARTUP_WATCHDOG_CEILING_MS]; it also extends while
+ * network bytes still arrive for a start with its video selected (Spec 86 D3,
+ * [PlayerStartupWatchdogPolicy.waitsForData]); in the background the window restarts. At fire
+ * it names the reason by track state and arriving data (T3, ysosrs 859ecf718; Spec 86 R9). A source-facing reason fails over to the
+ * next source, the old player stopped (Spec 86 R4/D3, [PlayerStartupWatchdogPolicy.failsOver]);
+ * otherwise, or with no source left, it surfaces the error instead of an infinite spinner.
+ * Deliberately does NOT auto-retry: the known trigger is the vendor
  * Codec2 service wedging during decoder allocation, where a reinit just hangs again; the
  * honest remedy is telling the user (a device restart clears the wedge). One interval
  * after a surfaced fire it stops the player if still no first frame (Spec 56 R1): a
  * prepared player kept buffering behind the error screen (+50 MB, 568 MB peak on the
  * 2 GB Shield). Until then a late first frame still retracts the error (T3). Exo engine
- * path only, matching the arm site.
+ * path only, matching the arm site; mpv's counterpart is [scheduleMpvStartupWatchdog].
  */
 internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
     cancelStartupWatchdog()
@@ -830,47 +835,88 @@ internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
         // last check and another full interval fits inside the ceiling, re-arm instead
         // of firing. Monotonic clock: a wall-clock step (NTP re-sync — common right
         // after the device restart that clears the nt34 wedge) must not skew the gate.
-        val armedAtMs = android.os.SystemClock.elapsedRealtime()
+        var armedAtMs = android.os.SystemClock.elapsedRealtime()
+        // Spec 86 R4: a tick for a stream that is no longer playing (an episode switch stops the
+        // reused player before initializePlayer re-arms this) must not judge or fail over the new one.
+        val armedUrl = currentStreamUrl
+        // Spec 75 S4: what crossed the network over the window, for TOO_SLOW vs NO_DATA.
+        var armedNetworkBytes = PlaybackByteCounter.networkBytes
         var lastBufferedAheadMs = 0L
+        var lastNetworkBytes = armedNetworkBytes
         while (isActive) {
             delay(PlayerRuntimeController.STARTUP_WATCHDOG_TIMEOUT_MS)
-            if (hasRenderedFirstFrame) return@launch
+            if (hasRenderedFirstFrame || currentStreamUrl != armedUrl) return@launch
             val livePlayer = _exoPlayer ?: return@launch
+            val networkBytes = PlaybackByteCounter.networkBytes
+            // Spec 86 R4: in the background the window restarts instead of firing (as mpv's
+            // watchdog): a fire now fails over, and no source is judged while the app is away.
+            if (isInBackground) {
+                armedAtMs = android.os.SystemClock.elapsedRealtime()
+                armedNetworkBytes = networkBytes
+                lastBufferedAheadMs = 0L
+                lastNetworkBytes = networkBytes
+                continue
+            }
             val elapsedMs = android.os.SystemClock.elapsedRealtime() - armedAtMs
             val bufferedAheadMs = livePlayer.totalBufferedDuration.coerceAtLeast(0L)
+            // T3 (ysosrs 859ecf718): say something true — the fire message reflects
+            // whether the container headers ever arrived, whether the video format
+            // was accepted and whether data still arrives (Spec 86 R9), instead of
+            // always blaming the decoder.
+            val fireInput = PlayerStartupWatchdogPolicy.FireInput(
+                hasScannedTracksOnce = hasScannedTextTracksOnce,
+                streamHasVideoTrack = currentStreamHasVideoTrack,
+                videoTrackSelected = currentVideoTrackSelected,
+                networkBytesGrew = networkBytes > lastNetworkBytes,
+            )
+            val dataArriving = PlayerStartupWatchdogPolicy.waitsForData(fireInput)
             if (
                 PlayerStartupWatchdogPolicy.shouldExtend(
                     elapsedMs = elapsedMs,
                     bufferedAheadMs = bufferedAheadMs,
                     lastBufferedAheadMs = lastBufferedAheadMs,
+                    dataArriving = dataArriving,
                 )
             ) {
                 Log.w(
                     PlayerRuntimeController.TAG,
                     "STARTUP_WATCHDOG: no first frame ${elapsedMs}ms after starting_stream " +
-                        "but buffered-ahead growing (${lastBufferedAheadMs}ms -> ${bufferedAheadMs}ms); " +
+                        "but buffered-ahead ${lastBufferedAheadMs}ms -> ${bufferedAheadMs}ms, " +
+                        "network bytes +${networkBytes - lastNetworkBytes} (dataArriving=$dataArriving); " +
                         "extending (ceiling=${PlayerRuntimeController.STARTUP_WATCHDOG_CEILING_MS}ms)"
                 )
                 com.nuvio.tv.core.util.TtffTrace.mark("startup_watchdog_extended")
                 lastBufferedAheadMs = bufferedAheadMs
+                lastNetworkBytes = networkBytes
                 continue
             }
             val stateName = livePlayer.playbackState.playbackStateName()
-            // T3 (ysosrs 859ecf718): say something true — the fire message reflects
-            // whether the container headers ever arrived and whether the video format
-            // was accepted, instead of always blaming the decoder.
-            val fireReason = PlayerStartupWatchdogPolicy.fireReason(
-                PlayerStartupWatchdogPolicy.FireInput(
-                    hasScannedTracksOnce = hasScannedTextTracksOnce,
-                    streamHasVideoTrack = currentStreamHasVideoTrack,
-                    videoTrackSelected = currentVideoTrackSelected,
+            val fireReason = PlayerStartupWatchdogPolicy.fireReason(fireInput)
+            val fire = startupWatchdogFailure(fireReason, elapsedMs, networkBytes - armedNetworkBytes)
+            // Spec 86 R4/D3: a source-facing fire tries the next source before the box; another
+            // error already on screen owns its own handling. Only when a failover can happen: the
+            // failover marks the source dead and records it before it gives up, and a box the
+            // watchdog shows may still be retracted by a late first frame (Spec 75 D6(5)).
+            if (
+                PlayerStartupWatchdogPolicy.failsOver(fireReason) &&
+                _uiState.value.error == null &&
+                canAdvanceToNextLiveSource()
+            ) {
+                // Logged first: the switch may run inline (Main.immediate) and log the next stream.
+                Log.w(
+                    PlayerRuntimeController.TAG,
+                    "STARTUP_WATCHDOG: no first frame ${elapsedMs}ms (state=$stateName " +
+                        "bufferedAheadMs=$bufferedAheadMs reason=${fireReason.logToken} cause=${fire.cause} " +
+                        "measuredMbps=${fire.facts.measuredMbps} neededMbps=${fire.facts.neededMbps}); " +
+                        "failing over to the next source"
                 )
-            )
-            val fireMessage = context.getString(PlayerStartupWatchdogPolicy.messageRes(fireReason))
+                com.nuvio.tv.core.util.TtffTrace.mark("startup_watchdog_fired")
+                if (failStartOverToNextSource(fire, armedUrl, livePlayer)) return@launch
+            }
             _uiState.update {
                 if (it.error == null) {
                     it.copy(
-                        error = fireMessage,
+                        error = fire,
                         showLoadingOverlay = false
                     )
                 } else {
@@ -880,21 +926,71 @@ internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
             // Committed state decides the wording — if another error already held the
             // slot, the watchdog fired but nothing surfaced (log/trace must not claim
             // an error the user never saw).
-            val surfaced = _uiState.value.error == fireMessage
+            val surfaced = _uiState.value.error === fire
             Log.w(
                 PlayerRuntimeController.TAG,
                 "STARTUP_WATCHDOG: no first frame ${elapsedMs}ms " +
                     "after starting_stream (state=$stateName bufferedAheadMs=${bufferedAheadMs} " +
                     "pos=${livePlayer.currentPosition} reason=${fireReason.logToken} " +
                     "scannedTracks=$hasScannedTextTracksOnce hasVideoTrack=$currentStreamHasVideoTrack " +
-                    "videoSelected=$currentVideoTrackSelected); " +
+                    "videoSelected=$currentVideoTrackSelected cause=${fire.cause} " +
+                    "measuredMbps=${fire.facts.measuredMbps} neededMbps=${fire.facts.neededMbps}); " +
                     if (surfaced) "surfacing error" else "error already present, not surfacing"
             )
             com.nuvio.tv.core.util.TtffTrace.mark("startup_watchdog_fired")
-            if (surfaced) stopPlayerAfterStartupGrace(livePlayer, fireMessage)
+            if (surfaced) stopPlayerAfterStartupGrace(livePlayer, fire)
             return@launch
         }
     }
+}
+
+/**
+ * A start with no first frame goes to the next source ([attemptStartupExhaustedSourceFailover]);
+ * the startup watchdog (Spec 86 R4/D3) and the first-frame watchdog's black-picture rung (R1/D1)
+ * call it after `canAdvanceToNextLiveSource()`. While the source list loads first, this stream is
+ * still the current one: stop it so it neither keeps downloading or playing sound nor starts behind
+ * the coming switch (as mpv's start does), and disarm the startup watchdog, which would otherwise
+ * show its own box over the pending advance once bytes stop (as the placeholder reject does). Once
+ * the switch ran, the URL moved on and the player and watchdog are the next source's.
+ */
+internal fun PlayerRuntimeController.failStartOverToNextSource(
+    failure: PlaybackFailure,
+    armedUrl: String,
+    livePlayer: ExoPlayer
+): Boolean {
+    if (!attemptStartupExhaustedSourceFailover(failure)) return false
+    if (currentStreamUrl == armedUrl && _exoPlayer === livePlayer) {
+        cancelStartupWatchdog()
+        livePlayer.stop()
+    }
+    return true
+}
+
+/**
+ * Spec 75 S4: the watchdog's failure: [networkBytes] over [elapsedMs] measured against what the
+ * file needs (its size over the expected runtime) tells TOO_SLOW from NO_DATA (S2). Null bytes =
+ * not measured (mpv fetches through its own HTTP stack, outside [PlaybackByteCounter]; Spec 85 G10).
+ */
+internal fun PlayerRuntimeController.startupWatchdogFailure(
+    fireReason: PlayerStartupWatchdogPolicy.FireReason,
+    elapsedMs: Long,
+    networkBytes: Long?
+): PlaybackFailure {
+    val measured = networkBytes?.let { PlaybackFailureCauses.mbps(it, elapsedMs) }
+    val needed = com.nuvio.tv.core.assessment.filmMbps(currentMediaFileSize(), expectedRuntimeMinutes)
+    return playbackFailure(
+        cause = PlaybackFailureCauses.ofStartupWatchdog(fireReason, measured, needed),
+        message = context.getString(PlayerStartupWatchdogPolicy.messageRes(fireReason)),
+        facts = FailureFacts(
+            watchdogFire = fireReason,
+            waitedMs = elapsedMs,
+            measuredMbps = measured,
+            measuredOverMs = elapsedMs.takeIf { measured != null },
+            neededMbps = needed,
+            runtimeMinutes = expectedRuntimeMinutes
+        ),
+        fromStartupWatchdog = true
+    )
 }
 
 /**
@@ -906,7 +1002,7 @@ internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
  */
 private suspend fun PlayerRuntimeController.stopPlayerAfterStartupGrace(
     livePlayer: ExoPlayer,
-    fireMessage: String,
+    fire: PlaybackFailure,
 ) {
     delay(PlayerRuntimeController.STARTUP_WATCHDOG_TIMEOUT_MS)
     if (
@@ -914,7 +1010,7 @@ private suspend fun PlayerRuntimeController.stopPlayerAfterStartupGrace(
             hasRenderedFirstFrame = hasRenderedFirstFrame,
             samePlayer = _exoPlayer === livePlayer,
             currentError = _uiState.value.error,
-            fireMessage = fireMessage,
+            fire = fire,
         )
     ) {
         return
@@ -935,20 +1031,16 @@ private suspend fun PlayerRuntimeController.stopPlayerAfterStartupGrace(
  * fire (only one interval later, Spec 56 R1), so a slow-but-healthy start can render its
  * first frame after the watchdog has already surfaced the startup error — leaving a
  * stale error screen over running playback that nothing ever cleared. The rendered frame
- * is ground truth: retract exactly the watchdog's own messages, whichever variant fired.
+ * is ground truth: retract exactly the watchdog's own failure (fromStartupWatchdog), whichever variant fired.
  * Any other error (a real decode failure racing the frame) is left untouched.
  */
 internal fun PlayerRuntimeController.retractStartupWatchdogErrorAfterFirstFrame() {
-    val watchdogMessages = PlayerStartupWatchdogPolicy.FireReason.entries
-        .map { context.getString(PlayerStartupWatchdogPolicy.messageRes(it)) }
-        .toSet()
     // Guard before the CAS loop so the log/trace describe a committed transition,
     // not an attempt that update() could lose to a concurrent writer (the update
     // body still re-checks, so the state stays correct under contention).
-    val current = _uiState.value.error
-    if (current == null || current !in watchdogMessages) return
+    if (_uiState.value.error?.fromStartupWatchdog != true) return
     _uiState.update { state ->
-        if (state.error != null && state.error in watchdogMessages) {
+        if (state.error?.fromStartupWatchdog == true) {
             state.copy(error = null)
         } else {
             state
@@ -1043,6 +1135,9 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
     }
 }
 
+// How often the first-frame watchdog re-checks a running AFR hold (Spec 62 H1).
+private const val AFR_GATE_POLL_MS = 250L
+
 internal fun PlayerRuntimeController.maybeScheduleFirstFrameWatchdog() {
     if (hasRenderedFirstFrame || !currentStreamHasVideoTrack) return
     val player = _exoPlayer ?: return
@@ -1051,6 +1146,9 @@ internal fun PlayerRuntimeController.maybeScheduleFirstFrameWatchdog() {
 
     firstFrameWatchdogJob = scope.launch {
         delay(PlayerRuntimeController.FIRST_FRAME_TIMEOUT_MS)
+        // Spec 62 H1: never force-start inside an AFR hold (up to 10 s + the switch wait). Both
+        // gates are timer-bounded and reset per stream, so this wait ends.
+        while (afrStartGateHeld) delay(AFR_GATE_POLL_MS)
 
         val livePlayer = _exoPlayer ?: return@launch
         if (hasRenderedFirstFrame) return@launch
@@ -1083,6 +1181,10 @@ internal fun PlayerRuntimeController.maybeScheduleFirstFrameWatchdog() {
                     isVc1SoftwareFallbackActive = isVc1SoftwareFallbackActiveForCurrentPlayback,
                     currentVideoTrackSelected = currentVideoTrackSelected,
                     isVc1TrackSelectionBypassActive = isVc1TrackSelectionBypassActiveForCurrentPlayback,
+                    blackStartRebuildDone = blackStartRebuiltStreamUrls.contains(currentStreamUrl),
+                    errorOnScreen = _uiState.value.error != null,
+                    inBackground = isInBackground,
+                    primingFromZero = startPrimeTargetMs != null,
                 )
             )
         ) {
@@ -1091,12 +1193,54 @@ internal fun PlayerRuntimeController.maybeScheduleFirstFrameWatchdog() {
                 scheduleDeferredPlayerReinitialize("first frame DV7 mode 1", currentPosition, clearResumeProgress = true)
             }
             PlayerFirstFrameCodecRecoveryPolicy.RecoveryAction.RetryVc1Software -> {
-                vc1SoftwarePreferredStreamUrls.add(currentStreamUrl)
-                scheduleDeferredPlayerReinitialize("first frame VC-1 software", currentPosition)
+                // Spec 85 G7 (E5): mpv decodes VC-1 (FFmpeg); the PREFER-extensions rebuild has no
+                // VC-1 software decoder and drops TrueHD/DTS-HD to PCM, so it is the fallback.
+                if (!maybeHopToMpv("VC1_FIRST_FRAME")) {
+                    vc1SoftwarePreferredStreamUrls.add(currentStreamUrl)
+                    scheduleDeferredPlayerReinitialize("first frame VC-1 software", currentPosition)
+                }
             }
             PlayerFirstFrameCodecRecoveryPolicy.RecoveryAction.RetryVc1TrackBypass -> {
                 vc1TrackSelectionBypassStreamUrls.add(currentStreamUrl)
                 scheduleDeferredPlayerReinitialize("first frame VC-1 track bypass", currentPosition)
+            }
+            PlayerFirstFrameCodecRecoveryPolicy.RecoveryAction.RebuildSameStream -> {
+                // Spec 86 R1/D1/D5: black picture with sound; one rebuild of this URL on this engine,
+                // from the playhead at the fire (as the DV/VC-1 rungs; a user seek is kept).
+                blackStartRebuiltStreamUrls.add(currentStreamUrl)
+                Log.w(
+                    PlayerRuntimeController.TAG,
+                    "FIRST_FRAME_WATCHDOG: video selected, no frame ${PlayerRuntimeController.FIRST_FRAME_TIMEOUT_MS}ms " +
+                        "after READY; rebuilding the stream once host=${currentStreamUrl.safeHost()}"
+                )
+                scheduleDeferredPlayerReinitialize("first frame black picture", currentPosition)
+            }
+            PlayerFirstFrameCodecRecoveryPolicy.RecoveryAction.NextSource -> {
+                // Spec 86 R1/D1: still black after the rebuild. Only when a failover can happen
+                // (it marks the source dead and records it before giving up); otherwise the
+                // startup watchdog's box follows, as before.
+                if (!canAdvanceToNextLiveSource()) {
+                    Log.w(
+                        PlayerRuntimeController.TAG,
+                        "FIRST_FRAME_WATCHDOG: still no frame after the rebuild and no next source; " +
+                            "the startup watchdog's box follows"
+                    )
+                    return@launch
+                }
+                Log.w(
+                    PlayerRuntimeController.TAG,
+                    "FIRST_FRAME_WATCHDOG: still no frame after the rebuild; failing over to the next source"
+                )
+                // A decoder that took the video and drew nothing: DECODER_STUCK. waitedMs is this
+                // window only (the rebuild's window before it is not counted).
+                val failure = startupWatchdogFailure(
+                    PlayerStartupWatchdogPolicy.FireReason.DecoderUnresponsive,
+                    PlayerRuntimeController.FIRST_FRAME_TIMEOUT_MS,
+                    networkBytes = null
+                )
+                // Not false here: the same cap and candidates as canAdvanceToNextLiveSource just
+                // read, and nothing suspends in between.
+                failStartOverToNextSource(failure, currentStreamUrl, livePlayer)
             }
             PlayerFirstFrameCodecRecoveryPolicy.RecoveryAction.None -> Unit
         }
@@ -1108,12 +1252,13 @@ internal fun PlayerRuntimeController.maybeScheduleFirstFrameWatchdog() {
  * would stopTorrentStream() and drop the live TorrServer torrent this URL still points at), carries
  * [positionMs] as the pending seek when > 0 (0 leaves any pending seek as is; unlike
  * [scheduleDeferredPlayerReinitialize], where 0 clears it), and starts the current URL again, on
- * [engine] when given. A same-engine rebuild ([engine] null) first seeds the track carry from the
- * effective selections (Spec 21 P7; an engine switch has captured its own carry and must not be
- * overwritten); the seed reads uiState at rebuild time, which an errored Exo player still holds
+ * [engine] when given, else on the engine the stream plays in (Spec 61 Q3). A same-engine rebuild ([engine] null) first seeds the track carry from the
+ * effective selections (Spec 21 P7; an engine switch has set its own carry, or deliberately none
+ * (the Spec 85 mpv hop), which must not be overwritten); the seed reads uiState at rebuild time, which an errored Exo player still holds
  * (Media3 1.8.0 stopInternal keeps its track info). Callers own what surrounds it: the overlay,
  * errorRetryJob and any delay or probe before it. Sites that call it from inside a job releasePlayer cancels
- * (errorRetryJob, passthroughReturnCheckJob) rely on it being non-suspending: the rest still runs.
+ * (errorRetryJob, passthroughReturnCheckJob, firstFrameWatchdogJob's Spec 85 VC-1 hop) rely on it
+ * being non-suspending: the rest still runs.
  */
 internal fun PlayerRuntimeController.rebuildCurrentStream(
     reason: String,
@@ -1135,11 +1280,19 @@ internal fun PlayerRuntimeController.rebuildCurrentStream(
     initializePlayer(
         url = currentStreamUrl,
         headers = currentHeaders,
-        overrideInternalPlayerEngine = engine,
+        overrideInternalPlayerEngine = engine ?: currentStreamEngineForRestart(),
         allowEngineFailover = allowEngineFailover,
         startPaused = paused
     )
 }
+
+/**
+ * Whether a recovery rebuild starts paused: the user's pause at decision time. The runtime-mismatch
+ * warning's own pause is not a user pause: a rebuild under it plays, so the check runs again and the
+ * warning comes back (red team 5e835278).
+ */
+internal fun PlayerRuntimeController.rebuildStartsPaused(): Boolean =
+    userPausedManually && _uiState.value.runtimeMismatch == null
 
 /**
  * The deferred rebuild for recovery rungs (DV/VC-1 fallbacks, safe audio, audio off, 416):
@@ -1167,9 +1320,7 @@ internal fun PlayerRuntimeController.scheduleDeferredPlayerReinitialize(
             showLoadingOverlay = it.loadingOverlayEnabled
         )
     }
-    // The runtime-mismatch warning's own pause is not a user pause: a rebuild under it plays, so the check runs
-    // again and the warning comes back (red team 5e835278).
-    val paused = userPausedManually && _uiState.value.runtimeMismatch == null
+    val paused = rebuildStartsPaused()
     deferredReinitJob?.cancel()
     deferredReinitJob = scope.launch {
         yield()
@@ -1177,9 +1328,10 @@ internal fun PlayerRuntimeController.scheduleDeferredPlayerReinitialize(
             // Pending seek set (or cleared) above.
             rebuildCurrentStream(reason, positionMs = 0L, paused = paused)
         }.onFailure { e ->
+            val failure = engineFailure(e.toDisplayMessage(context))
             _uiState.update {
                 it.copy(
-                    error = e.toDisplayMessage(context),
+                    error = failure,
                     showLoadingOverlay = false,
                     showPauseOverlay = false
                 )

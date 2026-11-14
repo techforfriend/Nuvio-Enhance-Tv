@@ -46,11 +46,29 @@ class ProfileManager @Inject constructor(
         .map { it != null }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
+    /** Spec 64 D14: the active profile vanished without the picker; the main UI returns to Who's watching. */
+    val activeProfileFellBack: StateFlow<Boolean> = profileDataStore.activeProfileFellBack
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
     val hasEverSelectedProfile: StateFlow<Boolean> = profileDataStore.hasEverSelectedProfile
         .stateIn(scope, SharingStarted.Eagerly, false)
 
     val rememberLastProfileEnabled: StateFlow<Boolean> = profileDataStore.rememberLastProfileEnabled
         .stateIn(scope, SharingStarted.Eagerly, false)
+
+    /**
+     * Spec 62 H3: read synchronously by MainActivity's idle and wake checks; null until loaded,
+     * which counts as off (a restored process must not return against a stored off).
+     */
+    val returnToPickerEnabled: StateFlow<Boolean?> = profileDataStore.returnToPickerEnabled
+        .stateIn<Boolean?>(scope, SharingStarted.Eagerly, null)
+
+    /**
+     * Spec 62 H3: the stored profile list, null until loaded (where [profiles] shows a one-profile
+     * placeholder), so a pending return is not dropped as "no one to switch to" before it loads.
+     */
+    val storedProfiles: StateFlow<List<UserProfile>?> = profileDataStore.profilesList
+        .stateIn<List<UserProfile>?>(scope, SharingStarted.Eagerly, null)
 
     val profiles: StateFlow<List<UserProfile>> = profileDataStore.profilesList
         .stateIn(scope, SharingStarted.Eagerly, listOf(

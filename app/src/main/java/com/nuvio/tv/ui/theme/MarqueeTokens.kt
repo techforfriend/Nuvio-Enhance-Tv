@@ -73,7 +73,8 @@ data class NuvioMarqueeTokens(
     val settings: NuvioMarqueeSettingsTokens,
     val toast: NuvioMarqueeToastTokens,
     val welcome: NuvioMarqueeWelcomeTokens,
-    val liveTv: NuvioMarqueeLiveTvTokens
+    val liveTv: NuvioMarqueeLiveTvTokens,
+    val tip: NuvioMarqueeTipTokens
 )
 
 /**
@@ -115,9 +116,28 @@ data class NuvioMarqueeTokens(
  * [sourcesTypeWidth], status chevron [sourcesIconSize]; buttons padded [sourcesButtonPaddingHorizontal],
  * [sourcesButtonGap] apart; the Add source dialog [addPanelWidth] wide over [addVeil]. Suggested
  * guide row (Spec 38 stage 6, `.lvsr.l38sug`): [suggestFill] with a [suggestEdge] hairline, its
- * type in `readyText`. Picker pills (Spec 38 stage 1, `.l38p`): `pillPaddingHorizontal` before the
+ * type in `readyText`. Choose guides panel (Spec 55 S1 stage `s55-pick`): [guidesPickWidth] wide,
+ * [guidesPickFill], over [guidesPickVeil]. Channel pack scan (Spec 73 stages 3-8, `.s73pk`, `.s73cp`): the
+ * country list [scanPickWidth] wide, the confirmation, progress and result cards [scanCardWidth] (the
+ * whole-world confirmation over [addVeil], the rest over [guidesPickVeil], all in [guidesPickFill]); the
+ * progress bar [scanBarHeight] on [scanBarTrack]. Picker pills (Spec 38 stage 1, `.l38p`): `pillPaddingHorizontal` before the
  * label, [pickerPaddingEnd] after the chevron, parts [pickerInnerGap] apart, the value at most
- * [pickerValueMaxWidth] (ellipsised).
+ * [pickerValueMaxWidth] (ellipsised). Day schedule column (Spec 67 G2, sandbox `spec-67-day-schedule` v2,
+ * `.s67col`): the picture shrinks to a [scheduleHeadWidth] x [scheduleHeadHeight] head (radius
+ * [scheduleHeadRadius]) with the channel [scheduleHeadGap] to its right; parts [scheduleGap] apart.
+ * Rows (`.s67r`): at least [scheduleRowMinHeight], radius [scheduleRowRadius], padded
+ * [scheduleRowPaddingHorizontal], time column [scheduleTimeWidth] then [scheduleRowInnerGap]; the airing
+ * row on [scheduleNowFill] with a [scheduleProgressWidth] bar; rows [scheduleListGap] apart.
+ * Guide grid (Spec 67 G3, sandbox `spec-67-guide-grid` v2, D7): the band (`.s67band`) at [guideBandTop],
+ * [guideBandHeight] tall: the picture [guideBandPictureWidth] wide (radius [guideBandRadius]), the focused
+ * programme [guideBandGap] to its right with a [guideBandProgressWidth] bar. The grid (`.s67g`) from
+ * [guideTop]: a [guideRulerHeight] ruler (day chips [guideChipHeight] tall, padded [guideChipPaddingHorizontal]),
+ * rows [guideRowHeight] (Compact [guideCompactRowHeight]) tall, [guideGap] apart and [guideGap] from the
+ * ruler; channel column [guideChannelWidth] (number [guideNumberWidth], tile [guideLogoSize] / Compact
+ * [guideCompactLogoSize]) then the strip. Cells radius [guideCellRadius] ([guideCutRadius] at a cut
+ * edge), padded [guideCellPaddingHorizontal], [guideCellFill], airing [guideAiringFill]; the no-guide cell
+ * a [guideNoneEdge] hairline; the guide-end cell [guideEndStripe] stripes. Ruler marks a [guideMarkEdge]
+ * hairline ([guideMidnightEdge] at midnight); the now-line [guideNowLineWidth] in `accent`.
  */
 @Immutable
 data class NuvioMarqueeLiveTvTokens(
@@ -223,9 +243,109 @@ data class NuvioMarqueeLiveTvTokens(
     val addVeil: Color,
     val suggestFill: Color,
     val suggestEdge: Color,
+    val guidesPickWidth: Dp,
+    val guidesPickFill: Color,
+    val guidesPickVeil: Color,
+    val scanPickWidth: Dp,
+    val scanCardWidth: Dp,
+    val scanBarHeight: Dp,
+    val scanBarTrack: Color,
     val pickerPaddingEnd: Dp,
     val pickerInnerGap: Dp,
-    val pickerValueMaxWidth: Dp
+    val pickerValueMaxWidth: Dp,
+    val scheduleHeadWidth: Dp,
+    val scheduleHeadHeight: Dp,
+    val scheduleHeadRadius: Dp,
+    val scheduleHeadGap: Dp,
+    val scheduleGap: Dp,
+    val scheduleRowMinHeight: Dp,
+    val scheduleRowRadius: Dp,
+    val scheduleRowPaddingHorizontal: Dp,
+    val scheduleRowInnerGap: Dp,
+    val scheduleTimeWidth: Dp,
+    val scheduleProgressWidth: Dp,
+    val scheduleNowFill: Color,
+    val scheduleListGap: Dp,
+    val guideBandTop: Dp,
+    val guideBandHeight: Dp,
+    val guideBandPictureWidth: Dp,
+    val guideBandRadius: Dp,
+    val guideBandGap: Dp,
+    val guideBandProgressWidth: Dp,
+    val guideTop: Dp,
+    val guideRulerHeight: Dp,
+    val guideChipHeight: Dp,
+    val guideChipPaddingHorizontal: Dp,
+    val guideRowHeight: Dp,
+    val guideCompactRowHeight: Dp,
+    val guideGap: Dp,
+    val guideChannelWidth: Dp,
+    val guideNumberWidth: Dp,
+    val guideLogoSize: Dp,
+    val guideCompactLogoSize: Dp,
+    val guideCellRadius: Dp,
+    val guideCutRadius: Dp,
+    val guideCellPaddingHorizontal: Dp,
+    val guideCellFill: Color,
+    val guideAiringFill: Color,
+    val guideNoneEdge: Color,
+    val guideEndStripe: Color,
+    val guideMarkEdge: Color,
+    val guideMidnightEdge: Color,
+    val guideNowLineWidth: Dp
+)
+
+/**
+ * Spec 81 tip card and thank-you (sandbox spec-81-donate v3, stages d-tip-us, e0-trigger, e1-thanks),
+ * dp on the 960x540 canvas. Card: the sign-in card's fill, edge, radius and padding over [veil],
+ * [cardTop] / [cardBottom], parts [cardGap] apart; a [qrTile] white tile at [qrRadius], the code
+ * [qrInset] in from its edge. Intro (`.s81l`): [introTop], [introWidth], [introGap], the title
+ * [titleSize] / [titleLineHeight]. Ladder chips: [chipHeight], [chipPaddingHorizontal], [chipGap],
+ * [chipFill] ([chipMidFill] for the middle one) with a [chipEdge] hairline; [ladderGap] under the label.
+ * [heart]: the Tip icon on dark; [heartOnFocus] on a white (focused) button or a lit row. About's
+ * row (`.s81lead`, stage a-about): a [rowHeart] heart before the label, [rowHeartEnd] more after it
+ * than the row's gap. Thank-you: a
+ * [thanksHeart] heart in [heartGradient], [thanksTitleSize] / [thanksTitleLineHeight] title,
+ * [thanksLineWidth] line, the signature in [signature], gaps [thanksHeartGap], [thanksLineTop],
+ * [thanksSignatureTop], [thanksDoneTop]; sparks in [sparkColors].
+ */
+@Immutable
+data class NuvioMarqueeTipTokens(
+    val veil: Color,
+    val cardTop: Dp,
+    val cardBottom: Dp,
+    val cardGap: Dp,
+    val qrTile: Dp,
+    val qrRadius: Dp,
+    val qrInset: Dp,
+    val introTop: Dp,
+    val introWidth: Dp,
+    val introGap: Dp,
+    val titleSize: TextUnit,
+    val titleLineHeight: TextUnit,
+    val chipHeight: Dp,
+    val chipPaddingHorizontal: Dp,
+    val chipGap: Dp,
+    val chipFill: Color,
+    val chipMidFill: Color,
+    val chipEdge: Color,
+    val ladderGap: Dp,
+    val termsWidth: Dp,
+    val heart: Color,
+    val heartOnFocus: Color,
+    val rowHeart: Dp,
+    val rowHeartEnd: Dp,
+    val thanksHeart: Dp,
+    val heartGradient: List<Color>,
+    val thanksTitleSize: TextUnit,
+    val thanksTitleLineHeight: TextUnit,
+    val thanksLineWidth: Dp,
+    val signature: Color,
+    val thanksHeartGap: Dp,
+    val thanksLineTop: Dp,
+    val thanksSignatureTop: Dp,
+    val thanksDoneTop: Dp,
+    val sparkColors: List<Color>
 )
 
 /**
@@ -363,7 +483,8 @@ data class NuvioMarqueeFormRowTokens(
  * QR sign-in route (stages 4, 5): the intro column [signInIntroTop] down, [signInIntroWidth] wide,
  * parts [signInIntroGap] apart, onboarding's Continue button [signInIntroActionTop] more below the hint
  * (sandbox spec-49-sign-in-buttons v2); the `.l11qc` card [signInCardWidth] wide from [signInCardTop] to
- * [signInCardBottom] above the bottom, [signInCardRadius] corners, [signInCardFill] with a
+ * [signInCardBottom] above the bottom, [signInCardRadius] corners, [signInCardFill] (opaque, so nothing behind
+ * shows through; shared by the welcome and What's new cards: Spec 80 D9) with a
  * [signInCardEdge] hairline, padded [signInCardPaddingHorizontal] x [signInCardPaddingTop] /
  * [signInCardPaddingBottom], parts [signInCardGap] apart; the QR tile [signInQrRadius] corners
  * ([qrSize] square) under [signInExpiredVeil] once dead; the status dot [signInStatusDot]; the
@@ -941,7 +1062,7 @@ data class NuvioMarqueeStreamTokens(
      *  bottom (the list scrolls under the panel edge; its bottom content padding is
      *  [panelPaddingHorizontal] so the last row clears the rounded corner), children [panelGap] apart. The eyebrow is inset
      *  [eyebrowInset]; an optional context line sits [contextTop] under it (u6 stage 3); a 1 dp
-     *  [rule] separates the chips from the list. */
+     *  [rule] separates the circles from the list. */
     val panelWidth: Dp,
     val panelInset: Dp,
     val panelPaddingTop: Dp,
@@ -950,19 +1071,22 @@ data class NuvioMarqueeStreamTokens(
     val eyebrowInset: Dp,
     val contextTop: Dp,
     val rule: Color,
-    /** Addon chips: [chipHeight] glass pills padded [chipPadding], spinner / name / count
-     *  [chipInnerGap] apart, chips [chipGap] apart after a [refreshSize] glass refresh circle.
-     *  Selected = white text + a [chipSelectedRing] inset white ring; failed = [chipErrorText] on
-     *  [chipErrorFill] with a 1 dp [chipErrorEdge]. */
+    /** The row under the eyebrow is [chipHeight] high: since Spec 65 [refreshSize] circles
+     *  [chipGap] apart (`circle*` below), then the pinned chips
+     *  ([com.nuvio.tv.ui.components.marquee.MarqueePinnedChip], stage 2): [chipHeight] glass pills
+     *  padded [chipPadding], a [pinMarkSize] origin icon / name / count [chipInnerGap] apart (the
+     *  sheets' filter values use that gap too). A saved filter that is on fills `circleOnFill`; the
+     *  addon view showing has a [chipSelectedRing] inset white ring. The chips scroll under the
+     *  circles' end; while more follow, the row's last [pinFadeWidth] fade into [pinFade]. */
     val chipHeight: Dp,
     val chipPadding: Dp,
     val chipInnerGap: Dp,
     val chipGap: Dp,
     val refreshSize: Dp,
     val chipSelectedRing: Dp,
-    val chipErrorText: Color,
-    val chipErrorFill: Color,
-    val chipErrorEdge: Color,
+    val pinMarkSize: Dp,
+    val pinFadeWidth: Dp,
+    val pinFade: Color,
     /** Source rows: [rowRadius] cards in [rowFill] (focused: `glassFill` + an inset `ring`, no
      *  scale), padded [rowPaddingHorizontal] / [rowPaddingTop] / [rowPaddingBottom], [rowGap] apart.
      *  The main column keeps [rowLineGap] between badges (themselves [badgeGap] apart), name and
@@ -985,9 +1109,14 @@ data class NuvioMarqueeStreamTokens(
     val sideGap: Dp,
     val cachedIconSize: Dp,
     val cachedTint: Color,
-    /** A row whose source failed this session fades to [rowDeadAlpha] (u6 stage 1); the player's
-     *  "Playing" marker leads with a [markerIconSize] play icon, [markerIconGap] before its label. */
-    val rowDeadAlpha: Float,
+    /** The decode line under a row's file name (Spec 65 P8, sandbox `spec-65-stream-filters` stage
+     *  11 `.p8ln`): a [decodeLineIconSize] icon [decodeLineIconGap] before one line; `limitWarn`
+     *  and a warning icon for a stream decoded in software, the rest of that row at
+     *  [rowSoftwareAlpha]; `onImage2` and an info icon for one that plays reduced. */
+    val decodeLineIconSize: Dp,
+    val decodeLineIconGap: Dp,
+    val rowSoftwareAlpha: Float,
+    /** The player's "Playing" marker leads with a [markerIconSize] play icon, [markerIconGap] before its label. */
     val markerIconSize: Dp,
     val markerIconGap: Dp,
     /** Missing-upstreams foot (Spec 42 D7, sandbox `s42b-stream-upstreams` stage 4): pinned under a
@@ -998,16 +1127,16 @@ data class NuvioMarqueeStreamTokens(
     val missingIconSize: Dp,
     val missingIconGap: Dp,
     val missingText: Color,
-    /** Stream limit (Spec 51, sandbox `spec-51-network-stream-limit` v3): the limit chip leads with a
-     *  [limitIconSize] warning icon, [limitChipText] on [limitChipFill] inside a 1 dp [limitChipEdge],
-     *  its count in [limitChipCount]; selected = [limitChipSelectedText] inside a `chipSelectedRing`
-     *  [limitWarn] ring; focused as any chip. The hidden view's line sits [limitLineTop] under the
-     *  chips: a [limitIconSize] [limitWarn] icon [limitLineIconGap] before the text. A hidden row's
+    /** Stream limit (Spec 51, sandbox `spec-51-network-stream-limit` v3; since Spec 65 the hidden
+     *  circle and the hidden sheet's entries carry the limit chip's colours): a [limitWarn] icon on
+     *  [limitChipFill] inside a 1 dp [limitChipEdge] (a `chipSelectedRing` [limitWarn] ring while the
+     *  hidden view shows), entry text in [limitChipText], counts in [limitChipCount]. The
+     *  hidden view's line sits [limitLineTop] under the
+     *  circles: a [limitIconSize] [limitWarn] icon [limitLineIconGap] before the text. A hidden row's
      *  side column ends on its bitrate in [limitWarn] after a [limitRowIconSize] icon, [limitRowIconGap]
      *  apart. */
     val limitIconSize: Dp,
     val limitChipText: Color,
-    val limitChipSelectedText: Color,
     val limitChipFill: Color,
     val limitChipEdge: Color,
     val limitChipCount: Color,
@@ -1016,6 +1145,83 @@ data class NuvioMarqueeStreamTokens(
     val limitLineIconGap: Dp,
     val limitRowIconSize: Dp,
     val limitRowIconGap: Dp,
+    /** The row's circles (Spec 65 P1, sandbox `spec-65-stream-filters` v5 stages 1, 3, 5, 10): refresh,
+     *  sources, filters and, while streams are hidden, the amber hidden circle, each `refreshSize`.
+     *  The filters circle fills [circleOnFill] while values are on. A [circleBadgeSize] high count
+     *  badge sits [circleBadgeOffset] outside the circle's top end corner (ambient accent on the
+     *  filters circle, `limitWarn` on the hidden one, [circleBadgeError] for the failed mark on the
+     *  sources circle); while addons are asked a spinner ring runs [circleRingOutset] outside the
+     *  sources circle. The eyebrow names the hidden view in `limitWarn`. */
+    val circleOnFill: Color,
+    val circleBadgeSize: Dp,
+    val circleBadgeOffset: Dp,
+    val circleBadgePadding: Dp,
+    val circleBadgeError: Color,
+    val circleRingOutset: Dp,
+    /** The sheets (stages 4, 6, 7) cover the panel: [sheetFill], [sheetRadius], padded
+     *  [sheetPaddingHorizontal] / [sheetPaddingTop] / [sheetPaddingBottom], children [sheetGap] apart;
+     *  the Stream screen dims the rest in [sheetDim]. Sources and hidden rows: [sheetRowHeight] high
+     *  [sheetRowRadius] cards in `rowFill` padded [sheetRowPadding], [sheetRowIconSize] icons, parts
+     *  [sheetRowInnerGap] apart; the shown view has a `chipSelectedRing` white ring; focused = white
+     *  fill, black text. Filter values: [facetChipHeight] pills padded [facetChipPadding],
+     *  [facetChipGap] apart under a heading [facetGroupGap] above; on = [circleOnFill] behind a
+     *  [facetCheckSize] check; a value that would list nothing draws at [facetZeroAlpha]. A saved
+     *  filter is such a pill without a count: on = the ambient accent at [savedOnAlpha]; pinned = a
+     *  `pinMarkSize` pin in the accent after its name (a pinned addon's row: `sheetRowIconSize`).
+     *  The foot's buttons are [sheetButtonHeight] glass pills padded [sheetButtonPadding], the phone
+     *  button a glass circle of that height at the row's end; the sources sheet's foot is the pin
+     *  hint instead. */
+    val sheetFill: Color,
+    val sheetDim: Color,
+    val sheetRadius: Dp,
+    val sheetPaddingHorizontal: Dp,
+    val sheetPaddingTop: Dp,
+    val sheetPaddingBottom: Dp,
+    val sheetGap: Dp,
+    val sheetRowHeight: Dp,
+    val sheetRowRadius: Dp,
+    val sheetRowPadding: Dp,
+    val sheetRowIconSize: Dp,
+    val sheetRowInnerGap: Dp,
+    val facetChipHeight: Dp,
+    val facetChipPadding: Dp,
+    val facetChipGap: Dp,
+    val facetGroupGap: Dp,
+    val facetCheckSize: Dp,
+    val facetZeroAlpha: Float,
+    val savedOnAlpha: Float,
+    val sheetButtonHeight: Dp,
+    val sheetButtonPadding: Dp,
+    /** The saved-filters phone dialog (stage 8, `.qrd`): a [phoneCardWidth] card in [phoneCardFill]
+     *  with a [phoneCardEdge] hairline and `sheetRadius` corners, centred over [phoneVeil]; its QR
+     *  and text are [phoneCardPadding] in and as far apart. */
+    val phoneVeil: Color,
+    val phoneCardWidth: Dp,
+    val phoneCardFill: Color,
+    val phoneCardEdge: Color,
+    val phoneCardPadding: Dp,
+    /** The row menu (hold OK on an episode's row, stages 12, 14, `.pk`): a [rowMenuWidth] panel in
+     *  [rowMenuFill] with a [rowMenuEdge] hairline and [rowMenuRadius] corners, padded
+     *  [rowMenuPadding], [rowMenuOffset] under its row (above it when it would end less than
+     *  [rowMenuScreenMargin] from the screen bottom) and [rowMenuInset] in from the row's start,
+     *  over [rowMenuVeil]. Items [rowMenuItemGap] apart: [rowMenuItemRadius] corners, padded
+     *  [rowMenuItemPaddingHorizontal] / [rowMenuItemPaddingVertical], a [rowMenuIconSize] icon in
+     *  the ambient accent [rowMenuIconGap] before the text; focused = white fill, black content. */
+    val rowMenuVeil: Color,
+    val rowMenuWidth: Dp,
+    val rowMenuFill: Color,
+    val rowMenuEdge: Color,
+    val rowMenuRadius: Dp,
+    val rowMenuPadding: Dp,
+    val rowMenuOffset: Dp,
+    val rowMenuInset: Dp,
+    val rowMenuScreenMargin: Dp,
+    val rowMenuItemGap: Dp,
+    val rowMenuItemRadius: Dp,
+    val rowMenuItemPaddingHorizontal: Dp,
+    val rowMenuItemPaddingVertical: Dp,
+    val rowMenuIconSize: Dp,
+    val rowMenuIconGap: Dp,
     /** Loading: static skeleton rows in [skeletonRowFill] (`rowRadius`, padded
      *  [skeletonRowPaddingVertical] / `rowPaddingHorizontal`), `skeletonFill` bars [skeletonLineGap]
      *  apart. Empty / error: a block padded [messagePaddingVertical] / [messagePaddingHorizontal],
@@ -1041,7 +1247,24 @@ data class NuvioMarqueeStreamTokens(
     val dialogTextInset: Dp,
     val dialogActionGap: Dp,
     val dialogActionTop: Dp,
-    val dialogActionBottom: Dp
+    val dialogActionBottom: Dp,
+    /** Addon certificate panel (Spec 68 X7, sandbox `s068-x7-tls-confirm` v1 `.cp` / `.x7fp`):
+     *  [consentWidth] wide over [certDim]; the host line [certHostBottom] above the body; the
+     *  fingerprint block [certFingerprintTop] under the body, inset `dialogTextInset`, padded
+     *  [certFingerprintPaddingVertical] / [certFingerprintPaddingHorizontal], [certFingerprintRadius],
+     *  [certFingerprintFill]; caption in [certCaption], fingerprint in [certFingerprint], a replaced
+     *  one in [certOldFingerprint]; old and new columns [certColumnGap] apart. */
+    val certDim: Color,
+    val certHostBottom: Dp,
+    val certFingerprintTop: Dp,
+    val certFingerprintPaddingVertical: Dp,
+    val certFingerprintPaddingHorizontal: Dp,
+    val certFingerprintRadius: Dp,
+    val certFingerprintFill: Color,
+    val certCaption: Color,
+    val certFingerprint: Color,
+    val certOldFingerprint: Color,
+    val certColumnGap: Dp
 )
 
 /** Library (approved sandbox `u7-library-marquee` v3), dp on the 960x540 canvas. */
@@ -1562,7 +1785,10 @@ data class NuvioTopBarTokens(
     /** The Update pill before the clock (Spec 52 T2 `.s52pill`): [updatePillHeight] tall, padded
      *  [updatePillPaddingStart] / [updatePillPaddingEnd], a [updatePillIconSize] icon [updatePillIconGap]
      *  before the label; at rest [updatePillText] on [updatePillFill] inside a 1 dp [updatePillEdge],
-     *  focused white with black content. */
+     *  focused white with black content. Spec 80 D5 (`.s80pulse`): the first time a release shows,
+     *  [updatePulseRings] rings of [updatePulseColor] grow from the pill's edge to [updatePulseSpread]
+     *  over [updatePulseRingMs] (ease-out, alpha [updatePulseAlpha] to 0, the edge brightening to
+     *  [updatePulseEdgeAlpha]), [updatePulseGapMs] apart, then rest. */
     val updatePillHeight: Dp,
     val updatePillPaddingStart: Dp,
     val updatePillPaddingEnd: Dp,
@@ -1570,7 +1796,14 @@ data class NuvioTopBarTokens(
     val updatePillIconGap: Dp,
     val updatePillFill: Color,
     val updatePillEdge: Color,
-    val updatePillText: Color
+    val updatePillText: Color,
+    val updatePulseColor: Color,
+    val updatePulseSpread: Dp,
+    val updatePulseAlpha: Float,
+    val updatePulseEdgeAlpha: Float,
+    val updatePulseRingMs: Int,
+    val updatePulseGapMs: Int,
+    val updatePulseRings: Int
 )
 
 object NuvioMarquee {
@@ -1618,7 +1851,14 @@ object NuvioMarquee {
             updatePillIconGap = 6.dp,
             updatePillFill = NuvioPrimitives.warning.copy(alpha = 0.16f),
             updatePillEdge = NuvioPrimitives.warning.copy(alpha = 0.5f),
-            updatePillText = NuvioPrimitives.warningOnTint
+            updatePillText = NuvioPrimitives.warningOnTint,
+            updatePulseColor = NuvioPrimitives.warning,
+            updatePulseSpread = 9.dp,
+            updatePulseAlpha = 0.55f,
+            updatePulseEdgeAlpha = 0.9f,
+            updatePulseRingMs = 1200,
+            updatePulseGapMs = 360,
+            updatePulseRings = 3
         ),
         home = NuvioMarqueeHomeTokens(
             landscapeCardWidth = 228.dp,
@@ -1950,9 +2190,9 @@ object NuvioMarquee {
             chipGap = 8.dp,
             refreshSize = 32.dp,
             chipSelectedRing = 1.5.dp,
-            chipErrorText = NuvioPrimitives.errorOnImage,
-            chipErrorFill = NuvioPrimitives.error.copy(alpha = 0.10f),
-            chipErrorEdge = NuvioPrimitives.errorOnImage.copy(alpha = 0.6f),
+            pinMarkSize = 12.dp,
+            pinFadeWidth = 40.dp,
+            pinFade = NuvioPrimitives.black.copy(alpha = 0.85f),
             rowRadius = 14.dp,
             rowFill = NuvioPrimitives.white.copy(alpha = 0.06f),
             rowPaddingHorizontal = 16.dp,
@@ -1967,7 +2207,9 @@ object NuvioMarquee {
             sideGap = 3.dp,
             cachedIconSize = 12.dp,
             cachedTint = NuvioPrimitives.premium,
-            rowDeadAlpha = 0.45f,
+            decodeLineIconSize = 13.dp,
+            decodeLineIconGap = 5.dp,
+            rowSoftwareAlpha = 0.6f,
             markerIconSize = 13.dp,
             markerIconGap = 4.dp,
             missingFootTop = 10.dp,
@@ -1977,7 +2219,6 @@ object NuvioMarquee {
             missingText = NuvioPrimitives.warning,
             limitIconSize = 14.dp,
             limitChipText = NuvioPrimitives.warningOnTint,
-            limitChipSelectedText = Color(0xFFFFE0B2),
             limitChipFill = NuvioPrimitives.warning.copy(alpha = 0.10f),
             limitChipEdge = NuvioPrimitives.warning.copy(alpha = 0.5f),
             limitChipCount = NuvioPrimitives.warningOnTint.copy(alpha = 0.7f),
@@ -1986,6 +2227,53 @@ object NuvioMarquee {
             limitLineIconGap = 8.dp,
             limitRowIconSize = 12.dp,
             limitRowIconGap = 4.dp,
+            circleOnFill = NuvioPrimitives.white.copy(alpha = 0.26f),
+            circleBadgeSize = 15.dp,
+            circleBadgeOffset = 3.dp,
+            circleBadgePadding = 3.dp,
+            circleBadgeError = Color(0xFFFF8A80),
+            circleRingOutset = 3.dp,
+            sheetFill = Color(0xFF0E0E0E).copy(alpha = 0.97f),
+            sheetDim = NuvioPrimitives.black.copy(alpha = 0.45f),
+            sheetRadius = 20.dp,
+            sheetPaddingHorizontal = 20.dp,
+            sheetPaddingTop = 18.dp,
+            sheetPaddingBottom = 16.dp,
+            sheetGap = 8.dp,
+            sheetRowHeight = 46.dp,
+            sheetRowRadius = 12.dp,
+            sheetRowPadding = 14.dp,
+            sheetRowIconSize = 16.dp,
+            sheetRowInnerGap = 10.dp,
+            facetChipHeight = 28.dp,
+            facetChipPadding = 12.dp,
+            facetChipGap = 6.dp,
+            facetGroupGap = 5.dp,
+            facetCheckSize = 14.dp,
+            facetZeroAlpha = 0.38f,
+            savedOnAlpha = 0.30f,
+            sheetButtonHeight = 36.dp,
+            sheetButtonPadding = 16.dp,
+            phoneVeil = NuvioPrimitives.black.copy(alpha = 0.72f),
+            phoneCardWidth = 560.dp,
+            phoneCardFill = Color(0xFF121212).copy(alpha = 0.98f),
+            phoneCardEdge = NuvioPrimitives.white.copy(alpha = 0.08f),
+            phoneCardPadding = 28.dp,
+            rowMenuVeil = NuvioPrimitives.black.copy(alpha = 0.35f),
+            rowMenuWidth = 300.dp,
+            rowMenuFill = Color(0xFF141414).copy(alpha = 0.98f),
+            rowMenuEdge = NuvioPrimitives.white.copy(alpha = 0.10f),
+            rowMenuRadius = 14.dp,
+            rowMenuPadding = 8.dp,
+            rowMenuOffset = 5.dp,
+            rowMenuInset = 60.dp,
+            rowMenuScreenMargin = 28.dp,
+            rowMenuItemGap = 2.dp,
+            rowMenuItemRadius = 9.dp,
+            rowMenuItemPaddingHorizontal = 10.dp,
+            rowMenuItemPaddingVertical = 8.dp,
+            rowMenuIconSize = 14.dp,
+            rowMenuIconGap = 10.dp,
             skeletonRowFill = NuvioPrimitives.white.copy(alpha = 0.04f),
             skeletonRowPaddingVertical = 12.dp,
             skeletonLineGap = 8.dp,
@@ -2001,7 +2289,18 @@ object NuvioMarquee {
             dialogTextInset = 10.dp,
             dialogActionGap = 12.dp,
             dialogActionTop = 16.dp,
-            dialogActionBottom = 2.dp
+            dialogActionBottom = 2.dp,
+            certDim = NuvioPrimitives.black.copy(alpha = 0.78f),
+            certHostBottom = 8.dp,
+            certFingerprintTop = 12.dp,
+            certFingerprintPaddingVertical = 9.dp,
+            certFingerprintPaddingHorizontal = 12.dp,
+            certFingerprintRadius = 10.dp,
+            certFingerprintFill = NuvioPrimitives.white.copy(alpha = 0.06f),
+            certCaption = NuvioPrimitives.white.copy(alpha = 0.5f),
+            certFingerprint = NuvioPrimitives.white.copy(alpha = 0.85f),
+            certOldFingerprint = NuvioPrimitives.white.copy(alpha = 0.45f),
+            certColumnGap = 22.dp
         ),
         playerPanel = NuvioMarqueePlayerPanelTokens(
             compactWidth = 320.dp,
@@ -2428,7 +2727,7 @@ object NuvioMarquee {
             signInCardTop = 72.dp,
             signInCardBottom = 44.dp,
             signInCardRadius = 20.dp,
-            signInCardFill = NuvioPrimitives.white.copy(alpha = 0.06f),
+            signInCardFill = NuvioPrimitives.neutral900,
             signInCardEdge = NuvioPrimitives.white.copy(alpha = 0.08f),
             signInCardPaddingHorizontal = 24.dp,
             signInCardPaddingTop = 20.dp,
@@ -2531,7 +2830,7 @@ object NuvioMarquee {
             badgeRadius = 4.dp,
             liveDotSize = 5.dp,
             emptyTop = 150.dp,
-            emptyWidth = 520.dp,
+            emptyWidth = 560.dp, // Spec 73 D2: three buttons
             emptyGap = 12.dp,
             fullInset = 48.dp,
             fullTop = 32.dp,
@@ -2575,9 +2874,96 @@ object NuvioMarquee {
             addVeil = NuvioPrimitives.black.copy(alpha = 0.78f),
             suggestFill = Color(0xFF7FD28B).copy(alpha = 0.08f),
             suggestEdge = Color(0xFF7FD28B).copy(alpha = 0.35f),
+            guidesPickWidth = 360.dp,
+            guidesPickFill = Color(0xFF1A1A1A),
+            guidesPickVeil = NuvioPrimitives.black.copy(alpha = 0.6f),
+            scanPickWidth = 420.dp,
+            scanCardWidth = 460.dp,
+            scanBarHeight = 4.dp,
+            scanBarTrack = NuvioPrimitives.white.copy(alpha = 0.22f),
             pickerPaddingEnd = 8.dp,
             pickerInnerGap = 6.dp,
-            pickerValueMaxWidth = 150.dp
+            pickerValueMaxWidth = 150.dp,
+            scheduleHeadWidth = 176.dp,
+            scheduleHeadHeight = 99.dp,
+            scheduleHeadRadius = 10.dp,
+            scheduleHeadGap = 12.dp,
+            scheduleGap = 10.dp,
+            scheduleRowMinHeight = 40.dp,
+            scheduleRowRadius = 10.dp,
+            scheduleRowPaddingHorizontal = 12.dp,
+            scheduleRowInnerGap = 14.dp,
+            scheduleTimeWidth = 44.dp,
+            scheduleProgressWidth = 120.dp,
+            scheduleNowFill = NuvioPrimitives.white.copy(alpha = 0.07f),
+            scheduleListGap = 2.dp,
+            guideBandTop = 124.dp,
+            guideBandHeight = 118.dp,
+            guideBandPictureWidth = 210.dp,
+            guideBandRadius = 10.dp,
+            guideBandGap = 18.dp,
+            guideBandProgressWidth = 200.dp,
+            guideTop = 256.dp,
+            guideRulerHeight = 24.dp,
+            guideChipHeight = 22.dp,
+            guideChipPaddingHorizontal = 10.dp,
+            guideRowHeight = 44.dp,
+            guideCompactRowHeight = 32.dp,
+            guideGap = 4.dp,
+            guideChannelWidth = 196.dp,
+            guideNumberWidth = 34.dp,
+            guideLogoSize = 28.dp,
+            guideCompactLogoSize = 22.dp,
+            guideCellRadius = 8.dp,
+            guideCutRadius = 2.dp,
+            guideCellPaddingHorizontal = 10.dp,
+            guideCellFill = NuvioPrimitives.white.copy(alpha = 0.07f),
+            guideAiringFill = NuvioPrimitives.white.copy(alpha = 0.13f),
+            guideNoneEdge = NuvioPrimitives.white.copy(alpha = 0.08f),
+            guideEndStripe = NuvioPrimitives.white.copy(alpha = 0.035f),
+            guideMarkEdge = NuvioPrimitives.white.copy(alpha = 0.18f),
+            guideMidnightEdge = NuvioPrimitives.white.copy(alpha = 0.5f),
+            guideNowLineWidth = 2.dp
+        ),
+        tip = NuvioMarqueeTipTokens(
+            veil = NuvioPrimitives.black.copy(alpha = 0.94f),
+            cardTop = 64.dp,
+            cardBottom = 40.dp,
+            cardGap = 8.dp,
+            qrTile = 196.dp,
+            qrRadius = 12.dp,
+            qrInset = 14.dp,
+            introTop = 118.dp,
+            introWidth = 440.dp,
+            introGap = 14.dp,
+            titleSize = 36.sp,
+            titleLineHeight = 42.sp,
+            chipHeight = 34.dp,
+            chipPaddingHorizontal = 16.dp,
+            chipGap = 8.dp,
+            chipFill = NuvioPrimitives.white.copy(alpha = 0.08f),
+            chipMidFill = NuvioPrimitives.white.copy(alpha = 0.16f),
+            chipEdge = NuvioPrimitives.white.copy(alpha = 0.1f),
+            ladderGap = 8.dp,
+            termsWidth = 290.dp,
+            heart = NuvioPrimitives.errorOnImage,
+            heartOnFocus = Color(0xFFD32F2F),
+            rowHeart = 20.dp,
+            rowHeartEnd = 2.dp,
+            thanksHeart = 64.dp,
+            heartGradient = listOf(Color(0xFFFFB4A9), Color(0xFFFF6E63), NuvioPrimitives.red500),
+            thanksTitleSize = 52.sp,
+            thanksTitleLineHeight = 60.sp,
+            thanksLineWidth = 640.dp,
+            signature = Color(0xFFFFB4A9),
+            thanksHeartGap = 20.dp,
+            thanksLineTop = 10.dp,
+            thanksSignatureTop = 14.dp,
+            thanksDoneTop = 28.dp,
+            sparkColors = listOf(
+                NuvioPrimitives.errorOnImage, NuvioPrimitives.warning, NuvioPrimitives.white,
+                Color(0xFFFF6E63), Color(0xFFFFD7CF)
+            )
         )
     )
 }

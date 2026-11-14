@@ -67,6 +67,7 @@ internal val DEVICE_PLAYER_KEYS: Set<String> = setOf(
     "frame_rate_matching",
     "frame_rate_matching_mode",
     "resolution_matching_enabled",
+    "afr_settle_hold_seconds",
     "external_player_send_skip_segments",
     "use_parallel_connections",
     "buffer_engine_enabled",

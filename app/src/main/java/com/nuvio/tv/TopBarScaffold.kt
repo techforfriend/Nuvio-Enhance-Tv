@@ -1,5 +1,14 @@
 package com.nuvio.tv
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -58,6 +67,7 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.ui.components.AvatarArt
 import com.nuvio.tv.ui.components.ProfileAvatarCircle
@@ -72,8 +82,10 @@ import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
 import com.nuvio.tv.ui.util.rememberTabFocusRequesters
 import com.nuvio.tv.ui.util.requestFocusAfterFrames
+import dagger.hilt.android.EntryPointAccessors
 import java.util.Date
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 /** One top-bar tab. Every tab route is a root route: the bar shows only on these. */
@@ -111,6 +123,15 @@ internal fun topBarTabRoutes(discoverLocation: DiscoverLocation?, liveTvEnabled:
 /** Whether [route] is a Live TV screen (the tab or its Sources route), which D17 closes for a profile with it off. */
 internal fun isLiveTvRoute(route: String?): Boolean =
     route == Screen.LiveTv.route || route == Screen.LiveTvSources.route
+
+/**
+ * Spec 64 D14: while [fellBack] says the active profile was removed and the id fell back to the
+ * primary (deleted, or dropped by sync), [onSwitchProfile] sends the app back to Who's watching
+ * instead of letting it carry on as the primary without its PIN. Picking a profile clears it.
+ */
+internal suspend fun returnToPickerOnFallback(fellBack: Flow<Boolean>, onSwitchProfile: () -> Unit) {
+    fellBack.collect { if (it) onSwitchProfile() }
+}
 
 /** The tab that owns [currentRoute]: an exact match or one of its `tab/...` sub-routes. */
 internal fun selectedTopBarRoute(tabRoutes: Collection<String>, currentRoute: String?): String? =
@@ -161,7 +182,8 @@ val LocalHideTopBar = compositionLocalOf<(Boolean) -> Unit> { {} }
  *
  * [showUpdate] (Spec 52 T2: a newer release is known and Check automatically is on) puts the
  * Update pill before the clock, unless Settings is locked for this profile; OK opens Settings ›
- * About with the update panel open ([SettingsEntry.UPDATE]).
+ * About with the update panel open ([SettingsEntry.UPDATE]). [pulseUpdate]: the release the pill
+ * pulses for once (Spec 80 D5); [onUpdatePulsed] reports the pulse started.
  */
 @Composable
 internal fun TopBarScaffold(
@@ -176,7 +198,9 @@ internal fun TopBarScaffold(
     onSwitchProfile: () -> Unit,
     onNavigate: (String) -> Unit,
     onExitApp: () -> Unit,
-    showUpdate: Boolean = false
+    showUpdate: Boolean = false,
+    pulseUpdate: Int? = null,
+    onUpdatePulsed: (Int) -> Unit = {}
 ) {
     val topBarRoutes = remember(tabs) { tabs.mapTo(HashSet()) { it.route } }
     // The route whose screen hid the bar (LocalHideTopBar); another route shows it again.
@@ -222,6 +246,8 @@ internal fun TopBarScaffold(
         }
     }
 
+    ReturnToPickerWhenActiveProfileFallsBack(onSwitchProfile)
+
     BackHandler(enabled = showTopBar && !topBarHasFocus) {
         selectedTabRequester?.let { runCatching { it.requestFocus() } }
     }
@@ -240,7 +266,8 @@ internal fun TopBarScaffold(
             onHideTopBar = hideTopBar,
             onOpenAddons = onOpenAddons,
             onOpenTmdbKeySettings = onOpenTmdbKeySettings,
-            settingsLocked = Screen.Settings.route in blockedRoutes
+            settingsLocked = Screen.Settings.route in blockedRoutes,
+            onSwitchProfile = onSwitchProfile
         )
         if (showTopBar) {
             TopBar(
@@ -268,6 +295,8 @@ internal fun TopBarScaffold(
                 },
                 onProfileClick = onSwitchProfile,
                 showUpdate = showUpdate && Screen.Settings.route !in blockedRoutes,
+                pulseUpdate = pulseUpdate,
+                onUpdatePulsed = onUpdatePulsed,
                 onUpdateClick = {
                     keyboardController?.hide()
                     // On Settings already: hand the entry to it in place (a tab navigation to the
@@ -284,6 +313,27 @@ internal fun TopBarScaffold(
     }
 }
 
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+private interface ActiveProfileEntryPoint {
+    fun profileManager(): ProfileManager
+}
+
+/** D14: [returnToPickerOnFallback] over [ProfileManager.activeProfileFellBack]. */
+@Composable
+private fun ReturnToPickerWhenActiveProfileFallsBack(onSwitchProfile: () -> Unit) {
+    val appContext = LocalContext.current.applicationContext
+    val fellBack = remember(appContext) {
+        EntryPointAccessors.fromApplication(appContext, ActiveProfileEntryPoint::class.java)
+            .profileManager()
+            .activeProfileFellBack
+    }
+    val latestOnSwitchProfile by rememberUpdatedState(onSwitchProfile)
+    LaunchedEffect(fellBack) {
+        returnToPickerOnFallback(fellBack) { latestOnSwitchProfile() }
+    }
+}
+
 @Composable
 private fun TopBar(
     tabs: List<TopBarTab>,
@@ -297,6 +347,8 @@ private fun TopBar(
     onTabClick: (String) -> Unit,
     onProfileClick: () -> Unit,
     showUpdate: Boolean,
+    pulseUpdate: Int?,
+    onUpdatePulsed: (Int) -> Unit,
     onUpdateClick: () -> Unit
 ) {
     val marquee = NuvioTheme.marquee
@@ -364,7 +416,7 @@ private fun TopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(bar.trailingGap)
             ) {
-                if (showUpdate) TopBarUpdatePill(onClick = onUpdateClick)
+                if (showUpdate) TopBarUpdatePill(pulse = pulseUpdate, onPulsed = onUpdatePulsed, onClick = onUpdateClick)
                 TopBarClock()
                 if (profile != null) {
                     TopBarAvatar(profile = profile, onClick = onProfileClick)
@@ -408,13 +460,41 @@ private fun TopBarAvatar(
     }
 }
 
-/** Spec 52 T2 `.s52pill`: amber at rest, white with black content when focused. */
+/**
+ * Spec 52 T2 `.s52pill`: amber at rest, white with black content when focused. Spec 80 D5: given a
+ * [pulse] release, the pill sends its rings out once (focus untouched) and reports [onPulsed] as
+ * they start; the rings finish even though [pulse] then clears.
+ */
 @Composable
-private fun TopBarUpdatePill(onClick: () -> Unit) {
+private fun TopBarUpdatePill(pulse: Int?, onPulsed: (Int) -> Unit, onClick: () -> Unit) {
     val bar = NuvioTheme.marquee.topBar
+    // The release being pulsed: latched, so the pulse clearing (recorded) does not cut the rings;
+    // a newer release that came meanwhile pulses after it, the same one never twice.
+    var pulsing by remember { mutableStateOf<Int?>(null) }
+    var pulsed by remember { mutableStateOf<Int?>(null) }
+    var focused by remember { mutableStateOf(false) }
+    val ring = remember { Animatable(0f) }
+    LaunchedEffect(pulse, pulsing) {
+        if (pulse != null && pulsing == null && pulse != pulsed) pulsing = pulse
+    }
+    LaunchedEffect(pulsing) {
+        val release = pulsing ?: return@LaunchedEffect
+        pulsed = release
+        onPulsed(release)
+        repeat(bar.updatePulseRings) { index ->
+            if (index > 0) delay(bar.updatePulseGapMs.toLong())
+            ring.snapTo(0f)
+            ring.animateTo(1f, tween(bar.updatePulseRingMs, easing = EaseOut))
+            ring.snapTo(0f)
+        }
+        pulsing = null
+    }
     Surface(
         onClick = onClick,
-        modifier = Modifier.height(bar.updatePillHeight),
+        modifier = Modifier
+            .height(bar.updatePillHeight)
+            .onFocusChanged { focused = it.isFocused }
+            .updatePulseRing(progress = { ring.value }, brightenEdge = { !focused }),
         shape = ClickableSurfaceDefaults.shape(CircleShape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = bar.updatePillFill,
@@ -446,6 +526,47 @@ private fun TopBarUpdatePill(onClick: () -> Unit) {
                 text = stringResource(R.string.update_label),
                 style = NuvioTheme.textStyles.panelButtonSmall,
                 maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * One `.s80pulse` ring at [progress] (0 = none): a pill-shaped band from the edge out to
+ * `updatePulseSpread`, fading out, outside the pill only (the pill's fill is see-through), with the
+ * resting edge brightened while [brightenEdge] (not focused: the focused pill has no edge).
+ */
+@Composable
+private fun Modifier.updatePulseRing(progress: () -> Float, brightenEdge: () -> Boolean): Modifier {
+    val bar = NuvioTheme.marquee.topBar
+    val density = LocalDensity.current
+    val spreadPx = with(density) { bar.updatePulseSpread.toPx() }
+    val edgePx = with(density) { 1.dp.toPx() }
+    return drawWithContent {
+        val t = progress()
+        if (t > 0f) {
+            // A stroke centred half the spread outside the edge covers edge..edge+spread and nothing inside.
+            val spread = spreadPx * t
+            val half = spread / 2
+            drawRoundRect(
+                color = bar.updatePulseColor.copy(alpha = bar.updatePulseAlpha * (1f - t)),
+                topLeft = Offset(-half, -half),
+                size = Size(size.width + spread, size.height + spread),
+                cornerRadius = CornerRadius(size.height / 2 + half),
+                style = Stroke(width = spread)
+            )
+        }
+        drawContent()
+        if (t > 0f && brightenEdge()) {
+            // Over the resting 1 dp edge: brighter toward updatePulseEdgeAlpha while the ring grows.
+            val rest = bar.updatePillEdge.alpha
+            val overlay = ((bar.updatePulseEdgeAlpha - rest) / (1f - rest)) * t
+            drawRoundRect(
+                color = bar.updatePulseColor.copy(alpha = overlay.coerceIn(0f, 1f)),
+                topLeft = Offset(edgePx / 2, edgePx / 2),
+                size = Size(size.width - edgePx, size.height - edgePx),
+                cornerRadius = CornerRadius((size.height - edgePx) / 2),
+                style = Stroke(width = edgePx)
             )
         }
     }
@@ -504,7 +625,8 @@ private fun OwnedNavHostSection(
     onHideTopBar: (Boolean) -> Unit,
     onOpenAddons: () -> Unit,
     onOpenTmdbKeySettings: () -> Unit,
-    settingsLocked: Boolean
+    settingsLocked: Boolean,
+    onSwitchProfile: () -> Unit
 ) {
     CompositionLocalProvider(
         LocalTopBarFocused provides topBarHasFocus,
@@ -518,7 +640,8 @@ private fun OwnedNavHostSection(
             topBarRoutes = topBarRoutes,
             onOpenAddons = onOpenAddons,
             settingsLocked = settingsLocked,
-            onOpenTmdbKeySettings = onOpenTmdbKeySettings
+            onOpenTmdbKeySettings = onOpenTmdbKeySettings,
+            onSwitchProfile = onSwitchProfile
         )
     }
 }

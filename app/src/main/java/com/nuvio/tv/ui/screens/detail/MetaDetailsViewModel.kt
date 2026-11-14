@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.core.health.AddonHealthStore
 import com.nuvio.tv.core.health.HealthOutcome
 import com.nuvio.tv.core.player.StreamAutoPlayPolicy
+import com.nuvio.tv.core.profile.ActiveRatingCap
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.tmdb.TmdbDetailFacts
 import com.nuvio.tv.core.tmdb.TmdbMetadataService
@@ -112,7 +113,8 @@ class MetaDetailsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val healthStore: AddonHealthStore,
     private val addonRepository: AddonRepository,
-    private val parentalGuideRepository: ParentalGuideRepository
+    private val parentalGuideRepository: ParentalGuideRepository,
+    private val activeRatingCap: ActiveRatingCap
 ) : ViewModel() {
     private val itemId: String = savedStateHandle["itemId"] ?: ""
     private val itemType: String = savedStateHandle["itemType"] ?: ""
@@ -300,6 +302,7 @@ class MetaDetailsViewModel @Inject constructor(
                         // The target's own runtime from the held meta, by the Stream screen's rule.
                         runtimeMinutes = _uiState.value.meta?.let { streamRuntimeMinutes(it, season, episode) },
                         episode = season != null && episode != null,
+                        film = com.nuvio.tv.core.stream.ContentIdentity.isFilmType(type),
                         uiKey = if (isHero) key else null,
                         prewarm = isHero
                     )
@@ -589,7 +592,15 @@ class MetaDetailsViewModel @Inject constructor(
             MetaDetailsEvent.OnLifecyclePause -> handleLifecyclePause()
             MetaDetailsEvent.OnLifecycleResume -> handleLifecycleResume()
             MetaDetailsEvent.OnAboutOpened -> loadAboutExtras()
+            MetaDetailsEvent.OnRatingLimitedLink -> showRatingLimitedLinkMessage()
         }
+    }
+
+    /** Spec 64 D12: cast and studio pages are off under a rating limit; OK on one says so. */
+    private fun showRatingLimitedLinkMessage() {
+        val limit = _uiState.value.ratingLimit ?: return
+        val name = limit.profileName ?: localizedContext.getString(R.string.rating_limit_profile_fallback)
+        showMessage(localizedContext.getString(R.string.detail_rating_limit_links_off, name))
     }
 
     /**
@@ -875,9 +886,14 @@ class MetaDetailsViewModel @Inject constructor(
                     sharedTrailerUrl = null,
                     sharedTrailerAudioUrl = null,
                     sharedTrailerErrorMessage = null,
-                    selectedSharedTrailer = null
+                    selectedSharedTrailer = null,
+                    ratingBlock = null
                 )
             }
+            // Spec 64: read before any meta arrives, so applyLoadedMeta's gate and the screen's
+            // cast/studio rule always see this load's limit.
+            val ratingLimit = activeRatingCap.currentLimit()
+            _uiState.update { it.copy(ratingLimit = ratingLimit) }
 
             val metaLookupId = resolveMetaLookupId(itemId = itemId, itemType = itemType)
             // Update effective content ID as early as possible so watch-progress
@@ -1000,7 +1016,7 @@ class MetaDetailsViewModel @Inject constructor(
             // TMDB trailers in unconditionally.
             trailers = if (settings.useTrailers) enrichment.trailers else emptyList()
         )
-        applyLoadedMeta(meta)
+        applyLoadedMeta(meta, fromTmdbFallback = true)
         return true
     }
 
@@ -1104,13 +1120,24 @@ class MetaDetailsViewModel @Inject constructor(
     @Volatile
     private var metaLoadStartMs: Long = 0L
 
-    private suspend fun applyLoadedMeta(meta: Meta) {
+    private suspend fun applyLoadedMeta(meta: Meta, fromTmdbFallback: Boolean = false) {
         // MetaTiming: addon meta is in hand here (cache hit or network); this
         // line and META_APPLY bracket the progress reads before applyMeta.
         android.util.Log.i(
             "MetaTiming",
             "META_FETCH ms=${android.os.SystemClock.elapsedRealtime() - metaLoadStartMs} id=${meta.id}"
         )
+        // Spec 64 D13: a title outside the rating limit gets the block instead of the page, before
+        // anything starts for it (stream prefetch, rows, TMDB facts, trailer). INVARIANT: this
+        // must stay the first step here; no test guards the order (no ViewModel harness). Sticky
+        // for the load: a later meta emission cannot reopen a blocked title (fail closed, D1).
+        val ratingLimit = _uiState.value.ratingLimit
+        val block = _uiState.value.ratingBlock
+            ?: detailRatingBlock(meta, ratingLimit, fromTmdbFallback)
+        if (block != null) {
+            _uiState.update { it.copy(isLoading = false, meta = null, error = null, ratingBlock = block) }
+            return
+        }
         // nt4: fire the stream prefetch off the meta NOW, before the progress
         // reads below. The play target is already determined here (a movie's id,
         // or the series nextToWatch computed from the addon episode list), so this
@@ -1119,13 +1146,14 @@ class MetaDetailsViewModel @Inject constructor(
         // observer's later fire dedups on lastStreamPrefetchKey, so this does not
         // double-scrape.
         launchEarlyStreamPrefetch(meta)
-        // Fire all independent async jobs immediately — they run in parallel.
-        loadMoreLikeThisAsync(meta)
+        // Fire all independent async jobs immediately — they run in parallel. Under a rating
+        // limit there is no More like this (Spec 64 D11: TMDB titles carry no US rating).
+        if (ratingLimit == null) loadMoreLikeThisAsync(meta)
         // Render-raw-first (0.8.4-nt1): paint the meta NOW so the details screen
         // appears immediately; applyMeta below re-publishes it and runs the side
         // effects once.
         publishMetaToUi(meta)
-        loadTmdbDetailsIfEnabled(meta)
+        loadTmdbDetailsIfEnabled(meta, loadCollection = ratingLimit == null)
 
         // Pre-compute nextToWatch before applyMeta so the PlayButton text is stable
         // from the first composition — prevents focus invalidation from late recomposition.
@@ -1221,7 +1249,7 @@ class MetaDetailsViewModel @Inject constructor(
      * collection ref, so the row costs no second details request. Settings are read
      * inside the job so the render path never waits on them.
      */
-    private fun loadTmdbDetailsIfEnabled(meta: Meta) {
+    private fun loadTmdbDetailsIfEnabled(meta: Meta, loadCollection: Boolean) {
         tmdbDetailsJob?.cancel()
         tmdbDetailsJob = viewModelScope.launch {
             val settings = tmdbSettingsDataStore.settings.first()
@@ -1242,7 +1270,10 @@ class MetaDetailsViewModel @Inject constructor(
                     if (shown == null || shown.id != meta.id) state else state.copy(meta = shown.withTmdbFacts(facts))
                 }
             }
-            if (settings.useCollections) loadTmdbCollection(tmdbId, tmdbContentType, settings.language)
+            // [loadCollection] false under a rating limit (Spec 64 D11), as for More like this.
+            if (settings.useCollections && loadCollection) {
+                loadTmdbCollection(tmdbId, tmdbContentType, settings.language)
+            }
         }
     }
 

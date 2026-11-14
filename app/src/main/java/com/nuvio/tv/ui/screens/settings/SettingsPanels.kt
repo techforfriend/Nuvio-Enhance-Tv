@@ -75,7 +75,7 @@ internal fun <T> settingsChecklistInitialIndex(
 /**
  * A value picker (approved sandbox `u11-settings-marquee` stage 18): the compact side panel in its
  * own Dialog window, [title] as the eyebrow, an optional [caption], one row per option (description
- * wraps, the selected one ticked). It opens on the selected row; OK picks ([onSelect]) and closes
+ * wraps, the selected one ticked), then an optional [footnote]. It opens on the selected row; OK picks ([onSelect]) and closes
  * ([onDismiss]); Back closes.
  */
 @Composable
@@ -85,7 +85,8 @@ internal fun <T> SettingsPickerPanel(
     selectedValue: T,
     onSelect: (T) -> Unit,
     onDismiss: () -> Unit,
-    caption: String? = null
+    caption: String? = null,
+    footnote: String? = null
 ) {
     val initialIndex = remember { settingsPickerInitialIndex(options, selectedValue) }
     SettingsPanelList(title = title, initialIndex = initialIndex, onDismiss = onDismiss, caption = caption) { focusRequester ->
@@ -99,6 +100,14 @@ internal fun <T> SettingsPickerPanel(
                 },
                 focusRequester = focusRequester.takeIf { index == initialIndex }
             )
+        }
+        if (footnote != null) {
+            item(key = "footnote") {
+                SettingsPanelCaption(
+                    text = footnote,
+                    modifier = Modifier.padding(top = NuvioTheme.marquee.settings.panelTextInset)
+                )
+            }
         }
     }
 }

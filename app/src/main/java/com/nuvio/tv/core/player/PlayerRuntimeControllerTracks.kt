@@ -20,6 +20,7 @@ import com.nuvio.tv.core.util.languageCodeToName
 
 @UnstableApi
 internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
+    if (!tracks.groups.isEmpty()) stepClock.tracksRead(android.os.SystemClock.elapsedRealtime())
     val audioTracks = mutableListOf<TrackInfo>()
     val subtitleTracks = mutableListOf<TrackInfo>()
     var selectedAudioIndex = -1
@@ -160,7 +161,11 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
         currentVideoTrackWidth = effectiveVideoFormat.width.coerceAtLeast(0)
         currentVideoTrackHeight = effectiveVideoFormat.height.coerceAtLeast(0)
         currentVideoTrackBitrate = effectiveVideoFormat.bitrate
-        currentVideoTrackColorTransfer = effectiveVideoFormat.colorInfo?.colorTransfer
+        // Spec 62 D12: an MKV without a Colour element has no colorInfo; the HEVC SPS still carries the
+        // transfer (as the Stats panel reads it), so HDR10 remuxes get their output type (OSD badge,
+        // Diagnostics, the HDR subtitle style).
+        currentVideoTrackColorTransfer = PlaybackVideoColorTransfer.of(effectiveVideoFormat)
+            .takeIf { it != Format.NO_VALUE }
         currentVideoTrackSelected = selectedVideoFormat != null
         currentVideoTrackBestSupport = if (selectedVideoFormat != null) {
             selectedVideoTrackSupport
@@ -233,6 +238,8 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
         currentVideoTrackIsLikelyVc1 = false
         lastLoggedVideoTrackSignature = null
     }
+    // Spec 85 G4: a file ExoPlayer cannot play restarts on mpv; the rest reads tracks it never plays.
+    if (maybeHopToMpvForTracks(tracks)) return
 
     hasScannedTextTracksOnce = true
     val chapters = chaptersOf(tracks)
@@ -398,8 +405,8 @@ internal fun PlayerRuntimeController.maybeAdjustLibassPipelineForTracks(tracks: 
         )
     }
 
-    // Spec 50 I2: keep a user pause (was always false); the runtime-mismatch warning's pause is not one.
-    val paused = userPausedManually && _uiState.value.runtimeMismatch == null
+    // Spec 50 I2: keep a user pause (was always false).
+    val paused = rebuildStartsPaused()
     scope.launch {
         // Pending seek set above (it keeps an earlier one when there is no live position).
         rebuildCurrentStream("libass pipeline switch", positionMs = 0L, paused = paused)

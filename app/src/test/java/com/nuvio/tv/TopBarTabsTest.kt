@@ -6,6 +6,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 class TopBarTabsTest {
@@ -71,5 +75,24 @@ class TopBarTabsTest {
         assertTrue(topBarShown(tabs, "search", "home"))
         assertFalse(topBarShown(tabs, "detail/{itemId}/{itemType}", "home"))
         assertFalse(topBarShown(tabs, null, null))
+    }
+
+    @Test
+    fun `a fallback sends the main UI back to the picker each time it is set (Spec 64 D14)`() = runTest {
+        val fellBack = MutableStateFlow(false)
+        var switches = 0
+        val watcher = launch { returnToPickerOnFallback(fellBack) { switches++ } }
+        runCurrent()
+        assertEquals(0, switches)
+        fellBack.value = true
+        runCurrent()
+        assertEquals(1, switches)
+        // Cleared by a pick, set again by a later fallback.
+        fellBack.value = false
+        runCurrent()
+        fellBack.value = true
+        runCurrent()
+        assertEquals(2, switches)
+        watcher.cancel()
     }
 }

@@ -2,14 +2,20 @@
 
 package com.nuvio.tv.ui.screens.settings
 
+import android.text.format.DateUtils
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -25,12 +31,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import com.nuvio.tv.core.diagnostics.AbnormalExit
+import com.nuvio.tv.core.diagnostics.AbnormalExitKind
+import com.nuvio.tv.core.diagnostics.LastExitReason
 import com.nuvio.tv.core.network.StreamSweepEngine
 import com.nuvio.tv.core.player.LastPlaybackDiagnostics
 import com.nuvio.tv.core.player.PlaybackConnectionEvents
 import com.nuvio.tv.data.local.Dv7HandlingMode
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.ui.components.FocusMarqueeText
+import com.nuvio.tv.ui.components.marquee.MarqueeFormRow
+import com.nuvio.tv.ui.components.marquee.MarqueeFormRowValue
 import com.nuvio.tv.ui.components.marquee.MarqueeValueRow
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -368,7 +379,7 @@ private fun advancedSectionLabel(section: AdvancedSection): String = stringResou
     }
 )
 
-/** Stage 23: the Navigation switches. */
+/** Stage 23: the Navigation switches, then Diagnostics (Spec 70 R1, sandbox spec-70-last-close-row v3). */
 private fun LazyListScope.generalItems(
     state: AdvancedSettingsUiState,
     onEvent: (AdvancedSettingsEvent) -> Unit,
@@ -400,6 +411,65 @@ private fun LazyListScope.generalItems(
             subtitle = stringResource(R.string.advanced_addon_health_subtitle),
             checked = state.addonHealthEnabled,
             onCheckedChange = { onEvent(AdvancedSettingsEvent.SetAddonHealthEnabled(it)) }
+        )
+    }
+    // Android keeps exit reasons from API 30 (the Shield's level); older devices have nothing to show.
+    if (LastExitReason.supported) {
+        item(key = "diagnostics_section") {
+            SettingsSectionLabel(text = stringResource(R.string.advanced_section_diagnostics))
+        }
+        item(key = "last_unexpected_close") { LastUnexpectedCloseRow() }
+    }
+}
+
+/** The history read's result; the row shows no value until it lands. */
+private data class LastClose(val exit: AbnormalExit?)
+
+/**
+ * Spec 70 R1: the newest crash, freeze or foreground memory kill (70/D1) Android kept, with its
+ * age and a status dot (red, amber for memory: the sign-in status line's colours). Read-only: OK
+ * does nothing; the click only keeps the row reachable by D-pad.
+ */
+@Composable
+private fun LastUnexpectedCloseRow() {
+    val context = LocalContext.current
+    val lastClose by produceState<LastClose?>(initialValue = null) {
+        value = LastClose(withContext(Dispatchers.IO) { LastExitReason.latestAbnormal(context.applicationContext) })
+    }
+    MarqueeFormRow(
+        label = stringResource(R.string.advanced_last_close_title),
+        helper = stringResource(R.string.advanced_last_close_subtitle),
+        onClick = {},
+        minHeight = NuvioTheme.marquee.settings.rowMinHeight
+    ) { lit ->
+        val loaded = lastClose ?: return@MarqueeFormRow
+        val exit = loaded.exit
+        if (exit == null) {
+            MarqueeFormRowValue(text = stringResource(R.string.advanced_last_close_none), dimmed = false, lit = lit)
+            return@MarqueeFormRow
+        }
+        Box(
+            modifier = Modifier
+                .size(NuvioTheme.marquee.settings.signInStatusDot)
+                .background(
+                    if (exit.kind == AbnormalExitKind.MEMORY_KILL) NuvioPrimitives.warning else NuvioPrimitives.errorOnImage,
+                    CircleShape
+                )
+        )
+        val kind = stringResource(
+            when (exit.kind) {
+                AbnormalExitKind.CRASH, AbnormalExitKind.NATIVE_CRASH -> R.string.advanced_last_close_crash
+                AbnormalExitKind.ANR -> R.string.advanced_last_close_anr
+                AbnormalExitKind.MEMORY_KILL -> R.string.advanced_last_close_memory
+            }
+        )
+        val age = DateUtils.getRelativeTimeSpanString(
+            exit.timestampMs, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS
+        ).toString()
+        MarqueeFormRowValue(
+            text = stringResource(R.string.advanced_last_close_value, kind, age),
+            dimmed = false,
+            lit = lit
         )
     }
 }

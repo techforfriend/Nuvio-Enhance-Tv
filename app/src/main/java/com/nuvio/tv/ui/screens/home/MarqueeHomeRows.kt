@@ -137,9 +137,6 @@ internal class MarqueeBandFocus {
         pendingRowFocusNonce.intValue++
     }
 
-    fun isPendingFocus(rowKey: String, index: Int): Boolean =
-        pendingRowFocusKey.value == rowKey && (pendingRowFocusIndex.value ?: 0) == index
-
     /**
      * The card (or trailing tile) at [index] of [rowKey] took focus: it becomes the band's active
      * card (hero settle pacing restarts when it changed) and its row's remembered index.
@@ -491,13 +488,26 @@ internal fun MarqueeRowSection(
     // Per-row derived state: invalidates only when THIS row's focused index changes.
     val rowFocusedIndex = remember(rowKey) { derivedStateOf { focusedItemByRowMap[rowKey] ?: 0 } }
 
+    // The row's last focus target (the trailing tile, index = item count, is one). A State, so
+    // the remembered isTargetItem below re-derives when the row shrinks.
+    val lastFocusTarget = rememberUpdatedState(
+        (row.items.list.size - (if (trailingTile != null) 0 else 1)).coerceAtLeast(0)
+    )
+    // A pending target past the end (the row shrank after it was set) falls to the new last card.
+    fun isPendingTarget(index: Int): Boolean =
+        focus.pendingRowFocusKey.value == rowKey &&
+            (focus.pendingRowFocusIndex.value ?: 0).coerceAtMost(lastFocusTarget.value) == index
+
     // One focus wiring for the cards and the trailing tile: the pending card, or the active
     // row's remembered card, is the target; a gain reports it and ends a pending focus on it.
+    // The remembered index is clamped too, so when the focused last card leaves (Spec 62 H4:
+    // marked watched) the new last card takes focus.
     fun isFocusTarget(index: Int): Boolean =
-        focus.isPendingFocus(rowKey, index) || (isActiveRow() && rowFocusedIndex.value == index)
+        isPendingTarget(index) ||
+            (isActiveRow() && rowFocusedIndex.value.coerceAtMost(lastFocusTarget.value) == index)
     fun onFocusGained(index: Int, isContinueWatchingRow: Boolean) {
         onRowItemFocused(rowKey, index, isContinueWatchingRow)
-        if (focus.isPendingFocus(rowKey, index)) focus.clearPendingRowFocus()
+        if (isPendingTarget(index)) focus.clearPendingRowFocus()
     }
 
     // Blocks vertical focus exit for one pass while placeholder cards turn into real data.
@@ -549,10 +559,7 @@ internal fun MarqueeRowSection(
 
         LaunchedEffect(rowKey, focus.pendingRowFocusNonce.intValue) {
             if (focus.pendingRowFocusKey.value != rowKey) return@LaunchedEffect
-            // The trailing tile (index = item count) is a focus target too.
-            val lastTarget = row.items.list.size - (if (trailingTile != null) 0 else 1)
-            val targetIndex = (focus.pendingRowFocusIndex.value ?: 0)
-                .coerceIn(0, lastTarget.coerceAtLeast(0))
+            val targetIndex = (focus.pendingRowFocusIndex.value ?: 0).coerceIn(0, lastFocusTarget.value)
             if (!rowListState.isScrollInProgress) runCatching { rowListState.scrollToItem(targetIndex) }
         }
 

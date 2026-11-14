@@ -13,6 +13,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NamedNavArgument
 import androidx.navigation.NavBackStackEntry
@@ -52,6 +54,9 @@ import com.nuvio.tv.ui.screens.profile.ProfileSelectionMode
 import com.nuvio.tv.ui.screens.profile.ProfileSelectionScreen
 import com.nuvio.tv.ui.screens.tmdb.TmdbEntityBrowseScreen
 import com.nuvio.tv.ui.screens.home.HeroBackdropState
+import com.nuvio.tv.core.profile.ActiveRatingCap
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.launch
 
 /**
  * [topBarRoutes]: routes the app top bar is drawn over (TopBarScaffold). Those screens start
@@ -69,7 +74,9 @@ fun NuvioNavHost(
      *  TMDB key goes through [onOpenTmdbKeySettings], which applies the lock itself. */
     settingsLocked: Boolean = false,
     /** A no-key page's Add a TMDB key (Spec 52 T1); the scaffold applies the settings lock. */
-    onOpenTmdbKeySettings: () -> Unit = {}
+    onOpenTmdbKeySettings: () -> Unit = {},
+    /** Back to Who's watching (the top bar avatar's action); Detail's rating-limit block offers it (Spec 64 D13). */
+    onSwitchProfile: () -> Unit = {}
 ) {
     fun isStreamToPlayer(from: String, to: String): Boolean {
         return from.startsWith("stream/") && to.startsWith("player/")
@@ -209,6 +216,7 @@ fun NuvioNavHost(
                 "heroRestoreToken", 0
             ).collectAsState()
             val heroBackdropUrl = detailArgs?.getString("heroBackdropUrl")?.takeIf { it.isNotBlank() }
+            val whenUncapped = rememberWhenUncapped(navController, backStackEntry)
             // Details' three Play entries; remembered so MetaDetailsScreen keeps skipping.
             fun detailPlayHandler(
                 manualSelection: Boolean = false,
@@ -261,9 +269,11 @@ fun NuvioNavHost(
                     }
                 },
                 onNavigateToCastDetail = { personId, personName, department, sourceTitle, sectionLabel ->
-                    navController.navigate(
-                        Screen.CastDetail.createRoute(personId, personName, department, sourceTitle, sectionLabel)
-                    )
+                    whenUncapped {
+                        navController.navigate(
+                            Screen.CastDetail.createRoute(personId, personName, department, sourceTitle, sectionLabel)
+                        )
+                    }
                 },
                 onNavigateToSearch = { query ->
                     navController.navigate(Screen.Search.createRoute(query))
@@ -272,16 +282,18 @@ fun NuvioNavHost(
                     navController.navigate(Screen.Discover.createRoute(type, genre))
                 },
                 onNavigateToTmdbEntityBrowse = { entityKind, entityId, entityName, sourceType, sourceTitle, sectionLabel ->
-                    navController.navigate(
-                        Screen.TmdbEntityBrowse.createRoute(
-                            entityKind = entityKind,
-                            entityId = entityId,
-                            entityName = entityName,
-                            sourceType = sourceType,
-                            sourceTitle = sourceTitle,
-                            sectionLabel = sectionLabel
+                    whenUncapped {
+                        navController.navigate(
+                            Screen.TmdbEntityBrowse.createRoute(
+                                entityKind = entityKind,
+                                entityId = entityId,
+                                entityName = entityName,
+                                sourceType = sourceType,
+                                sourceTitle = sourceTitle,
+                                sectionLabel = sectionLabel
+                            )
                         )
-                    )
+                    }
                 },
                 onNavigateToDetail = { itemId, itemType, addonBaseUrl ->
                     navController.navigate(Screen.Detail.createRoute(itemId, itemType, addonBaseUrl))
@@ -290,7 +302,8 @@ fun NuvioNavHost(
                 onPlayManuallyClick = remember(navController) { detailPlayHandler(manualSelection = true) },
                 onPlayStartFromBeginningClick = remember(navController) {
                     detailPlayHandler(startFromBeginning = true)
-                }
+                },
+                onSwitchProfile = onSwitchProfile
             )
         }
 
@@ -417,7 +430,9 @@ fun NuvioNavHost(
                 optionalStringArg("streamDescription"),
                 optionalStringArg("contentLanguage"),
                 optionalStringArg("subtitles"),
-                optionalStringArg("launchStartedAtMs")
+                optionalStringArg("releaseVideo", default = "false"),
+                optionalStringArg("launchStartedAtMs"),
+                optionalStringArg("sourcesFoundMs")
             )
         ) { backStackEntry ->
             PlayerScreen(
@@ -688,7 +703,15 @@ fun NuvioNavHost(
 
         // Always a top-bar tab: content starts at the bar's contentTop (Spec 34 D1).
         composable(Screen.LiveTv.route) {
-            LiveTvScreen(onOpenSources = { add -> navController.navigate(Screen.LiveTvSources.createRoute(add)) })
+            // Spec 73 S3b: Sources' "Open Live TV" after a scan leaves its country here (blank = All).
+            val openCountry by it.savedStateHandle
+                .getStateFlow<String?>(LIVE_TV_OPEN_COUNTRY, null)
+                .collectAsState()
+            LiveTvScreen(
+                onOpenSources = { add, scan -> navController.navigate(Screen.LiveTvSources.createRoute(add, scan)) },
+                openCountry = openCountry,
+                onCountryOpened = { it.savedStateHandle[LIVE_TV_OPEN_COUNTRY] = null }
+            )
         }
 
         composable(
@@ -697,12 +720,21 @@ fun NuvioNavHost(
                 navArgument(Screen.LiveTvSources.ADD_ARG) {
                     type = NavType.BoolType
                     defaultValue = false
+                },
+                navArgument(Screen.LiveTvSources.SCAN_ARG) {
+                    type = NavType.BoolType
+                    defaultValue = false
                 }
             )
         ) { backStackEntry ->
             LiveTvSourcesScreen(
                 openAdd = backStackEntry.arguments?.getBoolean(Screen.LiveTvSources.ADD_ARG) == true,
-                onBackPress = { navController.popBackStack() }
+                onBackPress = { navController.popBackStack() },
+                openScan = backStackEntry.arguments?.getBoolean(Screen.LiveTvSources.SCAN_ARG) == true,
+                onOpenLiveTv = { country ->
+                    navController.previousBackStackEntry?.savedStateHandle?.set(LIVE_TV_OPEN_COUNTRY, country.orEmpty())
+                    navController.popBackStack()
+                }
             )
         }
 
@@ -728,7 +760,11 @@ fun NuvioNavHost(
                 .collectAsStateWithLifecycle()
             SettingsScreen(
                 entryName = settingsEntry,
-                onEntryConsumed = { backStackEntry.savedStateHandle[Screen.Settings.ENTRY_KEY] = null },
+                entryRelease = { backStackEntry.savedStateHandle.get<Int>(Screen.Settings.ENTRY_RELEASE_KEY) },
+                onEntryConsumed = {
+                    backStackEntry.savedStateHandle[Screen.Settings.ENTRY_KEY] = null
+                    backStackEntry.savedStateHandle[Screen.Settings.ENTRY_RELEASE_KEY] = null
+                },
                 onNavigateToAddons = { navController.navigate(Screen.AddonManager.route) },
                 onNavigateToCloudStream = { navController.navigate(Screen.CloudStreamManager.route) },
                 onNavigateToCatalogOrder = { navController.navigate(Screen.CatalogOrder.route) },
@@ -737,6 +773,11 @@ fun NuvioNavHost(
                 onNavigateToManageProfiles = { navController.navigate(Screen.ManageProfiles.route) },
                 onNavigateToDpadComboSetup = { mode ->
                     navController.navigate(Screen.DpadComboSetup.createRoute(mode))
+                },
+                // Spec 80 D2: a release video by URL alone; with no content id the player keeps no
+                // progress or per-title state, and Back returns here.
+                onPlayReleaseVideo = { url, title ->
+                    navController.navigate(Screen.Player.createRoute(streamUrl = url, title = title, releaseVideo = true))
                 }
             )
         }
@@ -913,6 +954,38 @@ fun NuvioNavHost(
     }
 }
 
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+private interface RatingCapEntryPoint {
+    fun activeRatingCap(): ActiveRatingCap
+}
+
+/**
+ * Spec 64 D5: person and TMDB entity pages list TMDB titles that carry no US rating, so a capped
+ * profile's links to them do nothing (fail closed, no lookups). The returned runner calls its
+ * action only when the active profile is uncapped and [from] is still the current entry: the check
+ * is a DataStore read, and a Back pressed meanwhile must not be followed by a late push.
+ */
+@Composable
+private fun rememberWhenUncapped(
+    navController: NavHostController,
+    from: NavBackStackEntry
+): (() -> Unit) -> Unit {
+    val appContext = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    return remember(appContext, scope, navController, from) {
+        val activeRatingCap = EntryPointAccessors.fromApplication(appContext, RatingCapEntryPoint::class.java)
+            .activeRatingCap()
+        val run: (() -> Unit) -> Unit = { action ->
+            scope.launch {
+                val uncapped = activeRatingCap.current() == null
+                if (uncapped && navController.currentBackStackEntry?.id == from.id) action()
+            }
+        }
+        run
+    }
+}
+
 /** Optional route argument: nullable String, absent = [default]. */
 private fun optionalStringArg(name: String, default: String? = null): NamedNavArgument = navArgument(name) {
     type = NavType.StringType
@@ -962,7 +1035,8 @@ private fun StreamPlaybackInfo.toPlayerRoute(
             sources = sources,
             contentLanguage = contentLanguage,
             subtitles = subtitles,
-            launchStartedAtMs = launchStartedAtMs ?: SystemClock.elapsedRealtime()
+            launchStartedAtMs = launchStartedAtMs ?: SystemClock.elapsedRealtime(),
+            sourcesFoundMs = sourcesFoundMs
         )
     }
 }
@@ -1066,3 +1140,6 @@ internal fun continueWatchingStreamRoute(
         )
     }
 }
+
+/** SavedStateHandle key: the country Live TV opens filtered to after a pack scan (Spec 73 S3b; blank = All). */
+private const val LIVE_TV_OPEN_COUNTRY = "live_tv_open_country"

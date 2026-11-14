@@ -11,15 +11,20 @@ class ProfileOptionsTest {
     private val sara = UserProfile(id = 2, name = "Sara", avatarColorHex = "#C2185B")
 
     @Test
-    fun `rows follow the profile's pin and primary status`() {
+    fun `rows follow the profile's pin and whether it can be deleted`() {
         assertEquals(
             listOf(ProfileOption.EDIT, ProfileOption.SET_PIN, ProfileOption.DELETE),
-            profileOptionRows(isPrimary = false, hasPin = false)
+            profileOptionRows(canDelete = true, hasPin = false)
         )
         assertEquals(
             listOf(ProfileOption.EDIT, ProfileOption.CHANGE_PIN, ProfileOption.REMOVE_PIN),
-            profileOptionRows(isPrimary = true, hasPin = true)
+            profileOptionRows(canDelete = false, hasPin = true)
         )
+        assertEquals(
+            listOf(ProfileOption.EDIT, ProfileOption.CHANGE_PIN, ProfileOption.REMOVE_PIN, ProfileOption.DELETE),
+            profileOptionRows(canDelete = true, hasPin = true)
+        )
+        assertEquals(listOf(ProfileOption.EDIT, ProfileOption.SET_PIN), profileOptionRows(canDelete = false, hasPin = false))
     }
 
     @Test

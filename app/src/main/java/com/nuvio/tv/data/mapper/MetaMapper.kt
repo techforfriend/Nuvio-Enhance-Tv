@@ -76,10 +76,7 @@ fun VideoDto.toDomainOrNull(episodeLabel: String = "Episode"): Video? {
         title = name ?: title ?: "$episodeLabel ${episode ?: number ?: 0}",
         released = released,
         thumbnail = thumbnail,
-        streams = streams
-            ?.map { it.toDomain(addonName = "Embedded Streams", addonLogo = null) }
-            ?.withoutResolverOnlyStreams()
-            ?: emptyList(),
+        streams = streams?.toListedStreams(addonName = "Embedded Streams", addonLogo = null) ?: emptyList(),
         season = season,
         episode = episode ?: number,
         overview = overview ?: description,

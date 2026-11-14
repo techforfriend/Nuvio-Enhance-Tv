@@ -71,6 +71,7 @@ internal fun PlayerRuntimeController.preparePlaybackBeforeStart(
     if (playbackUrl != currentStreamUrl || playbackHeaders != currentHeaders) {
         currentStreamUrl = playbackUrl
         currentHeaders = playbackHeaders
+        forgetStreamEngineForNewStream()
         _uiState.update { it.copy(currentStreamUrl = playbackUrl) }
     }
 

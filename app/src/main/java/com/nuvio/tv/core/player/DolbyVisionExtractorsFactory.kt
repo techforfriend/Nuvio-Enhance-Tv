@@ -15,7 +15,6 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
-import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import com.nuvio.tv.core.player.dvmkv.MatroskaExtractor as DvMatroskaExtractor
 import java.io.EOFException
 import java.io.IOException
@@ -79,8 +78,10 @@ internal class DolbyVisionExtractorsFactory(
         // The MKV HDR10-base-layer colorInfo (nt26) is set inside the vendored
         // extractor where it maps the DV track to HEVC.
         if (extractor.javaClass.name == STOCK_MATROSKA_EXTRACTOR) {
+            // libass off: ASS drawings are filtered (Spec 87 T2). The libass path swaps this
+            // extractor for NuvioAssMatroskaExtractor with its own parsers.
             return DvMatroskaExtractor(
-                DefaultSubtitleParserFactory(),
+                RenderTimeSubtitles.extractionParsers(AssDrawingFilter.parserFactory()),
                 /* flags= */ 0,
                 DolbyVisionMatroskaTransformer(
                     config = config,

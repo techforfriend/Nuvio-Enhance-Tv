@@ -31,6 +31,23 @@ class ElapsedTraceTest {
     }
 
     @Test
+    fun `begin at an earlier T0 measures marks from that T0`() {
+        clockMs = 5_000L
+        trace.begin("process_start", atElapsedMs = 4_200L)
+        clockMs = 5_100L
+        trace.mark("activity_create")
+
+        assertEquals(
+            listOf(
+                "[process_start] t=0 ms (trace begin)",
+                "[activity_create] t=+900 ms (step +900 ms)",
+            ),
+            lines
+        )
+        assertEquals(4_200L, trace.t0ElapsedMsOrNull())
+    }
+
+    @Test
     fun `mark before any begin starts the run`() {
         assertNull(trace.t0ElapsedMsOrNull())
         clockMs = 500L

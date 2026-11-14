@@ -42,6 +42,7 @@ object StreamBadgeWebPage {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="referrer" content="no-referrer">
 <title>${appName.html()} - ${title.html()}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -84,7 +85,7 @@ object StreamBadgeWebPage {
 <body>
 <div class="page">
   <div class="header">
-    <img src="/logo.png" alt="${appName.html()}" class="header-logo">
+    <img src="logo.png" alt="${appName.html()}" class="header-logo">
     <p>${title.html()}</p>
   </div>
   <div class="intro">
@@ -104,6 +105,8 @@ object StreamBadgeWebPage {
   <div class="status" id="status"></div>
 </div>
 <script>
+// Every route lives under this session's /b/<token>/ path (Spec 68 X3); requests stay relative to it.
+const base = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const badgeSource = document.getElementById('badgeSource');
 const badgeImports = document.getElementById('badgeImports');
 const badgeSummary = document.getElementById('badgeSummary');
@@ -210,7 +213,7 @@ function showBadgePreview(importItem){
 async function importBadges(){
   statusBox.textContent=labels.importing;
   statusBox.className='status';
-  const res=await fetch('/api/badges/import',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl:badgeSource.value})});
+  const res=await fetch(base + 'api/badges/import',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl:badgeSource.value})});
   const body=await res.json().catch(()=>({error:labels.importError}));
   if(res.ok){
     streamBadgeRules=normalizeBadgeRules(body.streamBadgeRules||{imports:[]});
@@ -223,7 +226,7 @@ async function importBadges(){
   }
 }
 async function setActiveBadge(sourceUrl){
-  const res=await fetch('/api/badges/active',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl})});
+  const res=await fetch(base + 'api/badges/active',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl})});
   const body=await res.json().catch(()=>({error:labels.saveError}));
   if(res.ok){
     streamBadgeRules=normalizeBadgeRules(body.streamBadgeRules||streamBadgeRules);
@@ -236,7 +239,7 @@ async function setActiveBadge(sourceUrl){
   }
 }
 async function deleteBadge(sourceUrl){
-  const res=await fetch('/api/badges/delete',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl})});
+  const res=await fetch(base + 'api/badges/delete',{method:'POST',headers:{'Content-Type':'application/json; charset=utf-8'},body:JSON.stringify({sourceUrl})});
   const body=await res.json().catch(()=>({error:labels.saveError}));
   if(res.ok){
     streamBadgeRules=normalizeBadgeRules(body.streamBadgeRules||{imports:[]});
@@ -249,7 +252,7 @@ async function deleteBadge(sourceUrl){
   }
 }
 async function load(){
-  const res = await fetch('/api/settings');
+  const res = await fetch(base + 'api/settings');
   const body = await res.json();
   const settings = body.settings || {};
   streamBadgeRules = normalizeBadgeRules(settings.streamBadgeRules || {imports:[]});

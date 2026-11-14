@@ -76,10 +76,35 @@ object ReleaseFactsParser {
     private val DD_PLUS_TEXT_REGEX = Regex("dd\\+|ddp|dolby digital ?(plus|\\+)|e-?ac-?3")
     private val DD_TEXT_REGEX = Regex("(?<![a-z0-9])dd(?![a-z+])|(?<!e)(?<!e-)ac3|dolby digital(?! ?(plus|\\+))")
     private val HDR_TEXT_REGEX = Regex("(^|[^a-z0-9])(hdr|hdr10|hdr10plus|hdr10\\+|hlg)([^a-z0-9]|$)")
-    private val CONTAINER_EXTENSION_REGEX = Regex("\\.(mkv|mp4|m4v|avi|ts|m2ts|webm|mov)$", RegexOption.IGNORE_CASE)
+    private const val CONTAINER_EXTENSIONS = "mkv|mp4|m4v|avi|ts|m2ts|webm|mov"
+    private val CONTAINER_EXTENSION_REGEX = Regex("\\.($CONTAINER_EXTENSIONS)$", RegexOption.IGNORE_CASE)
     private val LEADING_GROUP_TOKEN_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._]{0,23}")
     private val BRACKET_GROUP_REGEX = Regex("^\\[([A-Za-z0-9][A-Za-z0-9._-]{1,23})\\]")
+    private val TERMINAL_GROUP_REGEX = Regex("-([A-Za-z0-9][A-Za-z0-9_]{1,23})$")
+    private val SEASON_EPISODE_TOKEN_REGEX = Regex("(?i)(s\\d{1,4}(e\\d{1,4})?|e\\d{1,4})")
     private val CHANNEL_TOKEN_REGEX = Regex("^\\d\\.\\d$")
+
+    /**
+     * Fake-quality spellings (Spec 65 P4; VortX `StreamRanking.kt` `junkClass`, GPL-3.0): CAM, TS, TC,
+     * screener, R5, workprint and upscaled releases. Bare cam/ts/tc/scr are [ReleaseQuality] already
+     * (default exclusions, so not repeated here). Read on lowercase text with [JUNK_BLANK_REGEX]'s
+     * matches blanked: container extensions ("HD.ts" is not a telesync) and negated upscale phrases
+     * ("Not.AI.Upscaled"). An apostrophe before "s print" is a possessive ("director's print"); the
+     * dotted spelling "Director.s.Print" still reads as S-Print (indistinguishable from the tag).
+     */
+    private val JUNK_TEXT_REGEX = Regex(
+        "(?<![a-z0-9])(" +
+            "h[dq][ ._-]?cam(rip)?|cam[ ._-]?rip|(?<!['\u2019])s[ ._-]+print|" +
+            "telesynch?|hd[ ._-]?ts(rip)?|ts[ ._-]?rip|telecine|hd[ ._-]?tc|" +
+            "screener|(dvd|bd|br|web|hd)[ ._-]?scr|p(re)?dvd(rip)?|workprint|r5|" +
+            "upscaled?|up[ ._-]?rez|ai[ ._-]?(upscaled?|enhanced?)" +
+            ")(?![a-z0-9])"
+    )
+    private val JUNK_BLANK_REGEX = Regex(
+        "\\.($CONTAINER_EXTENSIONS)(?![a-z0-9])|" +
+            "(?<![a-z0-9])(not|non|no)[ ._-]+(ai[ ._-]?)?(upscaled?|up[ ._-]?rez|enhanced?)(?![a-z0-9])"
+    )
+    private const val MIB = 1024L * 1024L
 
     /** Hyphen-suffixed tokens in release names that are never the group. */
     private val NON_GROUP_TOKENS = setOf(
@@ -88,7 +113,11 @@ object ReleaseFactsParser {
         "flac", "opus", "avc", "hevc", "av1", "x264", "x265", "h264", "h265", "vc1",
         "10bit", "8bit", "hi10p", "imax", "proper", "repack", "extended", "remastered",
         "unrated", "multi", "dual", "sub", "subs", "dubbed", "hc", "cam", "ts", "tc", "scr",
-        "2160p", "1440p", "1080p", "720p", "576p", "480p", "360p", "4k", "2k"
+        "2160p", "1440p", "1080p", "720p", "576p", "480p", "360p", "4k", "2k",
+        // Same on unrelated releases, so never a group (Spec 65 P7 red team b19e4557): rip and
+        // source words, codecs, service tags, dub/audio, Usenet repost suffixes.
+        "webrip", "webdl", "hdrip", "bdrip", "brrip", "dvdrip", "hdtv", "xvid", "divx", "amzn", "nf",
+        "dub", "audio", "obfuscated", "postbot", "xpost", "rakuv", "asrequested", "scrambled"
     )
 
     /** Ladder/exclusion names containing '-' or '.' that last-hyphen splitting would mangle. */
@@ -110,8 +139,9 @@ object ReleaseFactsParser {
     private val AIO_AUDIO_CHANNELS = labelMap(ReleaseAudioChannel.entries, ReleaseAudioChannel.UNKNOWN) { it.label }
     private val AIO_ENCODES = labelMap(ReleaseEncode.entries, ReleaseEncode.UNKNOWN) { it.label }
 
-    private val DV_FAMILY = setOf(ReleaseVisualTag.DV, ReleaseVisualTag.DV_ONLY, ReleaseVisualTag.HDR_DV)
-    private val HDR_FAMILY = setOf(
+    /** Tags naming Dolby Vision / any HDR format; also the filters' HDR keys (StreamFacets). */
+    internal val DV_FAMILY = setOf(ReleaseVisualTag.DV, ReleaseVisualTag.DV_ONLY, ReleaseVisualTag.HDR_DV)
+    internal val HDR_FAMILY = setOf(
         ReleaseVisualTag.HDR, ReleaseVisualTag.HDR10, ReleaseVisualTag.HDR10_PLUS, ReleaseVisualTag.HLG,
         ReleaseVisualTag.HDR_ONLY, ReleaseVisualTag.HDR_DV
     )
@@ -185,6 +215,7 @@ object ReleaseFactsParser {
             ?: streamAudioChannels(parsed?.channels.orEmpty(), searchText)
         val encode = aio?.encode.mappedBy(AIO_ENCODES) ?: streamEncode(parsed?.codec, searchText)
         val releaseGroup = if (aio != null) aio.releaseGroup?.trim().orEmpty() else releaseGroupOf(stream)
+        val size = streamSize(stream)
         return ReleaseFacts(
             resolution = resolution,
             quality = quality,
@@ -193,7 +224,7 @@ object ReleaseFactsParser {
             audioChannels = audioChannels,
             encode = encode,
             releaseGroup = releaseGroup,
-            size = streamSize(stream),
+            size = size,
             resolutionRank = rank(resolution, preferences.preferredResolutions),
             qualityRank = rank(quality, preferences.preferredQualities),
             visualRank = rankAny(visualTags, preferences.preferredVisualTags),
@@ -202,8 +233,46 @@ object ReleaseFactsParser {
             encodeRank = rank(encode, preferences.preferredEncodes),
             groupRank = releaseGroupRank(releaseGroup, preferences.preferredReleaseGroups),
             editions = streamEditions(aio, parsed, searchText),
-            languages = streamLanguages(aio, parsed, searchText)
+            languages = streamLanguages(aio, parsed, searchText),
+            suspect = isSuspect(aio, resolution, size, searchText)
         )
+    }
+
+    /** [ReleaseFacts.suspect]: a fake-quality parse or spelling, or an implausible size (Spec 65 P4). */
+    private fun isSuspect(
+        aio: AioParsedFile?,
+        resolution: ReleaseResolution,
+        size: Long?,
+        searchText: String
+    ): Boolean =
+        aio?.quality?.trim().equals("upscaled", ignoreCase = true) ||
+            JUNK_TEXT_REGEX.containsMatchIn(JUNK_BLANK_REGEX.replace(searchText, " ")) ||
+            implausibleSize(resolution, size)
+
+    /**
+     * A known size far too small for the claimed resolution even for an episode (VortX
+     * `implausibleForResolution` episode floors). Release text cannot tell a film from an episode
+     * (Spec 65 S1 red team: 1x04, Ep05, date-named shows, seeder counts read as years), so the
+     * film floors apply only through [belowFilmSizeFloor], when the caller knows (D4).
+     */
+    private fun implausibleSize(resolution: ReleaseResolution, size: Long?): Boolean =
+        belowSizeFloor(resolution, size, film = false)
+
+    /** [facts]' known size is under the film floor for its resolution (Spec 65 D4: caller-known films only). */
+    fun belowFilmSizeFloor(facts: ReleaseFacts): Boolean = belowSizeFloor(facts.resolution, facts.size, film = true)
+
+    /**
+     * VortX floors: 2160p film 1800 / episode 700 MiB, 1080p 600 / 150. Unknown size, or a resolution
+     * other than 2160p/1080p, passes; so does a reading under 1 MiB, a misparsed bitrate ("640kb").
+     */
+    private fun belowSizeFloor(resolution: ReleaseResolution, size: Long?, film: Boolean): Boolean {
+        if (size == null || size < MIB) return false
+        val floorMib = when (resolution) {
+            ReleaseResolution.P2160 -> if (film) 1800 else 700
+            ReleaseResolution.P1080 -> if (film) 600 else 150
+            else -> return false
+        }
+        return size < floorMib * MIB
     }
 
     private fun <E> labelMap(entries: List<E>, unknown: E, label: (E) -> String): Map<String, E> =
@@ -377,25 +446,55 @@ object ReleaseFactsParser {
     }
 
     /**
+     * Spec 65 P7 (D11): the release group only from a source that names one as such: the
+     * AIOStreams parse (final, as in [factsFor]), the resolver's parsed group, else a terminal
+     * `-GROUP` or leading `[GROUP]` token of a filename or torrent name ([terminalReleaseGroup]). Never the display name,
+     * title or description, and never a mid-line hyphen word: those read pack titles ("S01-S05
+     * Complete") and episode titles ("- The Return (...)") as groups (red team `f2cd86b6`).
+     * Null when none qualifies.
+     */
+    fun parsedReleaseGroupOf(stream: Stream): String? {
+        stream.streamData?.parsedFile?.let { aio -> return aio.releaseGroup?.trim()?.takeIf { it.isNotEmpty() } }
+        stream.clientResolve?.stream?.raw?.parsed?.group?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return releaseNamesOf(stream).firstNotNullOfOrNull(::terminalReleaseGroup)
+    }
+
+    /** The stream's release-name fields, most reliable first (filenames, then torrent names). */
+    private fun releaseNamesOf(stream: Stream): List<String> {
+        val resolve = stream.clientResolve
+        val raw = resolve?.stream?.raw
+        return listOfNotNull(
+            stream.behaviorHints?.filename,
+            resolve?.filename,
+            raw?.filename,
+            resolve?.torrentName,
+            raw?.torrentName
+        )
+    }
+
+    /**
+     * A one-line release name's terminal `-GROUP` (extension stripped), else its leading `[GROUP]`
+     * without a dot (a dotted bracket is a site tag), else null.
+     */
+    private fun terminalReleaseGroup(name: String): String? {
+        val line = name.trim().takeIf { it.isNotEmpty() && '\n' !in it } ?: return null
+        val stripped = CONTAINER_EXTENSION_REGEX.replace(line, "")
+        TERMINAL_GROUP_REGEX.find(stripped)?.groupValues?.get(1)?.takeIf(::isGroupToken)?.let { return it }
+        return BRACKET_GROUP_REGEX.find(line)?.groupValues?.get(1)?.takeIf { '.' !in it && isGroupToken(it) }
+    }
+
+    private fun isGroupToken(token: String): Boolean =
+        token.lowercase() !in NON_GROUP_TOKENS && !token.all { it.isDigit() } && !SEASON_EPISODE_TOKEN_REGEX.matches(token)
+
+    /**
      * Parses the release group from a stream's advertised fields, tried
      * most-reliable-first: resolver-parsed group, then filenames, torrent
      * names, and finally display text. URLs are deliberately not candidates.
      */
     private fun releaseGroupOf(stream: Stream): String {
-        val resolve = stream.clientResolve
-        val raw = resolve?.stream?.raw
-        val parsedGroup = raw?.parsed?.group
+        val parsedGroup = stream.clientResolve?.stream?.raw?.parsed?.group
         if (!parsedGroup.isNullOrBlank()) return parsedGroup.trim()
-        val candidates = listOfNotNull(
-            stream.behaviorHints?.filename,
-            resolve?.filename,
-            raw?.filename,
-            resolve?.torrentName,
-            raw?.torrentName,
-            stream.name,
-            stream.title,
-            stream.description
-        )
+        val candidates = releaseNamesOf(stream) + listOfNotNull(stream.name, stream.title, stream.description)
         for (candidate in candidates) {
             val group = releaseGroupFromText(candidate)
             if (group.isNotEmpty()) return group
@@ -510,6 +609,8 @@ object ReleaseFactsParser {
 /**
  * Release facts parsed from one stream; `*Rank` fields index the preference ladders.
  * [editions] and [languages] are display tokens ("EXTENDED"; "EN", "MULTI"), not ranked.
+ * [suspect]: fake quality (CAM/TS/TC/SCR/R5/workprint/upscaled) or a size implausible for the
+ * resolution (Spec 65 P4); auto-play ranks it below every other stream, nothing displays it.
  */
 data class ReleaseFacts(
     val resolution: ReleaseResolution,
@@ -528,5 +629,6 @@ data class ReleaseFacts(
     val encodeRank: Int,
     val groupRank: Int,
     val editions: List<String> = emptyList(),
-    val languages: List<String> = emptyList()
+    val languages: List<String> = emptyList(),
+    val suspect: Boolean = false
 )

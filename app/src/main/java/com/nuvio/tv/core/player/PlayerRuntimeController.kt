@@ -24,6 +24,8 @@ import com.nuvio.tv.data.local.BingeGroupCacheDataStore
 import com.nuvio.tv.data.repository.ParentalGuideRepository
 import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.SkipInterval
+import com.nuvio.tv.domain.model.Stream
+import com.nuvio.tv.domain.model.StreamBehaviorHints
 import com.nuvio.tv.domain.model.Video
 import com.nuvio.tv.domain.model.WatchProgress
 import com.nuvio.tv.domain.repository.AddonRepository
@@ -58,7 +60,8 @@ class PlayerRuntimeController(
     internal val streamLinkCacheDataStore: StreamLinkCacheDataStore,
     internal val streamBadgeSettingsDataStore: StreamBadgeSettingsDataStore,
     internal val bingeGroupCacheDataStore: BingeGroupCacheDataStore,
-    internal val rejectedStreamUrls: com.nuvio.tv.core.stream.RejectedStreamUrls,
+    internal val preferredSourceDataStore: com.nuvio.tv.data.local.PreferredSourceDataStore,
+    internal val failedReleases: com.nuvio.tv.core.stream.FailedReleases,
     internal val layoutPreferenceDataStore: com.nuvio.tv.data.local.LayoutPreferenceDataStore,
     internal val watchedItemsPreferences: com.nuvio.tv.data.local.WatchedItemsPreferences,
     internal val trackPreferenceDataStore: com.nuvio.tv.data.local.TrackPreferenceDataStore,
@@ -87,7 +90,8 @@ class PlayerRuntimeController(
         // previously produced an infinite spinner with no error. Margin: worst
         // legitimate observed first frame is ~14.5 s from press (nt32 TTFF baselines).
         internal const val STARTUP_WATCHDOG_TIMEOUT_MS = 20_000L
-        // T3 (ysosrs 01b6b4bae): hard ceiling for extend-on-buffered-progress — bounds
+        // T3 (ysosrs 01b6b4bae): hard ceiling for extend-on-buffered-progress (and, Spec 86 D3,
+        // extend-while-bytes-arrive) — bounds
         // the last extension grant, so the latest possible fire is the ceiling plus one
         // interval. Extend/fire arithmetic lives in PlayerStartupWatchdogPolicy.
         internal const val STARTUP_WATCHDOG_CEILING_MS = 60_000L
@@ -157,10 +161,26 @@ class PlayerRuntimeController(
     internal val launchStartedAtElapsedMs: Long? = navigationArgs.launchStartedAtMs
     internal val rememberedAudioLanguage: String? = navigationArgs.rememberedAudioLanguage
     internal val rememberedAudioName: String? = navigationArgs.rememberedAudioName
+
+    /** Spec 80 D20: a changelog release video: no stored diagnostics, and it ends on its own however short. */
+    internal val releaseVideo: Boolean = navigationArgs.releaseVideo
     internal val mediaSourceFactory = PlayerMediaSourceFactory(context.applicationContext)
 
     internal var currentVideoHash: String? = navigationArgs.videoHash
     internal var currentVideoSize: Long? = navigationArgs.videoSize
+
+    /**
+     * The playing stream's listed release facts (addon filename hint, size from the listing), the
+     * ones a candidate is keyed by in the failure store (Spec 65 P5). Unlike [currentFilename]
+     * (may be URL-derived) and [currentVideoSize] (the hasher overwrites it with the exact size),
+     * they are set only from the stream. Seeded from the route, which on a Reuse-last-link start
+     * carries the cache's values (possibly the hasher's size): a key that then misses only
+     * weakens the exclusion to the URL key, never excludes another file. They also find the playing
+     * row in a reloaded list (Spec 86 R10, `playingRowIndex`); a Reuse-last-link start carries no
+     * addon name, so that match is off there.
+     */
+    internal var currentListedFilename: String? = navigationArgs.filename
+    internal var currentListedSize: Long? = navigationArgs.videoSize
 
     /**
      * Expected runtime in minutes from the title's metadata, resolved by the
@@ -176,7 +196,8 @@ class PlayerRuntimeController(
     /**
      * One-shot guard for the placeholder probe. STATE_READY fires again after
      * seeks and rebuffers; the probe is about the file, not the moment, so it
-     * runs once per play session.
+     * runs once per stream. On mpv it latches the duration check after the first
+     * frame instead (Spec 85 E7).
      */
     internal var placeholderProbeDone: Boolean = false
     /** Spec 21 P3: this stream was rejected as a placeholder (auto-advance or error); reset per stream. */
@@ -248,11 +269,21 @@ class PlayerRuntimeController(
         ) {
             val updated = lastRecord.copy(audioPath = audioPathAtTeardown)
             lastPlaybackDiagnostics = updated
-            scope.launch {
-                runCatching { playerSettingsDataStore.setLastPlaybackDiagnostics(updated) }
-            }
+            persistLastPlaybackDiagnostics(updated)
         }
         releasePlayer(flushPlaybackState = true)
+    }
+
+    /**
+     * Stores [diagnostics] as the last playback (Settings › Diagnostics, the stream test, the
+     * device sweep's target), off the caller's path; never for a release video (Spec 80 D20), which
+     * keeps the user's last real title there.
+     */
+    internal fun persistLastPlaybackDiagnostics(diagnostics: LastPlaybackDiagnostics) {
+        if (releaseVideo) return
+        scope.launch {
+            runCatching { playerSettingsDataStore.setLastPlaybackDiagnostics(diagnostics) }
+        }
     }
 
     internal var currentVideoId: String? = videoId
@@ -356,6 +387,10 @@ class PlayerRuntimeController(
     /** Set when this playback hit a fatal error; guards the teardown diagnostics re-persist. */
     internal var playbackFatalErrorRecorded: Boolean = false
     internal val playbackAnalyticsDiagnostics = PlayerPlaybackAnalyticsDiagnostics()
+    /** Spec 75 S3: the six steps of the attempt now opening; the playback HTTP client reports into it. */
+    internal val stepClock = PlaybackStepClock().also { PlaybackConnectionEvents.stepClock = it }
+    /** The Finding sources time of the stream now playing: the launch's search, null once switched in the player. */
+    internal var stepSourcesFoundMs: Long? = navigationArgs.sourcesFoundMs
     internal var loadingDiagnosticsStartedAtMs: Long = 0L
     internal var currentLoadingPhase: String = "idle"
     internal var currentLoadingPhaseStartedAtMs: Long = 0L
@@ -369,6 +404,8 @@ class PlayerRuntimeController(
 
     internal var playbackStartedForParentalGuide = false
     internal var hasRenderedFirstFrame = false
+    // Spec 61 Q2: the Exo progress tick forced a natural end for a position past the duration.
+    internal var exoEndOverrunHandled = false
     internal var shouldEnforceAutoplayOnFirstReady = true
 
     internal var rebufferCount: Int = 0
@@ -412,6 +449,12 @@ class PlayerRuntimeController(
     internal var snapLastSuspectWallMs: Long = 0L
     internal var snapEarlyResetLastAtMs: Long = 0L
     internal var stormRecoveryTotalThisPlayback: Int = 0
+
+    // Spec 70 R2 (D5): frozen-picture recovery state per player build (new stream or same-URL rebuild;
+    // reset with the storm latches):
+    // the elapsedRealtime of the last recovery seek (null = none) and whether rung 2 (failover) ran.
+    internal var freezeRecoverySeekAtMs: Long? = null
+    internal var freezeFailoverDone: Boolean = false
     internal var rebufferTotalMs: Long = 0L
     internal var rebufferStartedAtMs: Long = 0L
     /**
@@ -450,7 +493,9 @@ class PlayerRuntimeController(
     internal var pendingBackgroundCrashRecovery: Boolean = false
     internal var backgroundCrashSavedPositionMs: Long = 0L
 
+    // The online sources' intervals; playback reads effectiveSkipIntervals() (Spec 61 Q6).
     internal var skipIntervals: List<SkipInterval> = emptyList()
+    internal val chapterSkipMerge = ChapterSkipMerge()
     internal var skipIntroEnabled: Boolean = true
     internal var parentalGuideEnabled: Boolean = false
     internal var autoSkipSegmentTypes: Set<AutoSkipSegmentType> = emptySet()
@@ -474,10 +519,19 @@ class PlayerRuntimeController(
     internal var deferredAutoAddonSubtitle: com.nuvio.tv.domain.model.Subtitle? = null
     internal var attachedAddonSubtitleKeys: Set<String> = emptySet()
     internal var hasScannedTextTracksOnce: Boolean = false
-    internal var streamReuseLastLinkEnabled: Boolean = false
     internal var autoSwitchInternalPlayerOnErrorEnabled: Boolean = false
     internal var addonSubtitlesEnabled: Boolean = false
     internal var startupEngineFailoverTriggered: Boolean = false
+    // Spec 85 G1: URLs that took their one automatic engine switch (either direction) since the
+    // stream identity last changed (forgetStreamEngineForNewStream clears it), so a file neither
+    // engine plays moves to the next source instead of looping. A manual switch to mpv re-arms its
+    // URL; a manual switch to ExoPlayer uses it up (the hop never undoes that choice).
+    internal val engineHopStreamUrls: MutableSet<String> = mutableSetOf()
+    // Spec 85 G2: this start's track trigger the background held back, for resume (reset per start).
+    internal var backgroundHeldMpvHopReason: String? = null
+    // Spec 85: where the current mpv start was asked to begin. initializeMpvPlayer clears the pending
+    // resume once it hands the position to mpv, so the mpv->Exo failover carries it from here.
+    internal var mpvStartPositionMs: Long = 0L
     internal var runtimeInternalPlayerEngineOverride: InternalPlayerEngine? = null
     internal var sessionPlayerEngine: InternalPlayerEngine? = null
     internal var currentInternalPlayerEngine: InternalPlayerEngine = InternalPlayerEngine.EXOPLAYER
@@ -492,6 +546,33 @@ class PlayerRuntimeController(
     internal var mpvHardwareDecodeModeSetting: MpvHardwareDecodeMode = MpvHardwareDecodeMode.AUTO_SAFE
     internal var mpvPreferredAudioLanguages: List<String> = emptyList()
     internal var currentStreamBingeGroup: String? = navigationArgs.bingeGroup
+
+    /**
+     * The stream playing, for the next episode's continuation (Spec 65 P7): set from the stream on
+     * every switch (applyStreamMetadata); at launch rebuilt from the route, which carries its name,
+     * addon, description, filename and size but not its title or AIOStreams parse (a step that
+     * needs those then misses, and the configured mode decides).
+     */
+    internal var currentPlayingStream: Stream = Stream(
+        name = navigationArgs.streamName,
+        title = null,
+        description = navigationArgs.streamDescription,
+        url = navigationArgs.streamUrl,
+        ytId = null,
+        infoHash = navigationArgs.infoHash,
+        fileIdx = navigationArgs.fileIdx,
+        externalUrl = null,
+        behaviorHints = StreamBehaviorHints(
+            notWebReady = null,
+            bingeGroup = navigationArgs.bingeGroup,
+            countryWhitelist = null,
+            proxyHeaders = null,
+            videoSize = navigationArgs.videoSize,
+            filename = navigationArgs.filename
+        ),
+        addonName = navigationArgs.addonName.orEmpty(),
+        addonLogo = null
+    )
     internal var hasInitializedAudioAmplificationForSession: Boolean = false
     internal var hasInitializedCenterMixForSession: Boolean = false
     internal var rememberAudioDelayPerDeviceEnabled: Boolean = false
@@ -529,8 +610,7 @@ class PlayerRuntimeController(
     internal var mpvTrackRefreshInProgress: Boolean = false
     internal var pendingMpvHardRestartOnNextAttach: Boolean = false
     internal var delayMpvResumeSeekUntilVideoTrack: Boolean = false
-    internal var mpvDelayStartAfterAfrSwitch: Boolean = false
-    // Exo counterpart (AFR review R5 settle parity): set when the AFR preflight
+    // AFR review R5 settle parity (mpv waits on lastAfrModeSwitchElapsedMs instead, Spec 85): set when the AFR preflight
     // actually changed the display mode, consumed by initializePlayer to hold
     // playback start briefly so the (tunneled) pipeline does not begin inside
     // the mode transition.
@@ -543,8 +623,16 @@ class PlayerRuntimeController(
     // cache-hit preflight already applied a mode so the track path stands down.
     internal var trackAfrAttemptedForCurrentStream: Boolean = false
     @Volatile internal var afrTrackSwitchInFlight: Boolean = false
+    // Spec 62 H1: the preflight path's settle hold is running. Every start site stands down
+    // while it is set (a later READY, the first frame, the track-gate release, the first-frame
+    // watchdog, the in-place auto-retry); its timer in startPlaybackThroughAfrGates clears it and starts playback.
+    // Reset per stream with afrTrackSwitchInFlight; the timer checks afrTrackGeneration.
+    @Volatile internal var afrSettleHoldInFlight: Boolean = false
+    /** An AFR gate holds playback start: one home for the start sites' check (Spec 62 H1). */
+    internal val afrStartGateHeld: Boolean
+        get() = afrTrackSwitchInFlight || afrSettleHoldInFlight
     // Spec 50 I6: elapsedRealtime of the last real display-mode switch this app made (when applied, and again at the
-    // track-AFR settle end), for AfrNoisyPolicy.
+    // track-AFR settle end), for AfrNoisyPolicy and the mpv start's settle hold (afrSettleHoldRemainingMs, Spec 85).
     @Volatile internal var lastAfrModeSwitchElapsedMs: Long = 0L
     // P-F3: per-stream generation stamp for the track-AFR coroutine. An old
     // stream's coroutine reaching its finally block must not collapse the new
@@ -581,6 +669,8 @@ class PlayerRuntimeController(
     internal var pendingAudioPcmFallbackRebuild: Boolean = false
     internal var parsingErrorProbeAttempted: Boolean = false
     internal var errorRetryCount: Int = 0
+    // Spec 86 R6: live-edge re-anchors this stream (PlayerErrorRecoveryPolicy.MAX_LIVE_EDGE_FIXES).
+    internal var liveEdgeFixCount: Int = 0
     internal var consecutiveAutoPlayCount: Int = 0
     internal var errorRetryJob: Job? = null
     // Spec 21 P7-R2: the pending scheduleDeferredPlayerReinitialize rebuild; releasePlayer cancels it.
@@ -588,7 +678,11 @@ class PlayerRuntimeController(
     internal var stableProgressResetJob: Job? = null
     @Volatile internal var currentPlayerSettings: PlayerSettings = PlayerSettings()
 
+    // DV_HDR10 recovery (Spec 61 Q9): streams replayed as the HDR10 base layer. A DV profile 5
+    // stream has no base layer, so it lands in dvConversionDisarmedStreamUrls instead: same
+    // retry with conversion off and the DV ladder latched, but no base-layer exposure.
     internal val dv7ToHevcForcedStreamUrls: MutableSet<String> = mutableSetOf()
+    internal val dvConversionDisarmedStreamUrls: MutableSet<String> = mutableSetOf()
     // Streams where manual Convert-to-DV8.1 mode 2 failed to play, so the next
     // attempt is forced to libdovi mode 1 before falling back to HDR10 base layer.
     internal val dv7Mode1ForcedStreamUrls: MutableSet<String> = mutableSetOf()
@@ -605,12 +699,25 @@ class PlayerRuntimeController(
     // P5 same-config retries of a refused bitstream AudioTrack open (tryBitstreamAudioTrackSameConfigRetry).
     internal val bitstreamAudioRetryBudget = BitstreamAudioRetryBudget()
     internal val vc1TrackSelectionBypassStreamUrls: MutableSet<String> = mutableSetOf()
+    // Spec 86 R1: URLs that had the first-frame watchdog's black-picture rebuild (next time: next source).
+    internal val blackStartRebuiltStreamUrls: MutableSet<String> = mutableSetOf()
+    // Spec 86 R2: URLs that had (or came from) the mid-play link refresh; session-long, so a second
+    // refusal of the same link fails over instead of refreshing again.
+    internal val linkRefreshedStreamUrls: MutableSet<String> = mutableSetOf()
     internal val safeAudioForcedStreamUrls: MutableSet<String> = mutableSetOf()
     internal val audioDisabledForcedStreamUrls: MutableSet<String> = mutableSetOf()
     // URLs proven dead this session (sniff failure on a non-media body, or HTTP
     // 404/410): auto-failover skips them and the source panel greys them out.
     internal val deadSourceStreamUrls: MutableSet<String> = mutableSetOf()
+    // Spec 86 R5: the list rows the failover left for the playing item, by limitKey (cleared on an
+    // episode switch). A torrent row has no http URL for deadSourceStreamUrls to hold, and the wrap
+    // would walk back up to it.
+    internal val deadSourceRowKeys: MutableSet<String> = mutableSetOf()
     internal var deadSourceFailoverCount: Int = 0
+    // Spec 75 S5: the sources this failover chain left, oldest first; reset with the count.
+    internal var failedOverSources: List<TriedSource> = emptyList()
+    // The failure the store last recorded, so the exit never records a failover's failure twice.
+    internal var lastRecordedFailure: PlaybackFailure? = null
     internal var hasRetriedAfterMimeOverrideClear: Boolean = false
     internal var isMapDv7ToHevcActiveForCurrentPlayback: Boolean = false
     internal var isManualDv81Mode2ActiveForCurrentPlayback: Boolean = false
@@ -733,6 +840,7 @@ class PlayerRuntimeController(
         observeStreamBadgeSettings()
         observeDeviceLocalAspectMode()
         observeStreamLimit()
+        observePreferredSource()
     }
 
     private fun observeTorrentSettings() {
@@ -758,6 +866,7 @@ class PlayerRuntimeController(
     }
 
     fun onCleared() {
+        if (PlaybackConnectionEvents.stepClock === stepClock) PlaybackConnectionEvents.stepClock = null
         releasePlayer(flushPlaybackState = true)
         stopTorrentStream()
         shutdownTorrServerAfterSession(torrentSession, torrentService)

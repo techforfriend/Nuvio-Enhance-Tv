@@ -96,6 +96,28 @@ class AddonManifestPlaceholderTest {
         coVerify(exactly = 1) { harness.preferences.removeAddon(addonUrl) }
     }
 
+    @Test
+    fun `remove, phone-page splice and a changed sync list each prune trusted certificates`() = runBlocking {
+        val prunes = AtomicInteger()
+        val harness = newRepository(pruneCertPins = { prunes.incrementAndGet() })
+        val prefs = harness.preferences
+        coEvery { prefs.spliceAddonOrder(any(), any()) } returns true
+        coEvery { prefs.getInstalledAddonUrls(1) } returns listOf(addonUrl)
+        coEvery { prefs.setAddonOrder(any(), 1) } returns true
+
+        harness.repository.removeAddon(addonUrl)
+        assertEquals(1, prunes.get())
+        harness.repository.spliceAddonOrder(listOf(addonUrl), emptyList())
+        assertEquals(2, prunes.get())
+        harness.repository.reconcileWithRemoteAddonUrls(listOf(addonUrl), profileId = 1) // unchanged: no prune
+        assertEquals(2, prunes.get())
+        harness.repository.reconcileWithRemoteAddonUrls(listOf("https://other.example"), profileId = 1)
+        assertEquals(3, prunes.get())
+        coEvery { prefs.removeAddon(any()) } returns false // nothing removed: no prune
+        harness.repository.removeAddon(addonUrl)
+        assertEquals(3, prunes.get())
+    }
+
     /**
      * A failed manifest fetch is retried whenever the flow recomputes, because the
      * placeholder is never written to the cache, so the addon stays a cache miss.
@@ -364,7 +386,8 @@ class AddonManifestPlaceholderTest {
         authenticated: Boolean = false,
         urls: List<String> = listOf(addonUrl),
         failingHosts: Set<String> = emptySet(),
-        manifestVersion: () -> String = { REAL_VERSION }
+        manifestVersion: () -> String = { REAL_VERSION },
+        pruneCertPins: suspend () -> Unit = {}
     ): Harness {
         val manifestCalls = AtomicInteger()
         val callsByHost = ConcurrentHashMap<String, AtomicInteger>()
@@ -399,7 +422,8 @@ class AddonManifestPlaceholderTest {
                 authManager = authManager,
                 context = newContext(),
                 dispatcher = dispatcher,
-                clock = clock
+                clock = clock,
+                pruneCertPins = pruneCertPins
             ),
             preferences = preferences,
             addonSyncService = addonSyncService,

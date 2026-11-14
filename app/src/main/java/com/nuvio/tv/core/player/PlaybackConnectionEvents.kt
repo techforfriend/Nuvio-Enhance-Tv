@@ -90,8 +90,20 @@ internal class PlaybackConnectionEventListener(
 
     private fun now() = SystemClock.elapsedRealtime()
 
+    // Spec 75 S3: the step clock and attempt this call started in, so a late answer to a call from
+    // an earlier attempt never marks the current one.
+    private var stepClock: PlaybackStepClock? = null
+    private var stepAttempt = 0L
+
     override fun callStart(call: Call) {
         callT0 = now()
+        val clock = PlaybackConnectionEvents.stepClock
+        val attempt = clock?.attemptFor(call.request().url.toString())
+        if (clock != null && attempt != null) {
+            stepClock = clock
+            stepAttempt = attempt
+            clock.requestStarted(attempt, callT0)
+        }
         val request = call.request()
         range = request.header("Range")
         val reqHost = request.url.host
@@ -158,6 +170,12 @@ internal class PlaybackConnectionEventListener(
         code = response.code
         if (!response.isRedirect) {
             PlaybackConnectionEvents.setResolvedHost(response.request.url.host)
+            val requested = call.request().url.toString()
+            val served = response.request.url.toString()
+            if (served != requested) PlaybackConnectionEvents.noteRedirect(served, requested)
+            stepClock?.servingAnswered(stepAttempt, headersT)
+        } else {
+            stepClock?.redirectAnswered(stepAttempt, headersT)
         }
     }
 
@@ -235,6 +253,30 @@ internal object PlaybackConnectionEvents : EventListener.Factory {
     // sends cf-cache-status: BYPASS so the CDN rotates per session -- read
     // live, never cached -- which the per-session clear satisfies.
     @Volatile private var resolvedServingHost: String? = null
+
+    /**
+     * Spec 75 S3: the open player's step clock, set by its controller (one player at a time),
+     * null when none. Playback calls report link and connect marks to it.
+     */
+    @Volatile var stepClock: PlaybackStepClock? = null
+
+    // Spec 75: where recent playback URLs redirected to (served URL -> the URL asked for), so a
+    // request straight to a resolved URL still counts for the stream it came from. A handful is
+    // enough (one stream plays at a time); oldest out.
+    private val redirectOrigins = object : LinkedHashMap<String, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > MAX_REDIRECT_ORIGINS
+    }
+
+    @Synchronized
+    fun noteRedirect(servedUrl: String, requestedUrl: String) {
+        // A chain keeps its first origin: a resolved URL that redirects again maps to the stream URL.
+        redirectOrigins[servedUrl] = redirectOrigins[requestedUrl] ?: requestedUrl
+    }
+
+    @Synchronized
+    fun originOf(url: String): String? = redirectOrigins[url]
+
+    private const val MAX_REDIRECT_ORIGINS = 16
     fun setResolvedHost(host: String?) { resolvedServingHost = host?.takeIf { it.isNotBlank() } }
     fun resolvedHost(): String? = resolvedServingHost
     fun clearResolvedHost() { resolvedServingHost = null }

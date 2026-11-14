@@ -245,9 +245,9 @@ internal fun MarqueePickerOptionList(
     }
 }
 
-/** `.l38sec`: a section heading inside the option list ("YOUR CHANNELS", "ALL"). */
+/** `.l38sec`: a section heading inside the option list ("YOUR CHANNELS", "ALL"; Spec 73 "THIS TV"). */
 @Composable
-private fun PickerSection(text: String) {
+internal fun PickerSection(text: String) {
     Text(
         text = text,
         style = NuvioTheme.textStyles.techBadge,

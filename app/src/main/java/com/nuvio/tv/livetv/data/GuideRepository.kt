@@ -21,10 +21,11 @@ import javax.inject.Singleton
 internal data class GuideCache(val version: Int = 1, val snapshot: EpgSnapshot)
 
 /**
- * Parsed guides by guide source id (Spec 34 L5b, D14): each source's look-ahead snapshot in memory
- * and in `filesDir/livetv/epg-<id>.json`, so a cold start has now/next without downloading or
- * re-parsing the XMLTV file. A snapshot holds one look-ahead window (default 6 h, see
- * `XmltvNowNextParser`); the owner re-fetches before the window runs out (`LiveSourceManager`).
+ * Parsed guides by guide source id (Spec 34 L5b, D14): each source's snapshot in memory and in
+ * `filesDir/livetv/epg-<id>.json`, so a cold start has now/next and the day schedule without
+ * downloading or re-parsing the XMLTV file. A snapshot holds one window, today and tomorrow
+ * (Spec 67 G1c, every guide channel: D2); the owner re-fetches after local midnight and before
+ * the window runs out (`LiveSourceManager.isStale`).
  */
 @Singleton
 class GuideRepository internal constructor(private val dir: File, private val io: CoroutineDispatcher) {

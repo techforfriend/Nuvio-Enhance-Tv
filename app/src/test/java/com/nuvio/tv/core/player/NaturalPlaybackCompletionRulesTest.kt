@@ -87,4 +87,41 @@ class NaturalPlaybackCompletionRulesTest {
             )
         )
     }
+
+    @Test
+    fun `a release video ends naturally however short, normal playback keeps the placeholder rule (Spec 80 D20)`() {
+        assertTrue(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = true,
+                hasFatalError = false,
+                durationMs = 30_000L,
+                releaseVideo = true
+            )
+        )
+        assertFalse(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = true,
+                hasFatalError = false,
+                durationMs = 30_000L,
+                releaseVideo = false
+            )
+        )
+        // The other two gates still hold for a release video.
+        assertFalse(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = false,
+                hasFatalError = false,
+                durationMs = 30_000L,
+                releaseVideo = true
+            )
+        )
+        assertFalse(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = true,
+                hasFatalError = true,
+                durationMs = 30_000L,
+                releaseVideo = true
+            )
+        )
+    }
 }

@@ -5,6 +5,9 @@ import com.nuvio.tv.core.assessment.NetworkTransport
 import com.nuvio.tv.core.network.NetworkTransportReader
 import com.nuvio.tv.core.stream.StreamLimitInputs
 import com.nuvio.tv.core.stream.HiddenStream
+import com.nuvio.tv.core.stream.PreferredSource
+import com.nuvio.tv.core.stream.FacetFilter
+import com.nuvio.tv.core.stream.StreamFacetMemo
 import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.deriveStreamList
 import com.nuvio.tv.core.stream.hiddenStreamVerdicts
@@ -66,7 +69,8 @@ internal fun playingStreamLimit(
     )
 }
 
-private fun playingStreamIndex(streams: List<Stream>, state: PlayerUiState): Int = findCurrentStreamIndex(
+/** The playing stream's index in [streams] under [state], or -1 (also the failure store's lookup, Spec 65 P5). */
+internal fun playingStreamIndex(streams: List<Stream>, state: PlayerUiState): Int = findCurrentStreamIndex(
     streams = streams,
     currentStreamInfoHash = state.currentStreamInfoHash,
     currentStreamFileIdx = state.currentStreamFileIdx,
@@ -240,10 +244,51 @@ internal fun PlayerRuntimeController.selectEpisodeList(selection: StreamListSele
     }
 }
 
-/** [PlayerUiState.sourceAllStreams] derived under its pick, [hidden] and the chip row (P4). */
+/**
+ * The show's preferred source (Spec 65 P6), held for both lists: its matches lead them. Read under
+ * the content id the binge cache uses; a film's Sources list has no row menu, and nothing stored.
+ */
+internal fun PlayerRuntimeController.observePreferredSource() {
+    val id = contentId ?: return
+    scope.launch {
+        preferredSourceDataStore.observe(id).collect { preferred ->
+            updateAndDeriveStreamLists { it.copy(preferredSource = preferred) }
+        }
+    }
+}
+
+/** Prefers [stream]'s source for the show, or stops preferring one (null). */
+internal fun PlayerRuntimeController.preferSource(stream: Stream?) {
+    val id = contentId ?: return
+    scope.launch { preferredSourceDataStore.set(id, stream?.let(PreferredSource::of)) }
+}
+
+/** The Sources panel's filter (Spec 65 P1); the hidden set stands. */
+internal fun PlayerRuntimeController.filterSourceList(filter: FacetFilter) {
+    _uiState.update { state ->
+        if (state.sourceFacetFilter == filter) state
+        else state.copy(sourceFacetFilter = filter).withSourceList(state.sourceListView.hiddenVerdicts)
+    }
+}
+
+/** The episode-streams panel's filter (Spec 65 P1); the hidden set stands. */
+internal fun PlayerRuntimeController.filterEpisodeList(filter: FacetFilter) {
+    _uiState.update { state ->
+        if (state.episodeFacetFilter == filter) state
+        else state.copy(episodeFacetFilter = filter).withEpisodeList(state.episodeListView.hiddenVerdicts)
+    }
+}
+
+/** [PlayerUiState.sourceAllStreams] derived under its pick, its filter, [hidden] and the addon list (P4). */
 internal fun PlayerUiState.withSourceList(hidden: Map<String, HiddenStream>): PlayerUiState = copy(
     sourceListView = deriveStreamList(
-        sourceAllStreams, sourceListSelection, hidden, sourceChipAddonNames(sourceAvailableAddons, sourceChips)
+        all = sourceAllStreams,
+        selection = sourceListSelection,
+        hidden = hidden,
+        chipAddons = sourceChipAddonNames(sourceAvailableAddons, sourceChips),
+        filter = sourceFacetFilter,
+        facetsOf = StreamFacetMemo::valuesOf,
+        preferred = preferredSource
     )
 )
 
@@ -254,10 +299,16 @@ internal fun PlayerUiState.withSourceChips(chips: List<SourceChipItem>): PlayerU
         sourceListSelection = sourceListSelection.keptIn(sourceChipAddonNames(sourceAvailableAddons, chips))
     ).withSourceList(sourceListView.hiddenVerdicts)
 
-/** [PlayerUiState.episodeAllStreams] derived under its pick, [hidden] and the chip row (P4). */
+/** [PlayerUiState.episodeAllStreams] derived under its pick, its filter, [hidden] and the addon list (P4). */
 internal fun PlayerUiState.withEpisodeList(hidden: Map<String, HiddenStream>): PlayerUiState = copy(
     episodeListView = deriveStreamList(
-        episodeAllStreams, episodeListSelection, hidden, sourceChipAddonNames(episodeAvailableAddons, episodeSourceChips)
+        all = episodeAllStreams,
+        selection = episodeListSelection,
+        hidden = hidden,
+        chipAddons = sourceChipAddonNames(episodeAvailableAddons, episodeSourceChips),
+        filter = episodeFacetFilter,
+        facetsOf = StreamFacetMemo::valuesOf,
+        preferred = preferredSource
     )
 )
 

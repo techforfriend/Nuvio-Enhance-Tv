@@ -242,5 +242,14 @@ class OsdTechInfoTest {
         assertEquals(PlaybackDegradation.FRAME_RATE, PlaybackDegradation.entries.last())
     }
 
+    @Test
+    fun `hdr output types pick the HDR subtitle style (Spec 62 D7)`() {
+        assertTrue(isHdrOutputType("Dolby Vision"))
+        assertTrue(isHdrOutputType("HDR10"))
+        assertTrue(isHdrOutputType("HLG"))
+        assertFalse(isHdrOutputType("SDR"))
+        assertFalse(isHdrOutputType(null))
+    }
+
     private fun List<OsdTechBadge>.texts() = map { it.text }
 }

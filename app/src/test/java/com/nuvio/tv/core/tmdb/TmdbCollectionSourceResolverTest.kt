@@ -3,6 +3,7 @@ package com.nuvio.tv.core.tmdb
 import android.content.Context
 import com.nuvio.tv.R
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.profile.testRatingCap
 import com.nuvio.tv.data.local.TmdbSettingsDataStore
 import com.nuvio.tv.data.remote.api.TmdbApi
 import com.nuvio.tv.data.remote.api.TmdbDiscoverResponse
@@ -12,6 +13,7 @@ import com.nuvio.tv.data.remote.api.TmdbCompanyDetailsResponse
 import com.nuvio.tv.data.remote.api.TmdbListDetailsResponse
 import com.nuvio.tv.data.remote.api.TmdbListItem
 import com.nuvio.tv.data.remote.api.TmdbNetworkDetailsResponse
+import com.nuvio.tv.domain.model.ContentRatingCap
 import com.nuvio.tv.domain.model.TmdbCollectionFilters
 import com.nuvio.tv.domain.model.TmdbCollectionMediaType
 import com.nuvio.tv.domain.model.TmdbCollectionSource
@@ -39,7 +41,7 @@ class TmdbCollectionSourceResolverTest {
 
     @Test
     fun `parseTmdbId accepts ids and tmdb urls`() {
-        val resolver = TmdbCollectionSourceResolver(context, mockk(relaxed = true), settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, mockk(relaxed = true), settings, TEST_TMDB_KEYS, testRatingCap())
 
         assertEquals(123, resolver.parseTmdbId("123"))
         assertEquals(456, resolver.parseTmdbId("https://www.themoviedb.org/list/456-marvel"))
@@ -93,7 +95,7 @@ class TmdbCollectionSourceResolverTest {
                 totalPages = 3
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
         val result = resolver.resolve(
             TmdbCollectionSource(
                 sourceType = TmdbCollectionSourceType.LIST,
@@ -122,7 +124,7 @@ class TmdbCollectionSourceResolverTest {
     fun `with no key a source resolves to the typed no-key error and nothing is requested`() = runTest {
         every { context.getString(R.string.tmdb_needs_key) } returns "Needs a TMDB key"
         val api = mockk<TmdbApi>() // strict: any call fails the test
-        val resolver = TmdbCollectionSourceResolver(context, api, settings) { "" }
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, { "" }, testRatingCap())
 
         val sources = listOf(
             TmdbCollectionSource(sourceType = TmdbCollectionSourceType.LIST, title = "List", tmdbId = 44),
@@ -144,6 +146,20 @@ class TmdbCollectionSourceResolverTest {
     }
 
     @Test
+    fun `a capped profile gets an empty last page and nothing is requested`() = runTest {
+        val api = mockk<TmdbApi>() // strict: any call fails the test
+        val resolver = TmdbCollectionSourceResolver(
+            context, api, settings, TEST_TMDB_KEYS, testRatingCap(ContentRatingCap.TEENS)
+        )
+        val source = TmdbCollectionSource(sourceType = TmdbCollectionSourceType.PERSON, title = "Person", tmdbId = 7)
+
+        val result = resolver.resolve(source).first { it !is NetworkResult.Loading } as NetworkResult.Success
+
+        assertTrue(result.data.items.isEmpty())
+        assertFalse(result.data.hasMore)
+    }
+
+    @Test
     fun `list import metadata uses tmdb list name`() = runTest {
         val api = mockk<TmdbApi>()
         coEvery { api.getListDetails(44, TEST_TMDB_KEY, "en", 1) } returns Response.success(
@@ -152,7 +168,7 @@ class TmdbCollectionSourceResolverTest {
                 name = "Weekend Watchlist"
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
 
         val metadata = resolver.listImportMetadata(44)
 
@@ -170,7 +186,7 @@ class TmdbCollectionSourceResolverTest {
                 backdropPath = "/collection-backdrop.jpg"
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
 
         val metadata = resolver.collectionImportMetadata(10)
 
@@ -188,7 +204,7 @@ class TmdbCollectionSourceResolverTest {
                 logoPath = "/marvel.png"
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
 
         val metadata = resolver.companyImportMetadata(420)
 
@@ -206,7 +222,7 @@ class TmdbCollectionSourceResolverTest {
                 logoPath = "/apple.png"
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
 
         val metadata = resolver.networkImportMetadata(2552)
 
@@ -236,7 +252,7 @@ class TmdbCollectionSourceResolverTest {
                 )
             )
         )
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
         val result = resolver.resolve(
             TmdbCollectionSource(
                 sourceType = TmdbCollectionSourceType.DISCOVER,
@@ -292,7 +308,7 @@ class TmdbCollectionSourceResolverTest {
                 )
             )
         }
-        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS)
+        val resolver = TmdbCollectionSourceResolver(context, api, settings, TEST_TMDB_KEYS, testRatingCap())
         val result = resolver.resolve(
             TmdbCollectionSource(
                 sourceType = TmdbCollectionSourceType.DISCOVER,

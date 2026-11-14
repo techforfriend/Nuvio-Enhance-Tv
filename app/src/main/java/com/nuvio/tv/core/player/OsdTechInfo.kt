@@ -218,6 +218,12 @@ private const val MIB = 1_048_576L
 private const val GIB = 1_073_741_824L
 private const val HDR_TYPE_SDR = "SDR"
 private const val HDR_TYPE_DOLBY_VISION = "Dolby Vision"
+private const val HDR_TYPE_HDR10 = "HDR10"
+private const val HDR_TYPE_HLG = "HLG"
+/** An output type from [friendlyVideoHdrType] the TV receives as HDR (Spec 62 D7). */
+internal fun isHdrOutputType(type: String?): Boolean =
+    type == HDR_TYPE_DOLBY_VISION || type == HDR_TYPE_HDR10 || type == HDR_TYPE_HLG
+
 /**
  * Human-friendly HDR/output type for the diagnostics card and the OSD badge — reflects what is
  * actually output, not just the source track mime. When DV7 is stripped to the
@@ -231,16 +237,16 @@ internal fun friendlyVideoHdrType(
 ): String? {
     val isDolbyVisionMime = mimeType?.lowercase() == MimeTypes.VIDEO_DOLBY_VISION
     fun fromTransfer(): String? = when (colorTransfer) {
-        C.COLOR_TRANSFER_ST2084 -> "HDR10"
-        C.COLOR_TRANSFER_HLG -> "HLG"
+        C.COLOR_TRANSFER_ST2084 -> HDR_TYPE_HDR10
+        C.COLOR_TRANSFER_HLG -> HDR_TYPE_HLG
         C.COLOR_TRANSFER_SDR -> HDR_TYPE_SDR
         else -> null
     }
     return when {
         // Ignore DV data: output is HDR10/SDR, never Dolby Vision.
-        effectiveModeName == "HDR10_BASE_LAYER" -> fromTransfer() ?: "HDR10"
+        effectiveModeName == "HDR10_BASE_LAYER" -> fromTransfer() ?: HDR_TYPE_HDR10
         // DV RPU stripped: output is HDR10 base layer, never Dolby Vision.
-        effectiveModeName == "STRIP_DV" -> fromTransfer() ?: "HDR10"
+        effectiveModeName == "STRIP_DV" -> fromTransfer() ?: HDR_TYPE_HDR10
         // DV8.1 conversion, but only label it DV if a conversion actually ran. AUTO arms
         // this mode for every file on a DV display, so plain SDR/HDR10 lands here too.
         effectiveModeName == "DV81_LIBDOVI" && dvConversionOccurred -> HDR_TYPE_DOLBY_VISION

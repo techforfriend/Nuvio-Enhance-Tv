@@ -2,6 +2,7 @@ package com.nuvio.tv.livetv.source
 
 import com.nuvio.tv.core.di.Download
 import com.nuvio.tv.core.network.executeCancellable
+import com.nuvio.tv.core.network.tls.isAddonCertificateFailure
 import com.nuvio.tv.livetv.parse.XmltvNowNextParser
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -51,18 +52,58 @@ class SourceFetcher internal constructor(
             throw SourceFetchException("Not a web address")
         }
         val call = client.newCall(request).apply { timeout().timeout(CALL_TIMEOUT_MINUTES, TimeUnit.MINUTES) }
-        call.executeCancellable { response ->
-            if (!response.isSuccessful) throw SourceFetchException("HTTP ${response.code}")
-            val (kind, body) = sniff(response.body.byteStream(), maxTextBytes)
-            read(kind, body)
+        withCertificateRefusalAsReason {
+            call.executeCancellable { response ->
+                if (!response.isSuccessful) throw SourceFetchException("HTTP ${response.code}")
+                val (kind, body) = sniff(response.body.byteStream(), maxTextBytes)
+                read(kind, body)
+            }
         }
     }
 
+    /** What a HEAD request answered: [length] = its Content-Length, null when it sent none. */
+    data class Probe(val code: Int, val length: Long?)
+
+    /**
+     * HEADs [url] (redirects followed), bounded by [PROBE_TIMEOUT_SECONDS]: the status and size a
+     * guide would have, without its body (Spec 55 S1). Throws IOException on network failure or
+     * a URL OkHttp refuses ([SourceFetchException]).
+     */
+    suspend fun probe(url: String): Probe = withContext(io) {
+        val request = try {
+            Request.Builder().url(url).head().build()
+        } catch (e: IllegalArgumentException) {
+            throw SourceFetchException("Not a web address")
+        }
+        val call = client.newCall(request).apply { timeout().timeout(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+        withCertificateRefusalAsReason {
+            call.executeCancellable { response ->
+                Probe(response.code, response.header("Content-Length")?.toLongOrNull()?.takeIf { it >= 0 })
+            }
+        }
+    }
+
+    /**
+     * Spec 68 P9: a host whose certificate the `@Download` client refuses fails with a fixed reason
+     * the Sources route and the player can show (a Live TV host cannot be trusted until X8).
+     */
+    private inline fun <T> withCertificateRefusalAsReason(block: () -> T): T = try {
+        block()
+    } catch (e: IOException) {
+        if (e !is SourceFetchException && e.isAddonCertificateFailure()) throw SourceFetchException(CERTIFICATE_REFUSED)
+        throw e
+    }
+
     internal companion object {
+        // Spec 68 D11 Q7: English like this class's other fixed reasons.
+        const val CERTIFICATE_REFUSED = "Certificate not trusted"
+
         /** Cap on an inflated playlist or manifest (iptv-org `index.m3u`, ~11k channels, is ~2 MiB). */
         const val MAX_TEXT_BYTES = 32L * 1024 * 1024
         /** Whole-call bound; a 50 MB guide at a slow 2 Mbit/s still fits. */
         const val CALL_TIMEOUT_MINUTES = 5L
+        /** One [probe]'s bound: a HEAD carries no body, so a slow answer means a struggling host. */
+        const val PROBE_TIMEOUT_SECONDS = 10L
         private const val HEAD_BYTES = 4096
         private val TV_ROOT = Regex("""<tv[\s>/]""")
 

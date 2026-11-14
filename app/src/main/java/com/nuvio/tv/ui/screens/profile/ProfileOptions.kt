@@ -11,8 +11,8 @@ internal fun profileRowIsCompact(itemCount: Int): Boolean = itemCount > PROFILE_
 /** One row of the profile options panel (u10 stage 6), in panel order. */
 internal enum class ProfileOption { EDIT, SET_PIN, CHANGE_PIN, REMOVE_PIN, DELETE }
 
-/** Edit, then Set PIN or Change + Remove PIN, then Delete (never on the primary). */
-internal fun profileOptionRows(isPrimary: Boolean, hasPin: Boolean): List<ProfileOption> = buildList {
+/** Edit, then Set PIN or Change + Remove PIN, then Delete when [canDelete] ([profileDeletable]). */
+internal fun profileOptionRows(canDelete: Boolean, hasPin: Boolean): List<ProfileOption> = buildList {
     add(ProfileOption.EDIT)
     if (hasPin) {
         add(ProfileOption.CHANGE_PIN)
@@ -20,7 +20,7 @@ internal fun profileOptionRows(isPrimary: Boolean, hasPin: Boolean): List<Profil
     } else {
         add(ProfileOption.SET_PIN)
     }
-    if (!isPrimary) add(ProfileOption.DELETE)
+    if (canDelete) add(ProfileOption.DELETE)
 }
 
 /**

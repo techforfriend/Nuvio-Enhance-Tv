@@ -12,9 +12,8 @@ import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.core.stream.MissingUpstreamsTemplates
 import com.nuvio.tv.core.stream.missingUpstreamsText
 import com.nuvio.tv.data.mapper.gatewayErrorUpstream
-import com.nuvio.tv.data.mapper.toDomain
 import com.nuvio.tv.data.mapper.isGatewayStatusRow
-import com.nuvio.tv.data.mapper.withoutResolverOnlyStreams
+import com.nuvio.tv.data.mapper.toListedStreams
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.AddonStreams
@@ -591,8 +590,7 @@ class StreamRepositoryImpl @Inject constructor(
                     .take(MAX_MISSING_UPSTREAMS)
                 val streams = rows
                     .filterNot { it.isGatewayStatusRow() }
-                    .map { it.toDomain(resolvedAddonName, addonLogo) }
-                    .withoutResolverOnlyStreams()
+                    .toListedStreams(resolvedAddonName, addonLogo)
                 Log.d(
                     TAG,
                     "Streams success addon=$resolvedAddonName count=${streams.size} " +
@@ -601,8 +599,8 @@ class StreamRepositoryImpl @Inject constructor(
                 NetworkResult.Success(AddonStreamAnswer(streams, missingUpstreams))
             }
             is NetworkResult.Error -> {
-                // ua attributes a body-cap failure to the larger streamData responses
-                // (QU5-3: accepted and logged until one shows up). Build-time constant, not a secret.
+                // ua attributes a body-cap failure to the larger streamData responses (QU5-3;
+                // stream lists cap at UntrustedBodyCap.STREAMS). Build-time constant, not a secret.
                 Log.w(
                     TAG,
                     "Streams failed addon=$resolvedAddonName code=${result.code} message=${result.message} " +
@@ -616,8 +614,9 @@ class StreamRepositoryImpl @Inject constructor(
 
     /**
      * Fetch meta for the given content and extract inline streams from the
-     * matching video entry.  Returns an empty list when the addon doesn't
-     * support meta or the video has no inline streams.
+     * matching video entry. Returns an empty list, without a request, when the
+     * addon declares no meta resource for this type and id (Spec 84 A8), and when
+     * the video has no inline streams.
      */
     private suspend fun fetchInlineStreamsFromMeta(
         addon: Addon,
@@ -625,30 +624,10 @@ class StreamRepositoryImpl @Inject constructor(
         videoId: String
     ): List<Stream> {
         // For inline streams the meta is fetched using the content-level ID
-        // (everything before the video-specific suffix).  For "other" type
+        // (everything before the video-specific suffix). For "other" type
         // the videoId IS the content ID; for series it is contentId:S:E.
-        // Video ID formats:
-        //   tt1234567:1:5      → metaId = tt1234567
-        //   mal:63375:1:5      → metaId = mal:63375
-        //   kitsu:12345:2      → metaId = kitsu:12345
-        // Strategy: drop up to 2 trailing numeric segments (season, episode)
-        // but never reduce below 2 segments for prefixed IDs (mal:X, kitsu:X).
-        val metaId = run {
-            val parts = videoId.split(":")
-            if (parts.size <= 1) return@run videoId
-            // Count trailing numeric segments
-            val trailingNumericCount = parts.reversed().takeWhile { it.toIntOrNull() != null }.size
-            // Keep at least 2 segments for prefixed IDs (e.g. "mal:63375"),
-            // or 1 segment for IMDB-style IDs (e.g. "tt1234567")
-            val firstSegment = parts.first()
-            val minSegments = if (firstSegment.startsWith("tt") || firstSegment.toIntOrNull() != null) 1 else 2
-            val segmentsToDrop = trailingNumericCount.coerceAtMost((parts.size - minSegments).coerceAtLeast(0))
-            if (segmentsToDrop > 0) {
-                parts.dropLast(segmentsToDrop).joinToString(":")
-            } else {
-                videoId
-            }
-        }
+        val metaId = addonMetaIdOf(videoId)
+        if (!addon.servesMeta(type, metaId)) return emptyList()
         val (basePath, baseQuery) = splitAddonBaseUrl(addon.baseUrl)
         val encodedType = encodeUrlArg(type)
         val encodedMetaId = encodeUrlArg(metaId)
@@ -660,9 +639,8 @@ class StreamRepositoryImpl @Inject constructor(
                     val metaDto = result.data.meta ?: return emptyList()
                     val matchingVideo = metaDto.videos?.firstOrNull { it.id == videoId }
                     val streams = matchingVideo?.streams
-                        ?.mapNotNull { it.toDomain(addon.displayName, addon.logo) }
+                        ?.toListedStreams(addon.displayName, addon.logo)
                         .orEmpty()
-                        .withoutResolverOnlyStreams()
                     Log.d(TAG, "Inline streams from meta: addon=${addon.displayName} videoId=$videoId found=${streams.size}")
                     streams
                 }

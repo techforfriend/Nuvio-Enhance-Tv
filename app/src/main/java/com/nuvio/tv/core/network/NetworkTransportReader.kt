@@ -19,6 +19,18 @@ object NetworkTransportReader {
         )
     }
 
+    /**
+     * Spec 70 R3: the device has a network that claims internet (none = Wi-Fi down, waking from sleep).
+     * Unreadable state counts as online: the addon guard then counts the failure, as before it asked.
+     */
+    fun hasInternet(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        return runCatching {
+            val network = cm.activeNetwork ?: return@runCatching false
+            cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ?: false
+        }.getOrDefault(true)
+    }
+
     /** Ethernet wins when both are reported (a box bridging Wi-Fi still streams over the cable). */
     internal fun transportOf(ethernet: Boolean, wifi: Boolean): NetworkTransport = when {
         ethernet -> NetworkTransport.ETHERNET

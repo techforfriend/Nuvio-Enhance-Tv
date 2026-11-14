@@ -39,7 +39,6 @@ private fun PlayerRuntimeController.beginAfrPreflight(
     frameRateMatchingMode: FrameRateMatchingMode,
     label: String
 ): android.app.Activity? {
-    mpvDelayStartAfterAfrSwitch = false
     exoDelayStartAfterAfrSwitch = false
 
     if (frameRateMatchingMode == FrameRateMatchingMode.OFF) {
@@ -99,7 +98,6 @@ private suspend fun PlayerRuntimeController.applyPreflightDetection(
 
     val switchedDisplayMode = initialDisplayModeId != null &&
         initialDisplayModeId != result.appliedMode.modeId
-    mpvDelayStartAfterAfrSwitch = switchedDisplayMode
     exoDelayStartAfterAfrSwitch = switchedDisplayMode
     if (switchedDisplayMode) lastAfrModeSwitchElapsedMs = SystemClock.elapsedRealtime()
 

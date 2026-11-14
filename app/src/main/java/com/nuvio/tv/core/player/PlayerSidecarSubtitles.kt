@@ -11,7 +11,6 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.text.Cue
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.text.CuesWithTiming
-import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.ui.SubtitleView
 import com.nuvio.tv.R
@@ -30,14 +29,14 @@ import java.lang.ref.WeakReference
  * [androidx.media3.common.MediaItem.SubtitleConfiguration] tracks mid-playback, which wipes the
  * progressive/VOD buffer. Fast-startup preferred-language auto-select hits that path often.
  *
- * Instead we download + parse with Media3's [DefaultSubtitleParserFactory], then push active
- * [Cue]s to [SubtitleView] while leaving the video MediaPeriod untouched.
+ * Instead we download + parse with Media3's parsers ([AssDrawingFilter.parserFactory]: ASS drawings
+ * filtered), then push active [Cue]s to [SubtitleView] while leaving the video MediaPeriod untouched.
  *
  * Failures stay on this path (retry download / multi-mime parse / lenient SRT·VTT fallback).
  * We intentionally do **not** fall back to media reload — that was the main source of mid-play
  * infinite buffering when a flaky subtitle host failed once.
  */
-private val sidecarParserFactory = DefaultSubtitleParserFactory()
+private val sidecarParserFactory = AssDrawingFilter.parserFactory()
 private val mainHandler = Handler(Looper.getMainLooper())
 
 /**

@@ -5,8 +5,9 @@ import retrofit2.Response
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.Path
+import retrofit2.http.Query
 
-/** The public repo's releases, for the update check (Spec 52 P6). Unauthenticated: 60 requests/h/IP. */
+/** The public repo's releases, for the update check (Spec 52 P6) and the changelog (Spec 80). Unauthenticated: 60 requests/h/IP, shared. */
 interface GitHubReleaseApi {
 
     /**
@@ -24,4 +25,17 @@ interface GitHubReleaseApi {
         @Path("owner") owner: String,
         @Path("repo") repo: String
     ): Response<GitHubReleaseDto>
+
+    /** The newest [perPage] releases, newest first (Spec 80 D4: the changelog); pre-releases included. */
+    @Headers(
+        "Accept: application/vnd.github+json",
+        "X-GitHub-Api-Version: 2022-11-28",
+        "Cache-Control: no-cache"
+    )
+    @GET("repos/{owner}/{repo}/releases")
+    suspend fun releases(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Query("per_page") perPage: Int
+    ): Response<List<GitHubReleaseDto>>
 }

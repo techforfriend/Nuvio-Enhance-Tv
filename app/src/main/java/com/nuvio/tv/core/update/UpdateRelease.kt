@@ -22,11 +22,15 @@ data class KnownRelease(
     /** The release body as plain text, capped at [MAX_NOTES_CHARS]. */
     val notes: String,
     /** ISO 8601, as GitHub sends it. */
-    val publishedAt: String? = null
+    val publishedAt: String? = null,
+    /** Spec 80 D2: the release's video ([releaseVideo]'s rules) and its poster, for the changelog page the panel opens. */
+    val videoUrl: String? = null,
+    val videoSizeBytes: Long = 0L,
+    val posterUrl: String? = null
 )
 
 /** `NuvioAK-<versionName>-<versionCode>-<abi>.apk` for the two ABIs a release ships. */
-private val ASSET_NAME = Regex("""^NuvioAK-([A-Za-z0-9._-]+)-(\d+)-(arm64-v8a|armeabi-v7a)\.apk$""")
+internal val ASSET_NAME = Regex("""^NuvioAK-([A-Za-z0-9._-]+)-(\d+)-(arm64-v8a|armeabi-v7a)\.apk$""")
 private val SHA256_DIGEST = Regex("""^sha256:([0-9a-fA-F]{64})$""")
 internal const val MAX_ASSET_BYTES = 200L * 1024 * 1024
 internal const val MAX_NOTES_CHARS = 8_000
@@ -45,6 +49,7 @@ fun releaseOffer(release: GitHubReleaseDto, supportedAbis: List<String>): KnownR
 }
 
 private fun assetOffer(asset: GitHubAssetDto, release: GitHubReleaseDto): KnownRelease? {
+    val video = releaseVideoOf(release)
     val name = ASSET_NAME.matchEntire(asset.name ?: return null) ?: return null
     val versionCode = name.groupValues[2].toIntOrNull() ?: return null
     if (asset.state != "uploaded") return null
@@ -59,7 +64,10 @@ private fun assetOffer(asset: GitHubAssetDto, release: GitHubReleaseDto): KnownR
         sizeBytes = size,
         sha256 = sha256.lowercase(),
         notes = release.body.orEmpty().take(MAX_NOTES_CHARS),
-        publishedAt = release.publishedAt
+        publishedAt = release.publishedAt,
+        videoUrl = video?.url,
+        videoSizeBytes = video?.sizeBytes ?: 0L,
+        posterUrl = video?.posterUrl
     )
 }
 

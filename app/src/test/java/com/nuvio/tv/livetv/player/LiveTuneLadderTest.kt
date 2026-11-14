@@ -51,6 +51,38 @@ class LiveTuneLadderTest {
     }
 
     @Test
+    fun `a cached-token stream's startup 401, 403 or 404 gets one fresh resolve, then moves on`() {
+        for (failure in listOf(LiveFailure(FailureKind.BLOCKED, 401), LiveFailure(FailureKind.BLOCKED, 403), dead)) {
+            val ladder = LiveTuneLadder(2, 0L)
+            ladder.start(0L)
+            ladder.onResolved(fromCache = true)
+            assertEquals(LadderAction.Reload, ladder.onError(failure, false, 1 * s).action)
+            ladder.onResolved(fromCache = false)
+            assertEquals(LadderAction.Play(1), ladder.onError(failure, false, 2 * s).action)
+        }
+    }
+
+    @Test
+    fun `the cached-token reload is only for its codes and only for the attempt it was resolved for`() {
+        val notStale = LiveTuneLadder(2, 0L)
+        notStale.start(0L)
+        notStale.onResolved(fromCache = true)
+        assertEquals(LadderAction.Play(1), notStale.onError(LiveFailure(FailureKind.BLOCKED, 451), false, 1 * s).action)
+
+        val fresh = LiveTuneLadder(2, 0L)
+        fresh.start(0L)
+        fresh.onResolved(fromCache = false)
+        assertEquals(LadderAction.Play(1), fresh.onError(LiveFailure(FailureKind.BLOCKED, 403), false, 1 * s).action)
+
+        // The flag belongs to stream 0's attempt: stream 1 (reached by the startup watchdog, no Reload) starts without it.
+        val next = LiveTuneLadder(3, 0L)
+        next.start(0L)
+        next.onResolved(fromCache = true)
+        assertEquals(LadderAction.Play(1), next.onTick(10 * s).action)
+        assertEquals(LadderAction.Play(2), next.onError(LiveFailure(FailureKind.BLOCKED, 403), false, 11 * s).action)
+    }
+
+    @Test
     fun `behind the live window seeks to the edge twice, then counts as a failure`() {
         val ladder = LiveTuneLadder(1, 0L)
         ladder.start(0L)
@@ -235,8 +267,62 @@ class LiveTuneLadderTest {
             LiveTuneLadder.classify(playbackError(PlaybackException.ERROR_CODE_DECODING_FAILED))
         )
         assertEquals(
-            LiveFailure(FailureKind.DRM) to false,
+            LiveFailure(FailureKind.DRM, drm = DrmFailure.NOT_ACCEPTED) to false,
             LiveTuneLadder.classify(playbackError(PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED))
         )
+    }
+
+    @Test
+    fun `a licence failure is permanent - the next stream, no reload`() {
+        val ladder = LiveTuneLadder(2, 0)
+        ladder.start(0)
+        val step = ladder.onError(LiveFailure(FailureKind.DRM, 403, drm = DrmFailure.REFUSED), false, 1_000)
+        assertEquals(LadderAction.Play(1), step.action)
+    }
+
+    @Test
+    fun `licence failures classify by who refused and how (Spec 74 D5)`() {
+        val licence = PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED
+        // The licence server's 403 is a refused licence, not a blocked stream.
+        assertEquals(
+            LiveFailure(FailureKind.DRM, 403, drm = DrmFailure.REFUSED) to false,
+            LiveTuneLadder.classify(playbackError(licence, IOException(http(403))))
+        )
+        assertEquals(
+            LiveFailure(FailureKind.DRM, drm = DrmFailure.UNSUPPORTED) to false,
+            LiveTuneLadder.classify(playbackError(PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED))
+        )
+        // 6001 wins over any HTTP cause.
+        assertEquals(
+            LiveFailure(FailureKind.DRM, drm = DrmFailure.UNSUPPORTED) to false,
+            LiveTuneLadder.classify(playbackError(PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED, http(403)))
+        )
+        // A busy or throttled licence server may heal: a network failure, as on a clear stream.
+        for (code in listOf(503, 500, 429, 408)) {
+            assertEquals(LiveFailure(FailureKind.NETWORK, code) to false, LiveTuneLadder.classify(playbackError(licence, IOException(http(code)))))
+        }
+        assertEquals(
+            LiveFailure(FailureKind.DRM, 401, drm = DrmFailure.REFUSED) to false,
+            LiveTuneLadder.classify(playbackError(licence, IOException(http(401))))
+        )
+        // No answer from the licence server: a network failure, like any other.
+        assertEquals(
+            LiveFailure(FailureKind.NETWORK) to false,
+            LiveTuneLadder.classify(playbackError(licence, IOException(UnknownHostException("lic"))))
+        )
+        assertEquals(
+            LiveFailure(FailureKind.NETWORK) to false,
+            LiveTuneLadder.classify(
+                playbackError(licence, HttpDataSource.HttpDataSourceException(DataSpec(testUri), 0, HttpDataSource.HttpDataSourceException.TYPE_OPEN))
+            )
+        )
+        for (code in listOf(
+            PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED,
+            PlaybackException.ERROR_CODE_DRM_DEVICE_REVOKED,
+            PlaybackException.ERROR_CODE_DRM_LICENSE_EXPIRED,
+            PlaybackException.ERROR_CODE_DRM_SYSTEM_ERROR
+        )) {
+            assertEquals(LiveFailure(FailureKind.DRM, drm = DrmFailure.NOT_ACCEPTED) to false, LiveTuneLadder.classify(playbackError(code)))
+        }
     }
 }

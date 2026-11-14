@@ -18,9 +18,13 @@ import kotlinx.coroutines.launch
 data class ProfilesPaneState(
     val profileCount: Int,
     val rememberLastProfile: Boolean,
+    /** Spec 62 H3: return to Who's watching after 30 min without use and on wake (this TV). */
+    val returnToPicker: Boolean,
     /** T5: the primary-owned grant letting other profiles into Settings. */
     val settingsAccessGranted: Boolean,
-    val dpadUnlock: DpadUnlockState
+    val dpadUnlock: DpadUnlockState,
+    /** Spec 64 D15: Ask for PIN again, minutes off screen ([com.nuvio.tv.core.profile.PinRelock]). */
+    val relockMinutes: Int
 )
 
 /**
@@ -38,20 +42,32 @@ class ProfileSettingsViewModel @Inject constructor(
 
     /** Null until every store has emitted: the pane renders rows only after (no dropped first toggle). */
     val paneState: StateFlow<ProfilesPaneState?> = combine(
+        combine(
+            profileDataStore.rememberLastProfileEnabled,
+            profileDataStore.returnToPickerEnabled
+        ) { rememberLast, returnToPicker -> rememberLast to returnToPicker },
         profileDataStore.profilesList,
-        profileDataStore.rememberLastProfileEnabled,
         profileLockStateDataStore.settingsAccessGranted,
-        profileLockStateDataStore.dpadUnlockState
-    ) { profiles, rememberLast, accessGranted, dpad ->
-        ProfilesPaneState(profiles.size, rememberLast, accessGranted, dpad)
+        profileLockStateDataStore.dpadUnlockState,
+        profileLockStateDataStore.relockAfterMinutes
+    ) { (rememberLast, returnToPicker), profiles, accessGranted, dpad, relockMinutes ->
+        ProfilesPaneState(profiles.size, rememberLast, returnToPicker, accessGranted, dpad, relockMinutes)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     fun setRememberLastProfile(enabled: Boolean) {
         viewModelScope.launch { profileDataStore.setRememberLastProfileEnabled(enabled) }
     }
 
+    fun setReturnToPicker(enabled: Boolean) {
+        viewModelScope.launch { profileDataStore.setReturnToPickerEnabled(enabled) }
+    }
+
     fun setSettingsAccessGranted(granted: Boolean) {
         viewModelScope.launch { profileLockStateDataStore.setSettingsAccessGranted(granted) }
+    }
+
+    fun setRelockAfterMinutes(minutes: Int) {
+        viewModelScope.launch { profileLockStateDataStore.setRelockAfterMinutes(minutes) }
     }
 
     fun setDpadUnlockEnabled(enabled: Boolean) {

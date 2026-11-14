@@ -224,6 +224,7 @@ class DevicePlayerSettingsStoreTest {
         call("setFrameRateMatchingMode") { setFrameRateMatchingMode(FrameRateMatchingMode.START_STOP) }
         call("setEnableBufferLogs") { setEnableBufferLogs(true) }
         call("setResolutionMatchingEnabled") { setResolutionMatchingEnabled(true) }
+        call("setAfrSettleHoldSeconds") { setAfrSettleHoldSeconds(5) }
         call("setMpvHardwareDecodeMode") { setMpvHardwareDecodeMode(MpvHardwareDecodeMode.DISABLED) }
         call("setUseLibass") { setUseLibass(true) }
         call("setDv5ToDv81Enabled") { setDv5ToDv81Enabled(true) }
@@ -298,6 +299,10 @@ class DevicePlayerSettingsStoreTest {
         call("setSubtitleEdgeStyle") { setSubtitleEdgeStyle(SubtitleEdgeStyle.DROP_SHADOW) }
         call("setSubtitleOutlineColor") { setSubtitleOutlineColor(3) }
         call("setSubtitleOutlineWidth") { setSubtitleOutlineWidth(4) }
+        call("setSubtitleHdrStyleEnabled") { setSubtitleHdrStyleEnabled(true) }
+        call("setSubtitleHdrTextColor") { setSubtitleHdrTextColor(5) }
+        call("setSubtitleHdrBrightnessPercent") { setSubtitleHdrBrightnessPercent(50) }
+        call("setSubtitleHdrDimPlayerControls") { setSubtitleHdrDimPlayerControls(true) }
         call("setUseForcedSubtitles") { setUseForcedSubtitles(true) }
         call("setSubtitleShowOnlyPreferredLanguages") { setSubtitleShowOnlyPreferredLanguages(true) }
         call("setSubtitleStripSdh") { setSubtitleStripSdh(true) }
@@ -323,6 +328,7 @@ class DevicePlayerSettingsStoreTest {
         assertTrue(read.tunnelingEnabled)
         assertEquals(Dv7HandlingMode.STRIP_DV, read.dv7HandlingMode)
         assertEquals(FrameRateMatchingMode.START_STOP, read.frameRateMatchingMode)
+        assertEquals(5, read.afrSettleHoldSeconds)
         assertEquals(setOf("type:hdmi|name:avr::AC3"), read.audioRejectionsSeen)
         assertEquals(260, read.bufferSettings.targetBufferSizeMb)
         assertEquals(90_000, read.bufferSettings.maxBufferMs)

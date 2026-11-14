@@ -181,6 +181,45 @@ class XmltvNowNextParserTest {
     }
 
     @Test
+    fun `a larger cap binds past the default and a capped channel keeps no first-after-window`() {
+        val slot = 30 * 60_000L
+        val body = buildString {
+            append("<tv>")
+            for (i in 0 until 100) {
+                val start = now + i * slot
+                append("<programme channel=\"c\" start=\"${xt(start)}\" stop=\"${xt(start + slot)}\"><title>P$i</title></programme>")
+            }
+            append("</tv>")
+        }
+        // 96 half-hour slots in the 48 h window; a cap of 60 (above the default 48) binds.
+        val day = XmltvNowNextParser(newParser = { KXmlParser() }, maxProgrammesPerChannel = 60)
+        val list = day.parse(body.byteInputStream(), now, lookAheadMs = 48 * 60 * 60_000L).programmes.getValue("c")
+        // P96 (first after the window) would read as P59's next across the dropped tail.
+        assertEquals((0 until 60).map { "P$it" }, list.map { it.title })
+
+        fun titles(order: List<Int>): List<String> {
+            val xml = buildString {
+                append("<tv>")
+                for (i in order) {
+                    val start = now + i * slot
+                    append("<programme channel=\"c\" start=\"${xt(start)}\" stop=\"${xt(start + slot)}\"><title>P$i</title></programme>")
+                }
+                append("</tv>")
+            }
+            return day.parse(xml.byteInputStream(), now, lookAheadMs = 48 * 60 * 60_000L).programmes.getValue("c").map { it.title }
+        }
+        // Exactly the cap in the window is not capped: the next after it stays.
+        assertEquals((0 until 60).map { "P$it" } + "P96", titles((0 until 60) + 96))
+        // After-window first, then the cap binds by eviction (latest first): dropped all the same.
+        assertEquals((0 until 60).map { "P$it" }, titles((99 downTo 0).toList()))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `a non-positive cap is refused at construction`() {
+        XmltvNowNextParser(newParser = { KXmlParser() }, maxProgrammesPerChannel = 0)
+    }
+
+    @Test
     fun `distinct programme channel keys are capped`() {
         val body = buildString {
             append("<tv>")

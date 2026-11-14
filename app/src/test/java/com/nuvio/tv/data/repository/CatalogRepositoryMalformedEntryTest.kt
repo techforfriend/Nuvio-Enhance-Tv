@@ -3,6 +3,7 @@ package com.nuvio.tv.data.repository
 import android.content.Context
 import com.nuvio.tv.core.di.NetworkModule
 import com.nuvio.tv.core.network.NetworkResult
+import com.nuvio.tv.core.profile.testRatingCap
 import com.nuvio.tv.core.health.AddonHealthStore
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.dto.CatalogResponseDto
@@ -38,7 +39,9 @@ class CatalogRepositoryMalformedEntryTest {
             context = mockk<Context>(relaxed = true),
             api = api,
             healthStore = mockk(relaxed = true),
-            wireJson = NetworkModule.provideWireJson()
+            wireJson = NetworkModule.provideWireJson(),
+            activeRatingCap = testRatingCap(),
+            ratingFilter = CatalogRatingFilter(mockk())
         )
 
         val result = repository.getCatalog(
@@ -75,7 +78,9 @@ class CatalogRepositoryMalformedEntryTest {
             context = context,
             api = api,
             healthStore = healthStore,
-            wireJson = NetworkModule.provideWireJson()
+            wireJson = NetworkModule.provideWireJson(),
+            activeRatingCap = testRatingCap(),
+            ratingFilter = CatalogRatingFilter(mockk())
         )
 
         val result = repository.getCatalog(

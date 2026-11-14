@@ -88,10 +88,10 @@ fun hiddenStreamVerdicts(
 }
 
 /**
- * The addons the chip row shows, in its order, each once: those with streams, then any other
- * source chip (still loading, or failed until its chip is removed). StreamSourcesPanel draws this
- * row, its chips keyed by name: two addons the user renamed alike share one chip (and one
- * Addon(name) view) rather than a duplicate key.
+ * The addons the sources sheet lists (the chip row before Spec 65), in its order, each once: those
+ * with streams, then any other source chip (still loading, or failed until its chip is removed).
+ * Its rows are keyed by name: two addons the user renamed alike share one row (and one Addon(name)
+ * view) rather than a duplicate key.
  */
 fun sourceChipAddonNames(availableAddons: List<String>, sourceChips: List<SourceChipItem>): List<String> =
     LinkedHashSet<String>().apply {
@@ -121,12 +121,17 @@ fun hiddenStreamKeys(
 
 /**
  * One stream list as derived (Spec 51 P4). [selection] is the effective one (Hidden with nothing
- * hidden, or an addon no longer in the chip row, reads as All), the one every chip highlight and focus rule
+ * hidden, or an addon no longer listed in the sources sheet, reads as All), the one every highlight and focus rule
  * reads; the stored pick changes only on a user pick. [streams] are the rows the view lists;
  * [listsHidden] when they are hidden streams: the Hidden view, or a view whose shown list is empty
- * while it has hidden streams (N3, N4). Counts are per chip, each the rows its view lists (r5):
- * [allCount] for All, [addonCounts] per addon name, [hiddenCount] for the Hidden chip. [total] is
- * every stream, shown or hidden.
+ * while it has hidden streams (N3, N4). Counts are per view, each the rows it lists (r5):
+ * [allCount] for All, [addonCounts] per addon name, [hiddenCount] for the hidden circle. [total] is
+ * every stream, shown or hidden. [filter] is the facet filter the view was derived under (Spec 65
+ * P1): it narrows the shown rows of All and an addon view and their counts, never the Hidden view;
+ * [facetBase] are the view's rows before the filter, what the filters sheet offers values over
+ * ([facetOptions]; empty while the view lists hidden streams); [filteredOut] the shown rows of this
+ * view the filter removed. [preferredCount]: the view's leading rows that match the show's
+ * preferred source (Spec 65 P6), moved to the top of the shown rows; 0 while it lists hidden streams.
  */
 data class StreamListView(
     val selection: StreamListSelection = StreamListSelection.All,
@@ -136,19 +141,23 @@ data class StreamListView(
     val hiddenCount: Int = 0,
     val allCount: Int = 0,
     val addonCounts: Map<String, Int> = emptyMap(),
-    val total: Int = 0
+    val total: Int = 0,
+    val filter: FacetFilter = FacetFilter.NONE,
+    val facetBase: List<Stream> = emptyList(),
+    val filteredOut: Int = 0,
+    val preferredCount: Int = 0
 )
 
 /**
- * The bitrate verdict the limit chip and the hidden line both name (Spec 51 P6, R4-11): the lowest
- * figure among the streams hidden for bitrate, the first such in list order, so chip and line
- * always agree; null when none is.
+ * The bitrate verdict the hidden sheet's entry and the hidden line both name (Spec 51 P6, R4-11):
+ * the lowest figure among the streams hidden for bitrate, the first such in list order, so entry
+ * and line always agree; null when none is.
  */
 val StreamListView.limitVerdict: StreamLimitVerdict?
     get() = hiddenVerdicts.values.mapNotNull { it.bitrate }.minByOrNull { it.figureMbps }
 
 /**
- * The resolution verdict the chip and the line name (Spec 58 D3): every stream hidden for resolution
+ * The resolution verdict the hidden sheet's entry and the line name (Spec 58 D3): every stream hidden for resolution
  * is over the one cap, so the first; null when none is.
  */
 val StreamListView.resolutionVerdict: ResolutionVerdict?
@@ -156,21 +165,33 @@ val StreamListView.resolutionVerdict: ResolutionVerdict?
 
 /**
  * Derives [all] under [selection] and the hidden set [hidden] (from [hiddenStreamVerdicts] over
- * the same list). [chipAddons] are the addons the chip row shows ([sourceChipAddonNames]): an addon
- * still loading has a chip but no stream yet and stays selected (an empty view, as before the
- * limit). The only fallback rule for a selection: nothing writes it back.
+ * the same list). [chipAddons] are the addons the sources sheet lists ([sourceChipAddonNames]): an addon
+ * still loading has a row but no stream yet and stays selected (an empty view, as before the
+ * limit). The only fallback rule for a selection: nothing writes it back. [filter] narrows the
+ * shown rows (Spec 65 P1); [facetsOf] reads a row's facet values, each shown row once per derive
+ * (the app's callers pass [StreamFacetMemo], which keeps them across derives; the default is for tests). A derive with no filter reads none: a parse costs about a third
+ * of a millisecond per row on a desktop JVM (measured 2026-11-09, 300 rows), too much for every
+ * list update on the way to auto-play. The filters sheet works its values out itself, from
+ * [StreamListView.facetBase]. [preferred] (Spec 65 P6) lists its matches first among the shown rows
+ * ([PreferredSource.preferredFirst]); the Hidden view keeps its order.
  */
 fun deriveStreamList(
     all: List<Stream>,
     selection: StreamListSelection,
     hidden: Map<String, HiddenStream>,
-    chipAddons: Collection<String>
+    chipAddons: Collection<String>,
+    filter: FacetFilter = FacetFilter.NONE,
+    facetsOf: (Stream) -> StreamFacetValues = ::streamFacetValues,
+    preferred: PreferredSource? = null
 ): StreamListView {
-    val (hiddenStreams, shown) = if (hidden.isEmpty()) {
+    val (hiddenStreams, unfilteredShown) = if (hidden.isEmpty()) {
         emptyList<Stream>() to all
     } else {
         all.partition { it.limitKey() in hidden }
     }
+    // One read per shown row, and none without a filter.
+    val filtered = if (filter.isEmpty) unfilteredShown else unfilteredShown.filter { filter.matches(facetsOf(it)) }
+    val (shown, preferredShown) = preferred?.preferredFirst(filtered) ?: (filtered to 0)
     val effective = when (selection) {
         StreamListSelection.All -> selection
         StreamListSelection.Hidden -> if (hiddenStreams.isEmpty()) StreamListSelection.All else selection
@@ -179,25 +200,30 @@ fun deriveStreamList(
             else StreamListSelection.All
     }
 
-    /** A view's rows (r5, N3): its shown streams, else its hidden ones when it has no shown stream. */
-    fun rowsOf(shownRows: List<Stream>, hiddenRows: List<Stream>): Pair<List<Stream>, Boolean> =
-        if (shownRows.isEmpty() && hiddenRows.isNotEmpty()) hiddenRows to true else shownRows to false
+    /**
+     * The count rule (r5, N3): a view lists its filtered rows, else its hidden ones when it had
+     * no shown row before the filter. A filter that empties a view lists nothing, not hidden rows.
+     */
+    fun countOf(filteredRows: Int, unfilteredRows: Int, hiddenRows: Int): Int =
+        if (unfilteredRows == 0) hiddenRows else filteredRows
 
-    /** The same rule as a chip count: the rows its view lists. */
-    fun countOf(shownRows: Int, hiddenRows: Int): Int = if (shownRows == 0) hiddenRows else shownRows
-
-    val (rows, listsHidden) = when (effective) {
-        StreamListSelection.All -> rowsOf(shown, hiddenStreams)
-        StreamListSelection.Hidden -> hiddenStreams to true
-        is StreamListSelection.Addon -> rowsOf(
-            shown.filter { it.addonName == effective.name },
-            hiddenStreams.filter { it.addonName == effective.name }
-        )
+    // The view's rows before the filter (also the filters sheet's base), after it, and its hidden rows.
+    fun List<Stream>.ofView(): List<Stream> = when (effective) {
+        StreamListSelection.All, StreamListSelection.Hidden -> this
+        is StreamListSelection.Addon -> filter { it.addonName == effective.name }
     }
+    val viewUnfiltered = if (effective == StreamListSelection.Hidden) emptyList() else unfilteredShown.ofView()
+    val viewHidden = hiddenStreams.ofView()
+    val listsHidden = effective == StreamListSelection.Hidden || (viewUnfiltered.isEmpty() && viewHidden.isNotEmpty())
+    val rows = if (listsHidden) viewHidden else shown.ofView()
+    // The matches lead [shown] and a view keeps their order, so they lead its rows too.
+    val preferredCount = if (listsHidden || preferredShown == 0) 0 else shown.take(preferredShown).ofView().size
+
     val shownByAddon = shown.groupingBy { it.addonName }.eachCount()
+    val unfilteredByAddon = unfilteredShown.groupingBy { it.addonName }.eachCount()
     val hiddenByAddon = hiddenStreams.groupingBy { it.addonName }.eachCount()
     val addonCounts = all.mapTo(LinkedHashSet()) { it.addonName }.associateWith { name ->
-        countOf(shownByAddon[name] ?: 0, hiddenByAddon[name] ?: 0)
+        countOf(shownByAddon[name] ?: 0, unfilteredByAddon[name] ?: 0, hiddenByAddon[name] ?: 0)
     }
     return StreamListView(
         selection = effective,
@@ -205,8 +231,12 @@ fun deriveStreamList(
         listsHidden = listsHidden,
         hiddenVerdicts = hidden,
         hiddenCount = hiddenStreams.size,
-        allCount = countOf(shown.size, hiddenStreams.size),
+        allCount = countOf(shown.size, unfilteredShown.size, hiddenStreams.size),
         addonCounts = addonCounts,
-        total = all.size
+        total = all.size,
+        filter = filter,
+        facetBase = if (listsHidden) emptyList() else viewUnfiltered,
+        filteredOut = if (listsHidden) 0 else viewUnfiltered.size - rows.size,
+        preferredCount = preferredCount
     )
 }

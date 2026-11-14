@@ -1,9 +1,11 @@
 package com.nuvio.tv.core.player
 
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.ParserException
 import androidx.media3.common.util.ParsableByteArray
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -36,14 +38,26 @@ internal class NuvioAssMatroskaExtractor(
     private var currentAttachmentName: String? = null
     private var currentAttachmentMime: String? = null
 
+    /**
+     * Font bytes handed to [assHandler] by this extractor (one extractor per loaded file, kept
+     * across seeks and retries so a re-read cannot raise the cap), and the name + size of each:
+     * a font re-read after a seek is already in the handler and is not counted twice, while a
+     * different font that shares a name still loads.
+     */
+    private var acceptedFontBytes = 0L
+    private val acceptedFonts = HashSet<Pair<String, Int>>()
+    private var loggedFontCap = false
+
     /** The base extractor's raw subtitle sample buffer, read by [NuvioAssTrackOutput]. */
     internal fun rawSubtitleSample(): ParsableByteArray = subtitleSample
 
     override fun getElementType(id: Int): Int = when (id) {
         ID_ATTACHMENTS -> EbmlProcessor.ELEMENT_TYPE_MASTER
         ID_ATTACHED_FILE -> EbmlProcessor.ELEMENT_TYPE_MASTER
-        ID_FILE_NAME -> EbmlProcessor.ELEMENT_TYPE_STRING
-        ID_FILE_MIME_TYPE -> EbmlProcessor.ELEMENT_TYPE_STRING
+        // Binary, not STRING: the reader allocates a STRING's full declared size (up to 2 GiB);
+        // handleAttachmentString caps these (Spec 68 X2).
+        ID_FILE_NAME -> EbmlProcessor.ELEMENT_TYPE_BINARY
+        ID_FILE_MIME_TYPE -> EbmlProcessor.ELEMENT_TYPE_BINARY
         ID_FILE_DATA -> EbmlProcessor.ELEMENT_TYPE_BINARY
         else -> super.getElementType(id)
     }
@@ -68,16 +82,9 @@ internal class NuvioAssMatroskaExtractor(
         }
     }
 
-    override fun stringElement(id: Int, value: String) {
-        when (id) {
-            ID_FILE_NAME -> currentAttachmentName = value
-            ID_FILE_MIME_TYPE -> currentAttachmentMime = value
-            else -> super.stringElement(id, value)
-        }
-    }
-
     override fun binaryElement(id: Int, contentSize: Int, input: ExtractorInput) {
         when (id) {
+            ID_FILE_NAME, ID_FILE_MIME_TYPE -> handleAttachmentString(id, contentSize, input)
             ID_FILE_DATA -> handleAttachmentData(contentSize, input)
             else -> super.binaryElement(id, contentSize, input)
         }
@@ -104,15 +111,68 @@ internal class NuvioAssMatroskaExtractor(
      * element that precedes (or lacks) its FileName/FileMimeType is malformed; it is skipped
      * rather than failing the whole source over one bad font attachment (a null MIME type
      * is never in [fontMimeTypes]).
+     *
+     * The size comes from the file, so a font over [MAX_FONT_BYTES], or one that would take
+     * this file's fonts past [MAX_TOTAL_FONT_BYTES] or [MAX_FONT_COUNT], is skipped too
+     * (Spec 68 X2): the bytes are allocated on the Java heap and held by the handler until
+     * libass copies them; the count bounds the per-font overhead of tiny or empty fonts.
      */
     internal fun handleAttachmentData(contentSize: Int, input: ExtractorInput) {
+        requireReadableSize(contentSize)
         val attachmentName = currentAttachmentName
-        if (attachmentName != null && currentAttachmentMime in fontMimeTypes) {
-            val data = ByteArray(contentSize)
-            input.readFully(data, 0, contentSize)
-            assHandler.addFont(attachmentName, data)
+        if (attachmentName == null || currentAttachmentMime !in fontMimeTypes ||
+            (attachmentName to contentSize) in acceptedFonts
+        ) {
+            input.skipFully(contentSize)
+            return
+        }
+        if (contentSize > MAX_FONT_BYTES ||
+            acceptedFontBytes + contentSize > MAX_TOTAL_FONT_BYTES ||
+            acceptedFonts.size >= MAX_FONT_COUNT
+        ) {
+            // Once per file: a hostile file can carry any number of capped attachments.
+            if (!loggedFontCap) {
+                loggedFontCap = true
+                Log.w(TAG, "Skipping font attachments past the cap ($contentSize bytes)")
+            }
+            input.skipFully(contentSize)
+            return
+        }
+        val data = ByteArray(contentSize)
+        input.readFully(data, 0, contentSize)
+        acceptedFontBytes += contentSize
+        acceptedFonts += attachmentName to contentSize
+        assHandler.addFont(attachmentName, data)
+    }
+
+    /**
+     * FileName / FileMimeType, read as text only up to [MAX_ATTACHMENT_STRING_BYTES]; a longer one
+     * is skipped and leaves the field unset, so its attachment is skipped as malformed.
+     */
+    internal fun handleAttachmentString(id: Int, contentSize: Int, input: ExtractorInput) {
+        requireReadableSize(contentSize)
+        val value = if (contentSize <= MAX_ATTACHMENT_STRING_BYTES) {
+            val bytes = ByteArray(contentSize)
+            input.readFully(bytes, 0, contentSize)
+            // EBML strings may carry zero padding (the stock reader trims it too).
+            bytes.decodeToString(endIndex = bytes.indexOfLast { it != 0.toByte() } + 1)
         } else {
             input.skipFully(contentSize)
+            null
+        }
+        when (id) {
+            ID_FILE_NAME -> currentAttachmentName = value
+            ID_FILE_MIME_TYPE -> currentAttachmentMime = value
+        }
+    }
+
+    /**
+     * A negative size is an element of 2 GiB or more cut by the reader's int cast: its real
+     * length is lost, so it can be neither read nor skipped. The file is malformed.
+     */
+    private fun requireReadableSize(contentSize: Int) {
+        if (contentSize < 0) {
+            throw ParserException.createForMalformedContainer("Attachment element too large", null)
         }
     }
 
@@ -121,16 +181,30 @@ internal class NuvioAssMatroskaExtractor(
         currentAttachmentMime = null
     }
 
-    private companion object {
-        const val ID_EBML = 0x1A45DFA3
-        const val ID_VIDEO = 0xE0
-        const val ID_ATTACHMENTS = 0x1941A469
-        const val ID_ATTACHED_FILE = 0x61A7
+    internal companion object {
+        private const val TAG = "NuvioAssMkv"
+
+        /** Per font; nuvio-libass's value. Fonts in releases are usually well under 10 MiB. */
+        const val MAX_FONT_BYTES = 16 * 1024 * 1024
+
+        /** Per file: four maximal fonts. */
+        const val MAX_TOTAL_FONT_BYTES = 64L * 1024 * 1024
+
+        /** Per file; heavy fansub releases carry about a hundred. */
+        const val MAX_FONT_COUNT = 256
+
+        /** A file name or MIME type; real ones are tens of bytes. */
+        const val MAX_ATTACHMENT_STRING_BYTES = 1024
+
+        private const val ID_EBML = 0x1A45DFA3
+        private const val ID_VIDEO = 0xE0
+        private const val ID_ATTACHMENTS = 0x1941A469
+        private const val ID_ATTACHED_FILE = 0x61A7
         const val ID_FILE_NAME = 0x466E
         const val ID_FILE_MIME_TYPE = 0x4660
-        const val ID_FILE_DATA = 0x465C
+        private const val ID_FILE_DATA = 0x465C
 
-        val fontMimeTypes = listOf(
+        private val fontMimeTypes = listOf(
             "font/ttf",
             "font/otf",
             "font/sfnt",
