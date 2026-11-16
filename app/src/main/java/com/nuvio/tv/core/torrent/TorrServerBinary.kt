@@ -1,6 +1,7 @@
 package com.nuvio.tv.core.torrent
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -166,7 +167,10 @@ class TorrServerBinary @Inject constructor(
                     delay(HEALTH_CHECK_INTERVAL_MS)
                 }
             } finally {
-                if (isProcessAlive(proc)) proc.destroyForcibly()
+                // Spec 107: destroyForcibly is API 26 (NoSuchMethodError on Fire OS 6 / API 25); destroy() there.
+                if (isProcessAlive(proc)) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) proc.destroyForcibly() else proc.destroy()
+                }
             }
         }
         Log.d(TAG, "TorrServer stopped")

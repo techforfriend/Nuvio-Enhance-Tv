@@ -101,9 +101,11 @@ internal data class WhatsNewCard(
 /**
  * Spec 80 D1/D18: on the first start of a different build, looks the installed build up in the
  * public changelog and offers its What's new card once. A build not on GitHub (every private build)
- * or a release without a What's new section gets no card. The new build is recorded when the card
- * shows, or when the lookup answers with no card; a lookup that fails (offline, GitHub down) records
- * nothing, so the next start tries again. Activity-scoped, so a recreate keeps a card that shows.
+ * or a release without a What's new section gets no card. The new build is recorded once the lookup
+ * answers, BEFORE the card is offered (Spec 107 S1: a card that crashes while rendering must not
+ * crash every later start too; the cost is a card that never reached Home is lost); a lookup that
+ * fails (offline, GitHub down) records nothing, so the next start tries again. Activity-scoped, so a
+ * recreate keeps a card that shows.
  */
 @HiltViewModel
 class WhatsNewViewModel internal constructor(
@@ -127,7 +129,6 @@ class WhatsNewViewModel internal constructor(
     private val _card = MutableStateFlow<WhatsNewCard?>(null)
     internal val card: StateFlow<WhatsNewCard?> = _card.asStateFlow()
     private var started = false
-    private var recorded = false
 
     fun start() {
         if (started) return
@@ -145,8 +146,10 @@ class WhatsNewViewModel internal constructor(
                         is ChangelogLoad.Loaded -> {
                             val release = load.releases.firstOrNull { it.versionCode == installed.versionCode }
                             val rows = release?.let { whatsNewRows(it.whatsNew) }.orEmpty()
-                            if (release == null || rows.isEmpty()) record()
-                            else _card.value = WhatsNewCard(release, rows, start.previousName)
+                            record()
+                            if (release != null && rows.isNotEmpty()) {
+                                _card.value = WhatsNewCard(release, rows, start.previousName)
+                            }
                         }
                     }
                 }
@@ -159,25 +162,12 @@ class WhatsNewViewModel internal constructor(
         }
     }
 
-    /** The card is on screen: it never shows for this build again. */
-    fun shown() {
-        if (recorded) return
-        viewModelScope.launch {
-            try {
-                record()
-            } catch (e: IOException) {
-                Log.w(TAG, "what's new not recorded: ${e.javaClass.simpleName}")
-            }
-        }
-    }
-
     fun dismiss() {
         _card.value = null
     }
 
     private suspend fun record() {
         withContext(NonCancellable) { store.setSeenBuild(installed) }
-        recorded = true
     }
 
     private companion object {
@@ -215,7 +205,6 @@ internal fun WhatsNewHost(
     val welcomeSettled by welcome.settled.collectAsState()
     val current = card ?: return
     if (!onHome || !welcomeSettled) return
-    LaunchedEffect(current) { viewModel.shown() }
     val videoTitle = stringResource(R.string.changelog_video_title, current.release.versionName ?: current.release.title)
     WhatsNewCardView(
         card = current,

@@ -104,8 +104,8 @@ android {
         applicationId = "com.nuvio.tv.ak"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1419
-        versionName = "1.1.0"
+        versionCode = 1423
+        versionName = "1.1.1"
         resValue("string", "app_name", "Nuvio Enhanced")
         // JUnit4 instrumented tests (Spec 55 C5: StripListRowFocusTest); AGP sets no runner by default.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

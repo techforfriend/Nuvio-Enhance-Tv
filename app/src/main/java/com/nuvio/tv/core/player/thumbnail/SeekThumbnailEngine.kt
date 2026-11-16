@@ -19,6 +19,7 @@ package com.nuvio.tv.core.player.thumbnail
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.mutableIntStateOf
@@ -98,6 +99,12 @@ object SeekThumbnails {
         titleKey: String,
         playerProvider: () -> ExoPlayer?
     ) {
+        // Spec 107: extraction needs getScaledFrameAtTime (API 27); below it (Fire OS 6) no session,
+        // as before in effect (each frame threw NoSuchMethodError until the failure streak aborted).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) {
+            Log.i(TAG, "skip: API ${Build.VERSION.SDK_INT} < 27")
+            return
+        }
         val tPoll0 = SystemClock.elapsedRealtime()
         val deadline = tPoll0 + 30_000L
         var width = 0

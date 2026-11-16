@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 
 enum class AbnormalExitKind(val label: String) {
     CRASH("crash"),
@@ -57,14 +58,17 @@ object LastExitReason {
      * The newest abnormal end in Android's own short history of this app's processes, or null.
      * Blocking binder call: run off the main thread.
      */
-    fun latestAbnormal(context: Context): AbnormalExit? =
+    fun latestAbnormal(context: Context): AbnormalExit? {
+        if (!supported) return null // Spec 107: see exits().
         // Newest first; 0 = every record Android kept.
-        exits(context, maxNum = 0).firstNotNullOfOrNull { exit ->
+        return exits(context, maxNum = 0).firstNotNullOfOrNull { exit ->
             classify(exit.reason, exit.importance)?.let { AbnormalExit(it, exit.timestamp) }
         }
+    }
 
     /** Logs the previous process's end. Blocking binder call: run off the main thread. */
     fun logLastExit(context: Context) {
+        if (!supported) return // Spec 107: see exits().
         val exit = exits(context, maxNum = 1).firstOrNull() ?: return
         val kind = classify(exit.reason, exit.importance)
         val ageMin = (System.currentTimeMillis() - exit.timestamp) / 60_000L
@@ -81,9 +85,13 @@ object LastExitReason {
         }
     }
 
-    /** Empty below API 30 or when the read fails: a diagnostic must never break its caller. */
+    /**
+     * Empty when the read fails: a diagnostic must never break its caller. Callers check
+     * [supported] at their first line, not after this returns: their own code casts the elements
+     * to ApplicationExitInfo, and ART resolves that class even to cast a null (Spec 107).
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun exits(context: Context, maxNum: Int): List<ApplicationExitInfo> {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
         return try {
             context.getSystemService(ActivityManager::class.java)
                 ?.getHistoricalProcessExitReasons(context.packageName, 0, maxNum)

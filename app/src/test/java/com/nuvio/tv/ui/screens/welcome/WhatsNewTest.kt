@@ -1,5 +1,6 @@
 package com.nuvio.tv.ui.screens.welcome
 
+import androidx.datastore.preferences.core.Preferences
 import com.nuvio.tv.MainDispatcherRule
 import com.nuvio.tv.core.update.ChangelogRepository
 import com.nuvio.tv.core.update.SeenBuild
@@ -17,6 +18,7 @@ import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import retrofit2.Response
+import java.io.IOException
 
 /** Spec 80 S5 (D1, D18): when a start offers the What's new card, what it records, and the rows. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -70,7 +72,7 @@ class WhatsNewTest {
     }
 
     @Test
-    fun `an update to a published release with What's new shows the card, recorded only once shown`() =
+    fun `an update to a published release with What's new shows the card, recorded when offered`() =
         runTest(main.dispatcher) {
             store.setSeenBuild(SeenBuild(1392, "0.9.0-ke52"))
             answer = Response.success(listOf(release(1412, whatsNewBody), release(1411, whatsNewBody)))
@@ -84,10 +86,11 @@ class WhatsNewTest {
                 listOf(WhatsNewRow("Live TV", "Xtream playlists list channels only"), WhatsNewRow("Profiles", "")),
                 card.rows
             )
-            assertEquals(1392, store.seenBuild()?.versionCode)
-            vm.shown()
-            advanceUntilIdle()
+            // Spec 107 S1: recorded without the card rendering, so a start after a render crash shows nothing.
             assertEquals(installed, store.seenBuild())
+            val calledBefore = calls
+            viewModel().apply { start() }.also { advanceUntilIdle() }.let { assertNull(it.card.value) }
+            assertEquals(calledBefore, calls)
         }
 
     @Test
@@ -113,6 +116,22 @@ class WhatsNewTest {
             viewModel().apply { start() }.also { advanceUntilIdle() }.let { assertNull(it.card.value) }
             assertEquals(installed, store.seenBuild())
         }
+
+    @Test
+    fun `a record that fails offers no card, so the next start tries again`() = runTest(main.dispatcher) {
+        val failing = object : TestPreferencesDataStore() {
+            override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+                throw IOException("disk full")
+        }
+        answer = Response.success(listOf(release(1411, whatsNewBody)))
+        val vm = WhatsNewViewModel(UpdateStore(failing), ChangelogRepository(api, "o", "r"), installed, { true })
+        vm.start()
+        advanceUntilIdle()
+        assertNull(vm.card.value)
+        assertEquals(1, calls)
+        // Nothing recorded: the next start sees no build and looks it up again.
+        assertNull(UpdateStore(failing).seenBuild())
+    }
 
     @Test
     fun `a failed lookup records nothing, so the next start tries again`() = runTest(main.dispatcher) {
