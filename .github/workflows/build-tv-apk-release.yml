@@ -43,6 +43,23 @@ jobs:
           fi
           echo "$KEYSTORE_BASE64" | base64 -d > nuviotv.jks
 
+      - name: Write local.properties (Supabase)
+        # The official server config comes from BuildConfig (SUPABASE_URL /
+        # SUPABASE_ANON_KEY, read from local.properties). Without them the
+        # release build ships blank values and every Supabase call fails
+        # before it starts (no URL scheme) — QR sign-in then shows only
+        # "An unexpected error occurred". Fail fast like the keystore step
+        # instead of silently shipping another build with no backend.
+        env:
+          SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "NUVIO_SUPABASE_URL / NUVIO_SUPABASE_ANON_KEY secret is not set" >&2
+            exit 1
+          fi
+          printf 'NUVIO_SUPABASE_URL=%s\nNUVIO_SUPABASE_ANON_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > local.properties
+
       - name: Build TV APK (fullRelease)
         env:
           NUVIO_RELEASE_STORE_FILE: ${{ github.workspace }}/nuviotv.jks
