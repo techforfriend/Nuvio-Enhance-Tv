@@ -74,13 +74,13 @@ jobs:
               print(f"{src.name} -> {dst.name}")
           PYEOF
 
-      # Tag and title are for this release (1.1.0); a later release updates
+      # Tag and title are for this release (1.1.1); a later release updates
       # them together with the notes file.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create v1.1.0 \
-            --title "Nuvio Enhanced TV 1.1.0" \
-            --notes-file .github/release-notes-1.1.0.md \
+          gh release create v1.1.1 \
+            --title "Nuvio Enhanced TV 1.1.1" \
+            --notes-file .github/release-notes-1.1.1.md \
             NuvioAK-*.apk
