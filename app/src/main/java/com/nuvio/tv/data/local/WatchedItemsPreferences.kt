@@ -16,6 +16,31 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** A title's art as stored on its watched items (Spec 118 R1). */
+internal data class WatchedArt(val poster: String?, val backdrop: String?)
+
+internal fun WatchedItem.hasArt(): Boolean = poster != null || backdrop != null
+
+/** Per title, the newest poster and the newest backdrop its items carry (either may be null). */
+internal fun watchedArtByContent(items: Iterable<WatchedItem>): Map<String, WatchedArt> =
+    items.filter { it.hasArt() }
+        .groupBy { it.contentId }
+        .mapValues { (_, group) ->
+            val newestFirst = group.sortedByDescending { it.watchedAt }
+            WatchedArt(newestFirst.firstNotNullOfOrNull { it.poster }, newestFirst.firstNotNullOfOrNull { it.backdrop })
+        }
+
+/**
+ * [this] with each art field it lacks taken from its title's art in [art]. Synced and newly marked
+ * items come without art (the sync model has no art field), so every write keeps what was already
+ * hydrated; a field the item has is never replaced.
+ */
+internal fun WatchedItem.withArtFrom(art: Map<String, WatchedArt>): WatchedItem {
+    if (poster != null && backdrop != null) return this
+    val known = art[contentId] ?: return this
+    return copy(poster = poster ?: known.poster, backdrop = backdrop ?: known.backdrop)
+}
+
 @Singleton
 class WatchedItemsPreferences @Inject constructor(
     private val factory: ProfileDataStoreFactory,
@@ -104,10 +129,11 @@ class WatchedItemsPreferences @Inject constructor(
         store(profileId).edit { preferences ->
             val current = preferences[watchedItemsKey] ?: emptySet()
             val itemKey = watchedItemKey(item)
+            val art = artFor(current, setOf(item.contentId))
             val filtered = current.filterNot { json ->
                 extractWatchedItemKey(json) == itemKey
             }
-            preferences[watchedItemsKey] = filtered.toSet() + encodeWatchedItem(item)
+            preferences[watchedItemsKey] = filtered.toSet() + encodeWatchedItem(item.withArtFrom(art))
         }
     }
 
@@ -119,10 +145,11 @@ class WatchedItemsPreferences @Inject constructor(
         store(profileId).edit { preferences ->
             val current = preferences[watchedItemsKey] ?: emptySet()
             val newKeys = items.map { watchedItemKey(it) }.toSet()
+            val art = artFor(current, items.mapTo(HashSet()) { it.contentId })
             val filtered = current.filterNot { json ->
                 extractWatchedItemKey(json) in newKeys
             }
-            preferences[watchedItemsKey] = filtered.toSet() + items.map(::encodeWatchedItem)
+            preferences[watchedItemsKey] = filtered.toSet() + items.map { encodeWatchedItem(it.withArtFrom(art)) }
         }
     }
 
@@ -188,16 +215,18 @@ class WatchedItemsPreferences @Inject constructor(
             val current = preferences[watchedItemsKey] ?: emptySet()
             beforeCount = current.size
             val itemsByKey = linkedMapOf<Triple<String, Int?, Int?>, WatchedItem>()
-            current.mapNotNull { json ->
+            val currentItems = current.mapNotNull { json ->
                 decodeWatchedItem(json)
-            }.forEach { item ->
+            }
+            currentItems.forEach { item ->
                 itemsByKey[Triple(item.contentId, item.season, item.episode)] = item
             }
             deletes.forEach { key ->
                 itemsByKey.remove(key)
             }
+            val art = watchedArtByContent(currentItems)
             upserts.forEach { item ->
-                itemsByKey[Triple(item.contentId, item.season, item.episode)] = item
+                itemsByKey[Triple(item.contentId, item.season, item.episode)] = item.withArtFrom(art)
             }
             preferences[watchedItemsKey] = itemsByKey.values
                 .map(::encodeWatchedItem)
@@ -220,9 +249,13 @@ class WatchedItemsPreferences @Inject constructor(
                 Log.w(TAG, "replaceWithRemoteItems: remote list empty while local has ${current.size} entries; preserving local watched items")
                 return@edit
             }
+            val localItems = current.mapNotNull { json ->
+                decodeWatchedItem(json)
+            }
+            val art = watchedArtByContent(localItems)
             val deduped = linkedMapOf<Triple<String, Int?, Int?>, WatchedItem>()
             remoteItems.forEach { item ->
-                deduped[Triple(item.contentId, item.season, item.episode)] = item
+                deduped[Triple(item.contentId, item.season, item.episode)] = item.withArtFrom(art)
             }
             // Preserve local items marked as watched after the profile's push watermark:
             // they may not have reached remote yet, so their absence doesn't mean deletion
@@ -230,9 +263,6 @@ class WatchedItemsPreferences @Inject constructor(
             // (L9-10): the old `> 0L` guard mirrored remote instead, deleting any item whose
             // incremental push was skipped or failed, and since a full push only runs when
             // something was preserved, the watermark could never get stamped.
-            val localItems = current.mapNotNull { json ->
-                decodeWatchedItem(json)
-            }
             localItems.forEach { localItem ->
                 val key = Triple(localItem.contentId, localItem.season, localItem.episode)
                 if (key !in deduped && localItem.watchedAt > lastSuccessfulPushMs) {
@@ -248,6 +278,32 @@ class WatchedItemsPreferences @Inject constructor(
         }
         return preservedLocalItems
     }
+
+    /**
+     * Fills the missing poster/backdrop of every item of each title in [art] (by contentId) in
+     * [profileId], in one edit (Spec 118 R1). A field an item has is kept, and an item removed
+     * meanwhile stays removed.
+     */
+    internal suspend fun mergeArtwork(art: Map<String, WatchedArt>, profileId: Int) {
+        val usable = art.filterValues { it.poster != null || it.backdrop != null }
+        if (usable.isEmpty()) return
+        store(profileId).edit { preferences ->
+            val current = preferences[watchedItemsKey] ?: return@edit
+            preferences[watchedItemsKey] = current.mapTo(HashSet(current.size)) { json ->
+                if (extractWatchedItemKey(json).substringBefore('|') !in usable) return@mapTo json
+                val item = decodeWatchedItem(json) ?: return@mapTo json
+                val filled = item.withArtFrom(usable)
+                if (filled == item) json else encodeWatchedItem(filled)
+            }
+        }
+    }
+
+    /** The art of [contentIds]' stored items, decoding only those titles' entries. */
+    private fun artFor(current: Set<String>, contentIds: Set<String>): Map<String, WatchedArt> =
+        watchedArtByContent(
+            current.filter { extractWatchedItemKey(it).substringBefore('|') in contentIds }
+                .mapNotNull(::decodeWatchedItem)
+        )
 
     suspend fun clearAll(profileId: Int = profileManager.activeProfileId.value) {
         store(profileId).edit { preferences ->

@@ -37,6 +37,7 @@ class PlayerSettingsSyncClassificationTest {
         "parental_guide_enabled",
         "pause_overlay_enabled",
         "preferred_audio_language",
+        "resume_rewind_seconds",
         "secondary_preferred_audio_language",
         "show_player_loading_status",
         "skip_intro_enabled",

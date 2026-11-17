@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,7 +59,7 @@ class LayoutPreferenceRetiredKeysTest {
         val store = TestPreferencesDataStore(retired)
         val layout = layoutOver(store)
 
-        layout.setFocusedPosterBackdropTrailerEnabled(true)
+        layout.setTrailerAutoplayMode(TrailerAutoplayMode.HERO)
 
         val after = store.value.asMap()
         for ((key, value) in retired.asMap()) {

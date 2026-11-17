@@ -313,6 +313,19 @@ class LiveTvGuideGridTest {
     }
 
     @Test
+    fun `rows lay out a channel's guide moved by its tvg-shift`() {
+        val day = 24 * 3_600_000L
+        val guide = EpgSnapshot(
+            channels = emptyMap(),
+            programmes = mapOf("Old.in" to listOf(p(7, 20, 0, 30, "Yesterday"))),
+            windowStartMs = bounds.startMs, windowEndMs = bounds.endMs, complete = true
+        )
+        val shifted = Channel(key = "old", sourceId = "a", name = "old", streams = emptyList(), guideShiftMs = day)
+        val rows = LiveTvGuideGrid.rows(listOf(shifted), mapOf("old" to EpgRef("g", "Old.in")), mapOf("g" to guide), bounds)
+        assertEquals(listOf(at(8, 20) to at(8, 20, 30)), rows.row("old").map { it.programme.startMs to it.programme.stopMs })
+    }
+
+    @Test
     fun `a saved view id opens that view, anything else List`() {
         LiveTvView.entries.forEach { assertEquals(it, LiveTvView.fromId(it.id)) }
         assertEquals(listOf("list", "guide", "compact"), LiveTvView.entries.map { it.id }) // persisted, never renamed

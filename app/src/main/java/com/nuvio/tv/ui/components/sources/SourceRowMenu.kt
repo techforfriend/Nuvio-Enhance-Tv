@@ -77,7 +77,8 @@ internal fun SourceRowMenu(
     accent: () -> Color,
     onPlay: (Stream) -> Unit,
     onPrefer: (Stream?) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    hideNames: Boolean = false
 ) {
     val tokens = NuvioTheme.marquee.stream
     val shape = RoundedCornerShape(tokens.rowMenuRadius)
@@ -132,7 +133,7 @@ internal fun SourceRowMenu(
                     RowMenuItem(
                         icon = rememberVectorPainter(Icons.Filled.Check),
                         label = stringResource(R.string.stream_prefer_source),
-                        detail = preferSourceDetail(target.stream),
+                        detail = preferSourceDetail(target.stream, hideNames),
                         accent = accent,
                         onClick = { onPrefer(target.stream) },
                         modifier = Modifier.focusRequester(actionFocus)
@@ -164,19 +165,30 @@ internal fun rowMenuTop(
 /**
  * What preferring [stream] will match, as the menu names it: "AIOStreams · 1080p · NTb release,
  * every episode"; the resolution and the release are left out when the row names none
- * ([com.nuvio.tv.core.stream.PreferredSource.of] reads the same facts).
+ * ([com.nuvio.tv.core.stream.PreferredSource.of] reads the same facts). [hideNames] (Spec 97 X6, stage 5):
+ * the addon is left out of the words; the preference still matches on it. Null when nothing is left.
  */
 @Composable
-private fun preferSourceDetail(stream: Stream): String {
-    val resolution = remember(stream) { ReleaseFactsParser.resolutionOf(stream) }
-    val release = remember(stream) { ReleaseFactsParser.parsedReleaseGroupOf(stream) }
-    val parts = listOfNotNull(
-        stream.addonName,
-        resolution.takeIf { it != ReleaseResolution.UNKNOWN }?.let(::resolutionLabel),
-        release?.let { stringResource(R.string.stream_prefer_source_release, it) }
+private fun preferSourceDetail(stream: Stream, hideNames: Boolean): String? {
+    val parts = remember(stream, hideNames) { preferSourceParts(stream, hideNames) }
+    val words = listOfNotNull(
+        parts.addon,
+        parts.resolution,
+        parts.release?.let { stringResource(R.string.stream_prefer_source_release, it) }
     )
-    return stringResource(R.string.stream_prefer_source_detail, parts.joinToString(" · "))
+    // Hidden names with no resolution or release named: nothing left to say under the action.
+    if (words.isEmpty()) return null
+    return stringResource(R.string.stream_prefer_source_detail, words.joinToString(" · "))
 }
+
+/** The facts [preferSourceDetail] names, unformatted: the addon (none while [hideNames]), the resolution, the release group. */
+internal data class PreferSourceParts(val addon: String?, val resolution: String?, val release: String?)
+
+internal fun preferSourceParts(stream: Stream, hideNames: Boolean): PreferSourceParts = PreferSourceParts(
+    addon = stream.addonName.takeUnless { hideNames },
+    resolution = ReleaseFactsParser.resolutionOf(stream).takeIf { it != ReleaseResolution.UNKNOWN }?.let(::resolutionLabel),
+    release = ReleaseFactsParser.parsedReleaseGroupOf(stream)
+)
 
 /** One menu item: [icon] in the ambient [accent], [label], and [detail] under it. Focused = white fill, black content. */
 @Composable

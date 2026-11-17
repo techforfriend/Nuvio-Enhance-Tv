@@ -24,6 +24,19 @@ internal val PlayerUiState.backTreatsSwitchAsAutoPlay: Boolean
         streamAutoPlayNextEpisodeEnabled
     )
 
+/**
+ * Spec 113 D1 (F3): a player entry launched before this process started, so Android restored it
+ * from saved state after killing the app (Shield window 12b: the family's paused player, killed
+ * behind the screensaver, started its launch episode from 0:00 after the PIN unlock). Its route
+ * still names the launch episode and stream, not the one playing when the process died, so it must
+ * not start. [launchStartedAtMs] is the route's launch time and [processStartElapsedMs]
+ * `Process.getStartElapsedRealtime()`, both `SystemClock.elapsedRealtime()`; a route launched in
+ * this process (a same-process recreate) or with no launch time (null or 0, which no real launch
+ * carries) plays as before.
+ */
+internal fun playerRestoredAfterProcessDeath(launchStartedAtMs: Long?, processStartElapsedMs: Long): Boolean =
+    launchStartedAtMs != null && launchStartedAtMs in 1L..<processStartElapsedMs
+
 internal enum class PlayerBackRoute {
     /** The title's Details page (focus on the episode). */
     DETAIL,

@@ -63,7 +63,9 @@ data class ChangelogRelease(
     val publishedAt: String?,
     val whatsNew: String,
     val notes: String,
-    val video: ReleaseVideo?
+    val video: ReleaseVideo?,
+    /** Spec 89: a GitHub pre-release (a test release); listed only while Get test releases is on. */
+    val prerelease: Boolean = false
 )
 
 /** The body split at its leading What's new section; [whatsNew] is the section's lines without its heading. */
@@ -95,9 +97,12 @@ internal fun splitReleaseBody(body: String): ReleaseBodyParts {
     )
 }
 
-/** [release] as a changelog entry; null for a draft or a pre-release (the update check never offers those). */
-internal fun changelogRelease(release: GitHubReleaseDto): ChangelogRelease? {
-    if (release.draft || release.prerelease) return null
+/**
+ * [release] as a changelog entry; null for a draft, and for a pre-release unless [includeTest] (Spec 89:
+ * Get test releases on, the only time the update check offers one).
+ */
+internal fun changelogRelease(release: GitHubReleaseDto, includeTest: Boolean = false): ChangelogRelease? {
+    if (release.draft || (release.prerelease && !includeTest)) return null
     val apk = release.assets.firstNotNullOfOrNull { asset -> asset.name?.let { ASSET_NAME.matchEntire(it) } }
     val title = release.name?.takeIf { it.isNotBlank() } ?: release.tagName?.takeIf { it.isNotBlank() }
     val versionName = apk?.groupValues?.get(1)
@@ -110,7 +115,8 @@ internal fun changelogRelease(release: GitHubReleaseDto): ChangelogRelease? {
         publishedAt = release.publishedAt,
         whatsNew = parts.whatsNew,
         notes = parts.notes,
-        video = releaseVideoOf(release)
+        video = releaseVideoOf(release),
+        prerelease = release.prerelease
     )
 }
 
@@ -132,7 +138,8 @@ fun KnownRelease.toChangelogRelease(): ChangelogRelease {
         publishedAt = publishedAt,
         whatsNew = parts.whatsNew,
         notes = parts.notes,
-        video = videoUrl?.let { ReleaseVideo(it, videoSizeBytes, posterUrl) }
+        video = videoUrl?.let { ReleaseVideo(it, videoSizeBytes, posterUrl) },
+        prerelease = prerelease
     )
 }
 
@@ -161,21 +168,27 @@ sealed interface ChangelogLoad {
 
 /**
  * The public releases for the changelog (Spec 80 D4): fetched each time it is asked, never stored.
- * Every build reads them, with or without the update check: reading installs nothing.
+ * Every build reads them, with or without the update check: reading installs nothing. Pre-releases
+ * join only while [testReleasesOn] (Spec 89: a build with the check, Get test releases on), which
+ * also lets the What's new lookup find a test build.
  */
 @Singleton
 class ChangelogRepository internal constructor(
     private val api: GitHubReleaseApi,
     private val owner: String,
-    private val repo: String
+    private val repo: String,
+    private val testReleasesOn: suspend () -> Boolean = { false }
 ) {
-    @Inject constructor(api: GitHubReleaseApi) : this(api, BuildConfig.UPDATE_OWNER, BuildConfig.UPDATE_REPO)
+    @Inject constructor(api: GitHubReleaseApi, updates: UpdateController) :
+        this(api, BuildConfig.UPDATE_OWNER, BuildConfig.UPDATE_REPO, updates::testReleasesOn)
 
     suspend fun load(): ChangelogLoad = try {
+        val includeTest = testReleasesOn()
         val response = api.releases(owner, repo, CHANGELOG_SIZE)
         val body = response.body()
         when {
-            response.isSuccessful && body != null -> ChangelogLoad.Loaded(body.mapNotNull(::changelogRelease))
+            response.isSuccessful && body != null ->
+                ChangelogLoad.Loaded(body.mapNotNull { changelogRelease(it, includeTest) })
             // 404: no release yet (or no such repo): an empty changelog, not an error.
             response.code() == 404 -> ChangelogLoad.Loaded(emptyList())
             else -> ChangelogLoad.Failed

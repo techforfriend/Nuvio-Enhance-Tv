@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -14,6 +15,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.ui.components.marquee.MarqueeMessage
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 /**
@@ -52,12 +54,15 @@ fun DiscoverScreen(
                 body = AnnotatedString(stringResource(R.string.discover_disabled_subtitle))
             )
         } else {
-            DiscoverSection(
-                band = band,
-                uiState = uiState,
-                headerTop = if (underTopBar) NuvioTheme.marquee.topBar.contentTop else NuvioTheme.spacing.lg,
-                drawTopScrim = !underTopBar
-            )
+            // Spec 96 D16: the grid's cards opt into the trailer preview (the host's In the card mode decides).
+            CompositionLocalProvider(LocalTrailerPreviewEnabled provides true) {
+                DiscoverSection(
+                    band = band,
+                    uiState = uiState,
+                    headerTop = if (underTopBar) NuvioTheme.marquee.topBar.contentTop else NuvioTheme.spacing.lg,
+                    drawTopScrim = !underTopBar
+                )
+            }
         }
         DiscoverPosterOptions(viewModel = viewModel, band = band, onNavigateToDetail = onNavigateToDetail)
     }

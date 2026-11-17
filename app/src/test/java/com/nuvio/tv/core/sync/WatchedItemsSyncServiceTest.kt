@@ -5,12 +5,16 @@ import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.data.local.TestPreferencesDataStore
 import com.nuvio.tv.data.local.WatchedItemsPreferences
+import com.nuvio.tv.data.repository.WatchedArtworkHydrator
 import com.nuvio.tv.domain.model.WatchedItem
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.result.PostgrestResult
+import io.github.jan.supabase.serializer.KotlinXSerializer
+import io.ktor.http.Headers
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -20,6 +24,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -36,9 +41,12 @@ class WatchedItemsSyncServiceTest {
     private val rpcCalls = mutableListOf<Pair<String, JsonObject>>()
     @Volatile private var rpcFails = false
     @Volatile private var rpcCancels = false
+    // Non-null: rpc returns a real result with this body, so pulls can decode and succeed.
+    @Volatile private var rpcBody: String? = null
 
     private val preferences: WatchedItemsPreferences
     private val service: WatchedItemsSyncService
+    private val hydrator = mockk<WatchedArtworkHydrator>(relaxed = true)
 
     init {
         val factory = mockk<ProfileDataStoreFactory>()
@@ -50,11 +58,12 @@ class WatchedItemsSyncServiceTest {
         preferences = WatchedItemsPreferences(factory, profileManager)
 
         val postgrest = mockk<Postgrest>()
+        every { postgrest.serializer } returns KotlinXSerializer()
         coEvery { postgrest.rpc(any<String>(), any<JsonObject>(), any()) } answers {
             if (rpcFails) throw IllegalStateException("rpc failed")
             if (rpcCancels) throw CancellationException("scope cancelled")
             synchronized(rpcCalls) { rpcCalls += firstArg<String>() to secondArg<JsonObject>() }
-            mockk<PostgrestResult>(relaxed = true)
+            rpcBody?.let { PostgrestResult(it, Headers.Empty, postgrest) } ?: mockk<PostgrestResult>(relaxed = true)
         }
         val identity = mockk<SyncClientIdentity>()
         every { identity.currentClientId() } returns "nuvio-tv-test-client-id"
@@ -64,7 +73,8 @@ class WatchedItemsSyncServiceTest {
             watchedItemsPreferences = preferences,
             profileManager = profileManager,
             syncClientIdentity = identity,
-            pushHealth = SyncPushHealth()
+            pushHealth = SyncPushHealth(),
+            artworkHydrator = hydrator
         )
     }
 
@@ -154,6 +164,39 @@ class WatchedItemsSyncServiceTest {
             setOf("local-only", "remote"),
             preferences.getAllItems(profileId = 2).map { it.contentId }.toSet()
         )
+    }
+
+    @Test
+    fun `pushes never carry the locally hydrated art`() = runTest {
+        preferences.markAsWatched(item("art").copy(poster = "p", backdrop = "b"), profileId = 2)
+
+        service.pushToRemote(profileId = 2).getOrThrow()
+
+        val pushed = rpcCalls.single().second.getValue("p_items").jsonArray.single().jsonObject
+        assertEquals(setOf("content_id", "content_type", "title", "season", "episode", "watched_at"), pushed.keys)
+    }
+
+    @Test
+    fun `a failed pull requests no artwork hydration`() = runTest {
+        rpcFails = true
+
+        assertTrue(service.syncDeltaFromRemote(profileId = 2).isFailure)
+        assertTrue(service.syncSnapshotFromRemote(profileId = 2).isFailure)
+
+        verify(exactly = 0) { hydrator.request(any()) }
+        assertFalse(preferences.isDeltaInitialized(profileId = 2))
+    }
+
+    @Test
+    fun `a successful snapshot or delta pull requests hydration for its profile`() = runTest {
+        // "[]": an empty remote page; the cursor rpc cannot decode it, so both take the snapshot path.
+        rpcBody = "[]"
+
+        assertTrue(service.syncSnapshotFromRemote(profileId = 2).isSuccess)
+        assertTrue(service.syncDeltaFromRemote(profileId = 3).isSuccess)
+
+        verify(exactly = 1) { hydrator.request(2) }
+        verify(exactly = 1) { hydrator.request(3) }
     }
 
     private fun item(contentId: String, watchedAt: Long = 100L) = WatchedItem(

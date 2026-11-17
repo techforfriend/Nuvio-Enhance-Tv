@@ -24,16 +24,18 @@ internal object MpvEngineHopPolicy {
         val videoCodecs: String?,
         /** The DV profile the extractors recorded while converting or stripping DV (re-signalled as HEVC). */
         val dvSourceProfile: Int?,
+        /** Spec 97 D30: mpv is barred (a saved access site, or not looked up yet: [mpvBarredForStream]). */
+        val mpvBarred: Boolean,
     )
 
     /**
      * G2: an ExoPlayer start before its first frame, in the foreground (the controller holds a
      * trigger seen in the background for resume), whose URL has not had its one automatic switch (D3's
-     * loop guard), and never Dolby Vision (D1). Not gated on the auto-switch setting, which covers
-     * mpv->Exo only (D1).
+     * loop guard), never Dolby Vision (D1), never a stream on a saved access site (Spec 97 D30). Not
+     * gated on the auto-switch setting, which covers mpv->Exo only (D1).
      */
     fun hopAllowed(input: GateInput): Boolean = with(input) {
-        exoActive && !firstFrameRendered && !inBackground && !switchUsedForUrl &&
+        exoActive && !firstFrameRendered && !inBackground && !switchUsedForUrl && !mpvBarred &&
             !isDolbyVision(videoMime, videoCodecs) && dvSourceProfile == null
     }
 

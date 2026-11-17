@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.CacheControl
 import com.nuvio.tv.core.util.addonUrlMatchKey
@@ -71,6 +72,12 @@ class MetaRepositoryImpl @Inject constructor(
          * the caller's drop, not a host timeout.
          */
         internal const val META_FETCH_TIMEOUT_MS = 28_000L
+
+        /** Spec 95 D3: how long after its first fetch a cached meta may still be served while it refreshes. */
+        private const val MAX_STALE_MS = 24L * 60 * 60 * 1000
+
+        /** Bounds an addon-written error text before it reaches the aggregate failure message. */
+        private const val MAX_ERROR_DETAIL_CHARS = 160
     }
 
     /** Internal result type for the deferred meta lookup to distinguish
@@ -98,8 +105,9 @@ class MetaRepositoryImpl @Inject constructor(
      *  "not found" for every non-success, but health must not: a clean miss
      *  ([MetaFailureKind.MISSING]: Stremio 404, or a 200 carrying no meta like
      *  AIOMetadata's `{"meta":null}`) is the addon answering "no such item" and stamps
-     *  [HealthOutcome.EMPTY], while transport and parse failures
-     *  ([MetaFailureKind.REQUEST_FAILED]) stamp [HealthOutcome.FAILURE]. [Failed.detail]
+     *  [HealthOutcome.EMPTY], while transport and parse failures and an addon's own
+     *  error placeholder meta ([isAddonErrorMeta]) are [MetaFailureKind.REQUEST_FAILED]
+     *  and stamp [HealthOutcome.FAILURE]. [Failed.detail]
      *  is the per-addon text the multi-addon loops report. */
     private sealed class MetaFetchOutcome {
         data class Fetched(val cached: CachedMeta) : MetaFetchOutcome()
@@ -117,13 +125,24 @@ class MetaRepositoryImpl @Inject constructor(
         val detail: String
     )
 
-    /** Wrapper for cached meta with an expiration timestamp. */
+    /** Cached meta with its addon-declared expiry and the request that produced it, which
+     *  a stale-while-revalidate refresh repeats (Spec 95 D4). */
     private data class CachedMeta(
         val meta: Meta,
-        val expiresAtMs: Long
-    ) {
-        fun isExpired(): Boolean = System.currentTimeMillis() >= expiresAtMs
-    }
+        val expiresAtMs: Long,
+        val sourceBaseUrl: String,
+        val sourceType: String,
+        val sourceId: String,
+        /** When this title was first fetched; a refresh keeps it, so the stale cap holds. */
+        val firstFetchedAtMs: Long
+    )
+
+    /** A cached meta usable now; [stale] = past its freshness, so a refresh is due. */
+    private class CacheHit(val cached: CachedMeta, val stale: Boolean)
+
+    /** Clock for every cache age and expiry; tests move it. */
+    @androidx.annotation.VisibleForTesting
+    internal var nowMs: () -> Long = System::currentTimeMillis
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -131,7 +150,7 @@ class MetaRepositoryImpl @Inject constructor(
     // two addons serving meta for the same content id never overwrite each other.
     // Two TTL layers compose here (0.7.20 merge):
     //  - upstream 0.7.20: each entry carries the addon-declared Cache-Control
-    //    max-age (CachedMeta.isExpired), so fast-changing meta refreshes without
+    //    max-age (CachedMeta.expiresAtMs), so fast-changing meta refreshes without
     //    an app restart;
     //  - fork (main review F15): the cache itself is a bounded, access-ordered
     //    LRU whose 45-min internal TTL caps any longer declaration -- a series
@@ -139,24 +158,28 @@ class MetaRepositoryImpl @Inject constructor(
     //    grew without bound for the whole session, competing with the player's
     //    buffer for RAM on low tiers. The cap also lets a series pick up
     //    newly-aired episodes within a session.
-    // Net per-entry lifetime: min(declared max-age or the 6 h default, 45 min).
-    private val metaCache = BoundedMetaCache<String, CachedMeta>()
+    // Net per-entry freshness: min(declared max-age or the 6 h default, 45 min).
+    // Spec 95 D3: past that, an entry first fetched under MAX_STALE_MS ago is still served
+    // (stale-while-revalidate, see lookup); the LRU count cap alone bounds memory.
+    private val metaCache = BoundedMetaCache<String, CachedMeta>(now = { nowMs() })
     // Separate cache for full meta fetched from addons (bypasses catalog-level cache)
-    private val addonMetaCache = BoundedMetaCache<String, CachedMeta>()
-    private val primaryAddonMetaCache = BoundedMetaCache<String, CachedMeta>()
+    private val addonMetaCache = BoundedMetaCache<String, CachedMeta>(now = { nowMs() })
+    private val primaryAddonMetaCache = BoundedMetaCache<String, CachedMeta>(now = { nowMs() })
     // Negative cache (main review F18): a genuine miss previously re-ran the full
     // candidate loop on every detail-screen visit / enrichment for that title.
     private val metaMissCache = BoundedMetaCache<String, Long>(
-        maxEntries = 300, ttlMs = 5 * 60 * 1000L
+        maxEntries = 300, ttlMs = 5 * 60 * 1000L, now = { nowMs() }
     )
 
     /**
      * Minimal thread-safe LRU with per-entry TTL. Access-ordered so hot titles
-     * stay resident; stale entries are dropped on read.
+     * stay resident; [get] drops an entry past [ttlMs], [getWithAge] past the
+     * caller's own bound.
      */
     private class BoundedMetaCache<K : Any, V : Any>(
         private val maxEntries: Int = 150,
-        private val ttlMs: Long = 45 * 60 * 1000L
+        val ttlMs: Long = 45 * 60 * 1000L,
+        private val now: () -> Long
     ) {
         private class Entry<V>(val value: V, val storedAtMs: Long)
 
@@ -166,24 +189,40 @@ class MetaRepositoryImpl @Inject constructor(
             }
         }
 
+        operator fun get(key: K): V? = getWithAge(key, ttlMs)?.first
+
+        /** The entry and its age in ms, dropping it once older than [maxAgeMs]. */
         @Synchronized
-        operator fun get(key: K): V? {
+        fun getWithAge(key: K, maxAgeMs: Long): Pair<V, Long>? {
             val entry = map[key] ?: return null
-            if (System.currentTimeMillis() - entry.storedAtMs > ttlMs) {
+            val ageMs = now() - entry.storedAtMs
+            if (ageMs > maxAgeMs) {
                 map.remove(key)
                 return null
             }
-            return entry.value
+            return entry.value to ageMs
         }
 
         @Synchronized
         operator fun set(key: K, value: V) {
-            map[key] = Entry(value, System.currentTimeMillis())
+            map[key] = Entry(value, now())
         }
 
+        /** Whether [key] still holds exactly [expected]. */
         @Synchronized
-        fun remove(key: K) {
-            map.remove(key)
+        fun holds(key: K, expected: V): Boolean = map[key]?.value === expected
+
+        /** Stores [value] at [key] only while its current value passes [expected]. */
+        @Synchronized
+        fun replaceIf(key: K, expected: (V) -> Boolean, value: V) {
+            val current = map[key] ?: return
+            if (expected(current.value)) map[key] = Entry(value, now())
+        }
+
+        /** Removes [key] only while it still holds [expected], so a newer write survives. */
+        @Synchronized
+        fun removeIfSame(key: K, expected: V) {
+            if (map[key]?.value === expected) map.remove(key)
         }
 
         @Synchronized
@@ -216,12 +255,9 @@ class MetaRepositoryImpl @Inject constructor(
             .distinct()
         probeTypes.forEach { probeType ->
             val probeKey = addonMetaCacheKey(addonBaseUrl, probeType, id)
-            metaCache[probeKey]?.let { cached ->
-                if (!cached.isExpired()) {
-                    emit(NetworkResult.Success(cached.meta))
-                    return@flow
-                }
-                metaCache.remove(probeKey)
+            metaCache.serveCached(probeKey)?.let { meta ->
+                emit(NetworkResult.Success(meta))
+                return@flow
             }
         }
 
@@ -267,6 +303,9 @@ class MetaRepositoryImpl @Inject constructor(
         val healthMs = android.os.SystemClock.elapsedRealtime() - healthT0
         when (outcome) {
             is MetaFetchOutcome.Fetched -> {
+                // Again here: a stale refresh (Spec 95 D4) may own the shared Deferred, and
+                // its block does not write the lookup cache.
+                addonMetaCache[metaLookupCacheKey(requestedType, id)] = outcome.cached
                 healthStore.recordAddonOutcome(addonBaseUrl, HealthOutcome.SUCCESS, healthMs)
                 emit(NetworkResult.Success(outcome.cached.meta))
             }
@@ -290,12 +329,9 @@ class MetaRepositoryImpl @Inject constructor(
         sourceAddonBaseUrl: String?
     ): Flow<NetworkResult<Meta>> = flow {
         val cacheKey = metaLookupCacheKey(type, id)
-        addonMetaCache[cacheKey]?.let { cached ->
-            if (!cached.isExpired()) {
-                emit(NetworkResult.Success(cached.meta))
-                return@flow
-            }
-            addonMetaCache.remove(cacheKey)
+        addonMetaCache.serveCached(cacheKey, refreshIf = { findAddonByBaseUrl(it.sourceBaseUrl) != null })?.let { meta ->
+            emit(NetworkResult.Success(meta))
+            return@flow
         }
         // Fresh negative result: skip re-running the whole candidate loop (F18).
         if (metaMissCache[cacheKey] != null) {
@@ -407,7 +443,7 @@ class MetaRepositoryImpl @Inject constructor(
                 loopFailures.all { it.kind == MetaFailureKind.MISSING }
             // T31 (P36, upstream 03dde8a94): only a definitive absence is remembered; a
             // timeout or network failure must not read as "not found" for the TTL.
-            if (allAttemptsMissing) metaMissCache[cacheKey] = System.currentTimeMillis()
+            if (allAttemptsMissing) metaMissCache[cacheKey] = nowMs()
             MetaLookupResult.NotFound(
                 attemptedAddonNames = loopAddonNames.toList(),
                 failures = loopFailures,
@@ -442,12 +478,9 @@ class MetaRepositoryImpl @Inject constructor(
         id: String
     ): Flow<NetworkResult<Meta>> = flow {
         val cacheKey = metaLookupCacheKey(type, id)
-        primaryAddonMetaCache[cacheKey]?.let { cached ->
-            if (!cached.isExpired()) {
-                emit(NetworkResult.Success(cached.meta))
-                return@flow
-            }
-            primaryAddonMetaCache.remove(cacheKey)
+        primaryAddonMetaCache.serveCached(cacheKey, refreshIf = ::isStillPrimarySource)?.let { meta ->
+            emit(NetworkResult.Success(meta))
+            return@flow
         }
 
         emit(NetworkResult.Loading)
@@ -533,10 +566,24 @@ class MetaRepositoryImpl @Inject constructor(
                 ?: throw java.io.IOException(context.getString(R.string.network_error_addon_timeout))
             val metaDto = if (response.isSuccessful) response.body()?.meta else null
             when {
+                // Spec 95 M1: a 200 whose meta is the addon's own error report. Taken as meta it
+                // would title the details page (and stored progress) with the error.
+                metaDto != null && isAddonErrorMeta(metaDto.id, metaDto.name) -> {
+                    val detail = metaDto.description?.takeIf { it.isNotBlank() } ?: metaDto.name
+                    Log.w(TAG, "Meta error placeholder host=${url.safeHost()} id=${metaDto.id.take(40)}")
+                    MetaFetchOutcome.Failed(MetaFailureKind.REQUEST_FAILED, detail.take(MAX_ERROR_DETAIL_CHARS))
+                }
                 metaDto != null -> {
                     val meta = metaDto.toDomain(context.getString(R.string.episodes_episode))
                     val ttlMs = parseMaxAgeMs(response.headers()["Cache-Control"])
-                    val cached = CachedMeta(meta, System.currentTimeMillis() + ttlMs)
+                    val cached = CachedMeta(
+                        meta = meta,
+                        expiresAtMs = nowMs() + ttlMs,
+                        sourceBaseUrl = baseUrl,
+                        sourceType = type,
+                        sourceId = id,
+                        firstFetchedAtMs = nowMs()
+                    )
                     metaCache[addonMetaCacheKey(baseUrl, type, id)] = cached
                     Log.d(TAG, "Meta fetch success type=$type id=$id ttl=${ttlMs}ms")
                     MetaFetchOutcome.Fetched(cached)
@@ -678,9 +725,98 @@ class MetaRepositoryImpl @Inject constructor(
 
     override fun getCachedMeta(type: String, id: String): Meta? {
         val cacheKey = metaLookupCacheKey(type, id)
-        return addonMetaCache[cacheKey]?.takeIf { !it.isExpired() }?.meta
+        // A stale entry still serves the focus backdrop prefetch; only reads that
+        // stand in for a fetch start a refresh.
+        return addonMetaCache.lookup(cacheKey)?.cached?.meta
+    }
+
+    /** Spec 95 D3: fresh = within the addon's max-age and the cache TTL; stale = past
+     *  either but first fetched under [MAX_STALE_MS] ago. Older entries are dropped, so a
+     *  refreshed entry still re-runs addon selection at least daily. */
+    private fun BoundedMetaCache<String, CachedMeta>.lookup(key: String): CacheHit? {
+        val (cached, ageMs) = getWithAge(key, MAX_STALE_MS) ?: return null
+        if (nowMs() - cached.firstFetchedAtMs > MAX_STALE_MS) {
+            removeIfSame(key, cached)
+            return null
+        }
+        return CacheHit(cached, stale = nowMs() >= cached.expiresAtMs || ageMs > ttlMs)
+    }
+
+    /**
+     * The cached meta for [key], starting one background refresh when it is stale.
+     * [refreshIf] decides, off the read path, whether the recorded source addon may still
+     * answer for this cache; when it may not, the entry is dropped and the next read runs
+     * the normal lookup.
+     */
+    private fun BoundedMetaCache<String, CachedMeta>.serveCached(
+        key: String,
+        refreshIf: suspend (CachedMeta) -> Boolean = { true }
+    ): Meta? {
+        val hit = lookup(key) ?: return null
+        if (hit.stale) refreshInBackground(this, key, hit.cached, refreshIf)
+        return hit.cached.meta
+    }
+
+    /**
+     * Spec 95 D4: repeats the request that produced [stale], shared through [inFlightMeta]
+     * so one request runs per addon key however many readers see it stale. Success replaces
+     * the entry at [key] in [cache], keeping its first-fetch time (fetchMetaOnce also
+     * refreshes [metaCache]); a clean miss drops it so the next read records the miss; a
+     * request failure keeps it. Every write is conditional on the slot still holding [stale]
+     * (or, in [metaCache], fetchMetaOnce's own write), so a refresh never revives an entry that
+     * [clearCache], a later drop or a newer fetch replaced meanwhile, and a refresh that
+     * starts after another one landed sends nothing.
+     */
+    private fun refreshInBackground(
+        cache: BoundedMetaCache<String, CachedMeta>,
+        key: String,
+        stale: CachedMeta,
+        refreshIf: suspend (CachedMeta) -> Boolean
+    ) {
+        repositoryScope.launch {
+            if (!refreshIf(stale)) {
+                cache.removeIfSame(key, stale)
+                return@launch
+            }
+            if (!cache.holds(key, stale)) return@launch
+            val fetchKey = addonMetaCacheKey(stale.sourceBaseUrl, stale.sourceType, stale.sourceId)
+            val outcome = inFlightMeta.getOrStartShared(repositoryScope, fetchKey) {
+                fetchMetaOnce(stale.sourceBaseUrl, stale.sourceType, stale.sourceId)
+            }.await()
+            when {
+                outcome is MetaFetchOutcome.Fetched -> cache.replaceIf(
+                    key,
+                    expected = { it === stale || it === outcome.cached },
+                    value = outcome.cached.copy(firstFetchedAtMs = stale.firstFetchedAtMs)
+                )
+                outcome is MetaFetchOutcome.Failed && outcome.kind == MetaFailureKind.MISSING ->
+                    cache.removeIfSame(key, stale)
+            }
+        }
+    }
+
+    /** The primary cache's entry may refresh only while its addon is still the one
+     *  [selectPrimaryMetaCandidate] picks. */
+    private suspend fun isStillPrimarySource(stale: CachedMeta): Boolean {
+        val candidate = selectPrimaryMetaCandidate(
+            addons = installedAddonsOrEmpty(),
+            requestedType = stale.sourceType,
+            inferredType = inferCanonicalType(stale.sourceType, stale.sourceId)
+        ) ?: return false
+        return addonUrlMatchKey(candidate.first.baseUrl) == addonUrlMatchKey(stale.sourceBaseUrl)
     }
 }
+
+/**
+ * Spec 95 D1: an addon meta that is an error report, by the shapes the addons' source writes.
+ * AIOStreams names a failed sub-addon lookup `[❌] <addon>` (error text in the description) and
+ * its generic error meta has an `aiostreamserror.` id; NexoTV's rate limiter answers with id
+ * `ratelimit_error`. Deliberately no title regex: a real title must never match.
+ */
+internal fun isAddonErrorMeta(id: String, name: String): Boolean =
+    id == "ratelimit_error" ||
+        id.startsWith("aiostreamserror.") ||
+        name.trimStart().startsWith("[\u274C]")
 
 /**
  * Key for the shared multi-addon lookup in flight. Its SourceSufficient answer depends

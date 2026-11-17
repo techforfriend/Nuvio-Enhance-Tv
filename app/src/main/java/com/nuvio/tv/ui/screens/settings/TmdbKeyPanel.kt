@@ -108,7 +108,13 @@ internal fun TmdbKeySidePanel(
                 TmdbKeyPanelState.OPEN, TmdbKeyPanelState.CHECKING -> TmdbKeyNote(buildHasKey)
             }
         }
-        phoneUrl?.let { TmdbKeyPhoneBlock(url = it) }
+        phoneUrl?.let {
+            SettingsPhoneQrBlock(
+                url = it,
+                divider = stringResource(R.string.tmdb_api_key_phone_divider),
+                title = stringResource(R.string.tmdb_api_key_phone_title)
+            )
+        }
         MarqueePanelActions {
             if (!hasUserKey) {
                 CollectionsHeaderButton(label = stringResource(R.string.action_cancel), onClick = onDismiss)
@@ -156,9 +162,12 @@ private fun TmdbKeyNote(buildHasKey: Boolean) {
     )
 }
 
-/** `.s52or` + `.s52qrrow`: the divider, then the QR of [url] beside how to use it and the address. */
+/**
+ * `.s52or` + `.s52qrrow` (Spec 52 key panel; Spec 97 Access headers): the [divider], then the QR of
+ * [url] beside [title], the same-Wi-Fi line and the address; the screen stays on while it shows.
+ */
 @Composable
-private fun TmdbKeyPhoneBlock(url: String) {
+internal fun SettingsPhoneQrBlock(url: String, divider: String, title: String) {
     val marquee = NuvioTheme.marquee
     val tokens = marquee.settings
     val qr = rememberQrCode(url)
@@ -170,7 +179,7 @@ private fun TmdbKeyPhoneBlock(url: String) {
         ) {
             TmdbKeyDividerRule()
             Text(
-                text = stringResource(R.string.tmdb_api_key_phone_divider).uppercase(),
+                text = divider.uppercase(),
                 style = NuvioTheme.textStyles.eyebrow,
                 color = marquee.onImage3
             )
@@ -198,7 +207,7 @@ private fun TmdbKeyPhoneBlock(url: String) {
             }
             Column {
                 Text(
-                    text = stringResource(R.string.tmdb_api_key_phone_title),
+                    text = title,
                     style = NuvioTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
                     color = NuvioPrimitives.white
                 )

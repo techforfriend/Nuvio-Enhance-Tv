@@ -5,6 +5,7 @@ import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.CatalogDescriptor
 import com.nuvio.tv.domain.model.CatalogRow
 import com.nuvio.tv.domain.model.DiscoverLocation
+import com.nuvio.tv.domain.model.MetaPreview
 import com.nuvio.tv.domain.model.isPlaceholderItemId
 import com.nuvio.tv.domain.model.stableItemKey
 import com.nuvio.tv.domain.model.stableKey
@@ -155,14 +156,33 @@ internal fun searchCardRestoreRowIndex(
 }
 
 /**
- * Keyboard completions: titles starting with the query first, otherwise the addon's own (relevance)
- * order, which [names] carries in iteration order (T31, P41: NM `c57dfe343`; an A-Z tie-break put
- * "Jurassic City" before "Jurassic Park" while the keyboard shows only 3-4).
+ * Keyboard completions: titles starting with the query first, otherwise the order [names] carries:
+ * the addon's own (relevance) order, after [rankByTitleMatch] put an exact title first (T31, P41:
+ * NM `c57dfe343`; an A-Z tie-break put "Jurassic City" before "Jurassic Park" while the keyboard
+ * shows only 3-4).
  */
 internal fun rankSuggestions(names: Collection<String>, query: String, limit: Int): List<String> {
     val queryLower = query.lowercase()
     // sortedByDescending is stable: equal ranks keep the addon's order.
     return names.sortedByDescending { it.lowercase().startsWith(queryLower) }.take(limit)
+}
+
+/**
+ * Spec 95 D6: a search row's first page with the exact title match (trimmed, case-insensitive)
+ * first, then titles starting with the query, then the rest. Stable, so each tier keeps the
+ * addon's own order. Later pages are appended unranked, so cards on screen never move.
+ */
+internal fun rankByTitleMatch(items: List<MetaPreview>, query: String): List<MetaPreview> {
+    val queryLower = query.trim().lowercase()
+    if (queryLower.isEmpty()) return items
+    return items.sortedBy { item ->
+        val name = item.name.trim().lowercase()
+        when {
+            name == queryLower -> 0
+            name.startsWith(queryLower) -> 1
+            else -> 2
+        }
+    }
 }
 
 @Immutable

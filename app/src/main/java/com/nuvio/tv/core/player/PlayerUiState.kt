@@ -223,6 +223,9 @@ data class PlayerUiState(
     val detectedFrameRate: Float = 0f,
     val afrProbeRunning: Boolean = false,
     val internalPlayerEngine: InternalPlayerEngine = InternalPlayerEngine.EXOPLAYER,
+    // Spec 97 D30/D31: mpv is barred for this stream (a saved access site, or not looked up yet); the
+    // More tray's Switch engine pill is dimmed with its reason line when its target would be mpv.
+    val mpvBarredForStream: Boolean = true,
     val frameRateMatchingMode: FrameRateMatchingMode = FrameRateMatchingMode.OFF,
     val useLibass: Boolean = false,
     val libassRenderType: LibassRenderType = LibassRenderType.OVERLAY_OPEN_GL,

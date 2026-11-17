@@ -31,7 +31,8 @@ import java.io.IOException
  * Meta-miss health classification: an addon answering "no such item" (Stremio
  * 404, or a 200 carrying no meta like AIOMetadata's `{"meta":null}`) is a
  * working addon with nothing to give, and stamps EMPTY. Only transport and
- * parse failures stamp FAILURE. Regression guard: misses used to stamp FAILURE,
+ * parse failures, and an addon's own error placeholder meta (Spec 95 M1),
+ * stamp FAILURE. Regression guard: misses used to stamp FAILURE,
  * so two ordinary misses in a row tripped the Down breaker on a healthy addon.
  * Also pins the deliberately-unchanged emission contract: miss and failure both
  * end the flow in the same NetworkResult.Error message.
@@ -93,6 +94,24 @@ class MetaRepositoryHealthClassificationTest {
 
         repository.getMeta(addonBaseUrl, "tv", contentId).last()
 
+        assertSingleSample(healthStore, HealthOutcome.FAILURE)
+    }
+
+    @Test
+    fun `error placeholder meta stamps FAILURE`() = runTest {
+        val healthStore = recordingHealthStore()
+        val repository = newRepository(
+            apiReturning {
+                Response.success(
+                    MetaResponseDto(meta = MetaDto(id = "ratelimit_error", type = "series", name = "Rate limit exceeded"))
+                )
+            },
+            healthStore
+        )
+
+        val result = repository.getMeta(addonBaseUrl, "tv", contentId).last()
+
+        assertEquals(META_NOT_FOUND_STUB, (result as NetworkResult.Error).message)
         assertSingleSample(healthStore, HealthOutcome.FAILURE)
     }
 

@@ -5,6 +5,7 @@ import com.nuvio.tv.core.update.DownloadState
 import com.nuvio.tv.core.update.KnownRelease
 import com.nuvio.tv.core.update.UpdateController
 import com.nuvio.tv.core.update.UpdateState
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -80,5 +81,13 @@ class UpdateViewModelTest {
         state.update { it.copy(available = release) }
         runCurrent()
         assertNull(viewModel.panelRelease.value)
+    }
+
+    @Test
+    fun `the test releases switch goes to the controller`() = runTest {
+        val viewModel = UpdateViewModel(controller)
+        viewModel.setTestReleases(true)
+        runCurrent()
+        coVerify(exactly = 1) { controller.setTestReleases(true) }
     }
 }

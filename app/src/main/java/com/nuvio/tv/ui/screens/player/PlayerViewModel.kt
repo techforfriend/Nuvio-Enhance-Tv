@@ -35,9 +35,11 @@ import com.nuvio.tv.data.local.FrameRateMatchingMode
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -154,6 +156,13 @@ class PlayerViewModel @Inject constructor(
 
     /** The profile's saved filters and Sources-row pins, for both Sources panels (Spec 65 P2). */
     val savedStreamFilters = savedStreamFiltersDataStore.state
+
+    /**
+     * Spec 97 X6 H3: the player shows no addon or service names (loading line, Stats, failure
+     * copy, subtitles, Sources panel) and hands external players language-only subtitle names.
+     */
+    val hideSourceNames: StateFlow<Boolean> =
+        playerSettingsDataStore.hideSourceNames.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun saveStreamFilter(filter: com.nuvio.tv.core.stream.FacetFilter, name: String) {
         viewModelScope.launch { savedStreamFiltersDataStore.save(filter, name) }
@@ -392,15 +401,19 @@ class PlayerViewModel @Inject constructor(
         val host = streamUrl?.let { runCatching { URI(it).host }.getOrNull() }
         // Add-on + provider (nt41). Add-on is retained UI state; provider is parsed
         // from the stream's marketing label (debrid store / library / host).
+        // Spec 97 X6: both rows left out while names are hidden (Server, the real host, stays).
         val statsUi = controller.uiState.value
-        statsUi.currentStreamAddonName?.takeIf { it.isNotBlank() }
-            ?.let { rows += StatsRow("Add-on", it) }
-        resolveStreamProvider(
-            streamName = statsUi.currentStreamName,
-            streamDescription = controller.currentStreamDescription,
-            addonName = statsUi.currentStreamAddonName,
-            host = host
-        )?.let { rows += StatsRow("Provider", it) }
+        val hideNames = hideSourceNames.value
+        if (!hideNames) {
+            statsUi.currentStreamAddonName?.takeIf { it.isNotBlank() }
+                ?.let { rows += StatsRow("Add-on", it) }
+            resolveStreamProvider(
+                streamName = statsUi.currentStreamName,
+                streamDescription = controller.currentStreamDescription,
+                addonName = statsUi.currentStreamAddonName,
+                host = host
+            )?.let { rows += StatsRow("Provider", it) }
+        }
         // N6 V2: Server shows the real serving host -- the post-redirect CDN
         // once a redirect resolves, falling back to the URL host (the
         // redirector during TTFF, or a direct source) until then / when there
@@ -413,7 +426,8 @@ class PlayerViewModel @Inject constructor(
             ?.substringAfterLast('/')
             ?.takeIf { it.isNotBlank() && it.contains('.') }
         val scraperFileName = controller.currentFilename?.takeIf { it.isNotBlank() }
-        (scraperFileName ?: urlFileName ?: controller.uiState.value.currentStreamName)
+        // The stream name is the addon's label: not a file name, so not shown while names are hidden.
+        (scraperFileName ?: urlFileName ?: controller.uiState.value.currentStreamName?.takeUnless { hideNames })
             ?.takeIf { it.isNotBlank() }
             ?.let { rows += StatsRow("File", it.replace("\n", " \u00b7 "), marquee = true) }
 
@@ -1155,7 +1169,8 @@ class PlayerViewModel @Inject constructor(
                 addonSubtitles.map {
                     com.nuvio.tv.core.player.SubtitleInput(
                         url = it.url,
-                        name = "${it.getDisplayLanguage()} - ${it.addonName}",
+                        // Spec 97 X6: language only while names are hidden.
+                        name = if (hideSourceNames.value) it.getDisplayLanguage() else "${it.getDisplayLanguage()} - ${it.addonName}",
                         lang = it.lang
                     )
                 }

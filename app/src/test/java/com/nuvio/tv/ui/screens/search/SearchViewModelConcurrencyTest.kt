@@ -305,6 +305,37 @@ class SearchViewModelConcurrencyTest {
         assertEquals(1, viewModel.uiState.value.catalogRows.size)
     }
 
+    // -- Spec 95 M3 --
+
+    @Test
+    fun `a result row's first page puts exact then prefix title matches first`() = runTest {
+        fun item(name: String) = MetaPreview(
+            id = name, type = ContentType.MOVIE, name = name, poster = null,
+            posterShape = PosterShape.POSTER, background = null, logo = null, description = null,
+            releaseInfo = null, imdbRating = null, genres = emptyList()
+        )
+        val viewModel = newViewModel(
+            addonRepository = ListAddonRepository(listOf(searchableAddon(id = "first", baseUrl = "https://first.test"))),
+            catalogRepository = ScriptedCatalogRepository { addonId, query ->
+                NetworkResult.Success(
+                    CatalogRow(
+                        addonId = addonId, addonName = "First", addonBaseUrl = "https://first.test",
+                        catalogId = "top", catalogName = "Top", type = ContentType.MOVIE,
+                        items = listOf("Dune Fan Edit", "Children of Dune", "Dune: Part Two", "dune ").map(::item)
+                    )
+                ).takeIf { query == "Dune" }
+            }
+        )
+
+        viewModel.onEvent(SearchEvent.QueryChanged("Dune"))
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("dune ", "Dune Fan Edit", "Dune: Part Two", "Children of Dune"),
+            viewModel.uiState.value.catalogRows.single().items.map { it.name }
+        )
+    }
+
     private fun twoAddons() = ListAddonRepository(
         listOf(
             searchableAddon(id = "first", baseUrl = "https://first.test"),

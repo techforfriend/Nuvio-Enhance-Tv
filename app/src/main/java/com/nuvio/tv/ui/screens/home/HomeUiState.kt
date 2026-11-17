@@ -8,6 +8,7 @@ import com.nuvio.tv.domain.model.Collection
 import com.nuvio.tv.domain.model.ContinueWatchingItem
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
 import com.nuvio.tv.domain.model.MetaPreview
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 
 @Immutable
 data class HomeUiState(
@@ -25,7 +26,7 @@ data class HomeUiState(
     val modernHomePresentation: ModernHomePresentationState = ModernHomePresentationState(),
     val catalogAddonNameEnabled: Boolean = true,
     val catalogTypeSuffixEnabled: Boolean = true,
-    val focusedPosterBackdropTrailerEnabled: Boolean = false,
+    val trailerAutoplayMode: TrailerAutoplayMode = TrailerAutoplayMode.OFF,
     val focusedPosterBackdropTrailerMuted: Boolean = true,
     val movieWatchedStatus: Map<String, Boolean> = emptyMap(),
     val hideUnreleasedContent: Boolean = false,

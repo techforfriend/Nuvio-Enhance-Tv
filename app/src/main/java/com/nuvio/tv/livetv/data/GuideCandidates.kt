@@ -4,7 +4,10 @@ import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.EpgRef
 import com.nuvio.tv.livetv.parse.EpgProgramme
 
-/** One guide channel the user may pick for a channel (D16 Choose guide): [now] is its current programme. */
+/**
+ * One guide channel the user may pick for a channel (D16 Choose guide): [now] is its current
+ * programme, read with the channel's guide shift (Spec 94 T2), as its rows would show it.
+ */
 data class GuideCandidate(val ref: EpgRef, val name: String, val now: EpgProgramme?)
 
 /**
@@ -51,7 +54,7 @@ object GuideCandidates {
                 else mine.maxOfOrNull { a -> theirs.maxOfOrNull { b -> closeness(a, b) } ?: 0.0 } ?: 0.0
                 if (score <= 0.0) continue
                 val name = epg.displayNames.firstOrNull { it.isNotBlank() } ?: epg.id
-                val live = source.snapshot.programmes[epg.id].orEmpty().isNotEmpty()
+                val live = source.snapshot.isLive(epg.id)
                 scored += Scored(EpgRef(source.id, epg.id), name, score, sameCountry, live)
             }
         }
@@ -68,7 +71,7 @@ object GuideCandidates {
             .map { it.ref }
         val refs = if (current == null || current in ranked || !exists(current, sources)) ranked
         else listOf(current) + ranked.take(limit - 1)
-        return refs.map { ref -> candidate(ref, sources, nowMs) }
+        return refs.map { ref -> candidate(ref, sources, nowMs, channel.guideShiftMs) }
     }
 
     /**
@@ -95,11 +98,11 @@ object GuideCandidates {
     private fun exists(ref: EpgRef, sources: List<EpgSource>): Boolean =
         sources.any { it.id == ref.epgSourceId && ref.epgChannelId in it.snapshot.channels }
 
-    private fun candidate(ref: EpgRef, sources: List<EpgSource>, nowMs: Long): GuideCandidate {
+    private fun candidate(ref: EpgRef, sources: List<EpgSource>, nowMs: Long, shiftMs: Long): GuideCandidate {
         val snapshot = sources.first { it.id == ref.epgSourceId }.snapshot
         val epg = snapshot.channels.getValue(ref.epgChannelId)
         val name = epg.displayNames.firstOrNull { it.isNotBlank() } ?: epg.id
-        return GuideCandidate(ref, name, snapshot.nowNext(ref.epgChannelId, nowMs).first)
+        return GuideCandidate(ref, name, snapshot.nowNext(ref.epgChannelId, nowMs, shiftMs).first)
     }
 
     private class Name(raw: String) {

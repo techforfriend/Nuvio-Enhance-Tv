@@ -109,6 +109,19 @@ class PlaybackFailureCopyTest {
     }
 
     @Test
+    fun hiddenNamesSayTheServerAndDropTheAddonButKeepTheHost() {
+        // Spec 97 X6 H3 (D11): the service reads as the fallback; Details keeps Host, drops "via".
+        val facts = FailureFacts(
+            streamName = "[RD+] AIOStreams 2160p", host = "x.download.real-debrid.com", addon = "AIOStreams"
+        )
+        val c = PlaybackFailureCopy.of(PlaybackFailure(FailureCause.LINK_EXPIRED, "raw", facts = facts), strings, hideNames = true)
+        assertEquals(s(R.string.failure_body_link_expired, s(R.string.failure_service_fallback)), c.body)
+        val details = c.details.map(::text)
+        assertTrue(details.toString(), details.any { it == "${s(R.string.failure_detail_host)} x.download.real-debrid.com" })
+        assertTrue(details.toString(), details.none { "AIOStreams" in it || "Real-Debrid" in it })
+    }
+
+    @Test
     fun httpDetailsAreServerLineHostAndFile() {
         val c = copy(
             FailureCause.LINK_EXPIRED,
@@ -163,6 +176,23 @@ class PlaybackFailureCopyTest {
                 "${s(R.string.failure_detail_over, "20.0 s")} ${s(R.string.failure_detail_needs)} " +
                 "${s(R.string.failure_detail_about_mbps, "70")} ${s(R.string.failure_detail_size_over_runtime, "6.3 GB", 12)}",
             text(c.details[1])
+        )
+    }
+
+    // Spec 92 O1: an all-503 chain moved no bytes; the details show the server's answer, no speed line.
+    @Test
+    fun noMeasuredLineWhenNoBytesMoved() {
+        val c = copy(
+            FailureCause.SERVER_DOWN,
+            FailureFacts(
+                httpCode = 503, httpStatus = "Service Unavailable",
+                watchdogFire = PlayerStartupWatchdogPolicy.FireReason.TracksNotRead, waitedMs = 20_000,
+                measuredMbps = 0.0, measuredOverMs = 20_000
+            )
+        )
+        assertEquals(
+            listOf("${s(R.string.failure_detail_server_answered)} HTTP 503 Service Unavailable"),
+            c.details.map(::text)
         )
     }
 

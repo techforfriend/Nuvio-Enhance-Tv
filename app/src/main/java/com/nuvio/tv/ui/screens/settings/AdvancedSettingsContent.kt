@@ -98,6 +98,9 @@ fun AdvancedSettingsContent(
     val diagnostics by playbackVm.lastPlaybackDiagnostics.collectAsStateWithLifecycle(
         initialValue = LastPlaybackDiagnostics.EMPTY
     )
+    // Spec 97 S6: General's Network rows and the Access headers panel.
+    val networkVm: NetworkSettingsViewModel = hiltViewModel()
+    NetworkSettingsPanels(networkVm)
 
     // Stream Speed Test States. streamTestState is "Idle"/"Done"/"Error" or
     // the label of the pass currently running; results accumulate in order as
@@ -240,7 +243,7 @@ fun AdvancedSettingsContent(
     ) {
         if (uiState == null || playerSettings == null) return@SettingsPane
         when (shownSection) {
-            AdvancedSection.GENERAL -> generalItems(uiState, viewModel::onEvent, initialFocusRequester)
+            AdvancedSection.GENERAL -> generalItems(uiState, viewModel::onEvent, networkVm, initialFocusRequester)
             AdvancedSection.STREAM_TEST -> {
                 val isStreamRunning = streamTestState != "Idle" && streamTestState != "Done" && streamTestState != "Error"
                 streamTestItems(
@@ -379,10 +382,14 @@ private fun advancedSectionLabel(section: AdvancedSection): String = stringResou
     }
 )
 
-/** Stage 23: the Navigation switches, then Diagnostics (Spec 70 R1, sandbox spec-70-last-close-row v3). */
+/**
+ * Stage 23: the Navigation switches, Network (Spec 97 S6, sandbox s097-x4-x5-network stage 1), then
+ * Diagnostics (Spec 70 R1, sandbox spec-70-last-close-row v3).
+ */
 private fun LazyListScope.generalItems(
     state: AdvancedSettingsUiState,
     onEvent: (AdvancedSettingsEvent) -> Unit,
+    network: NetworkSettingsViewModel,
     initialFocusRequester: FocusRequester?
 ) {
     item(key = "general_section") {
@@ -413,6 +420,7 @@ private fun LazyListScope.generalItems(
             onCheckedChange = { onEvent(AdvancedSettingsEvent.SetAddonHealthEnabled(it)) }
         )
     }
+    networkItems(network)
     // Android keeps exit reasons from API 30 (the Shield's level); older devices have nothing to show.
     if (LastExitReason.supported) {
         item(key = "diagnostics_section") {

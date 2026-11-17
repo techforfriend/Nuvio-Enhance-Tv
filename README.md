@@ -100,5 +100,7 @@ GPL-3.0, like the original, with upstream copyright notices kept. Third-party co
 [THIRD_PARTY_NOTICES.md](app/src/main/assets/licenses/THIRD_PARTY_NOTICES.md), which also ships inside the APK. Each
 release attaches the source for the GPL and LGPL libraries the APK carries.
 
+Questions, setup help and release news: [r/nuvioke](https://www.reddit.com/r/nuvioke/).
+
 Found a bug? Use the [bug report form](https://github.com/techforfriend/Nuvio-Enhance-Tv/issues/new/choose);
 [CONTRIBUTING.md](CONTRIBUTING.md) covers what to include and which pull requests I take.

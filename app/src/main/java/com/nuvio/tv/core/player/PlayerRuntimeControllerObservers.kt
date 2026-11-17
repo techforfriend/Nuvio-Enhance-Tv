@@ -750,11 +750,13 @@ internal fun PlayerRuntimeController.tryApplyPendingResumeProgress(player: Playe
         return
     }
     val duration = player.duration
-    val target = when {
-        duration > 0L -> saved.resolveResumePosition(duration)
-        saved.position > 0L -> saved.position
-        else -> 0L
-    }
+    val target = rewindSavedStart(
+        when {
+            duration > 0L -> saved.resolveResumePosition(duration)
+            saved.position > 0L -> saved.position
+            else -> 0L
+        }
+    )
 
     if (target > 0L) {
         player.seekTo(target)
@@ -766,16 +768,26 @@ internal fun PlayerRuntimeController.tryApplyPendingResumeProgress(player: Playe
 
 internal fun PlayerRuntimeController.resolvePendingInitialResumePosition(): Long {
     val saved = pendingResumeProgress ?: return 0L
-    val target = when {
-        saved.duration > 0L -> saved.resolveResumePosition(saved.duration)
-        saved.position > 0L -> saved.position
-        else -> 0L
-    }
+    val target = rewindSavedStart(
+        when {
+            saved.duration > 0L -> saved.resolveResumePosition(saved.duration)
+            saved.position > 0L -> saved.position
+            else -> 0L
+        }
+    )
     if (target <= 0L && saved.progressPercent == null) {
         clearPendingInitialResumePosition()
     }
     return target.coerceAtLeast(0L)
 }
+
+/**
+ * Spec 93 P5 (D2): a start from saved progress (`pendingResumeProgress`) goes back by "Rewind on resume". Only the
+ * saved-progress paths call this; a carried live position (`pendingSeekPosition`) starts where it stood. Calling it
+ * again for the same start is safe: it always rewinds the unchanged saved row, never an already rewound target.
+ */
+internal fun PlayerRuntimeController.rewindSavedStart(positionMs: Long): Long =
+    ResumeRewind.rewound(positionMs, currentPlayerSettings.resumeRewindSeconds)
 
 internal fun PlayerRuntimeController.clearPendingInitialResumePosition() {
     pendingResumeProgress = null
@@ -826,6 +838,9 @@ internal fun PlayerRuntimeController.cancelStartupWatchdog() {
  */
 internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
     cancelStartupWatchdog()
+    // Armed before prepare(): only this start's load errors name its fire (Spec 113 F2b).
+    startupLoadHttpError = null
+    startupWatchdogArmedAtMs = android.os.SystemClock.elapsedRealtime()
     startupWatchdogJob = scope.launch {
         // T3 (ysosrs 01b6b4bae, rev2): extend-with-ceiling on buffered-AHEAD growth.
         // Absolute bufferedPosition misfires on every resume (position opens at the
@@ -914,14 +929,7 @@ internal fun PlayerRuntimeController.scheduleStartupWatchdog() {
                 if (failStartOverToNextSource(fire, armedUrl, livePlayer)) return@launch
             }
             _uiState.update {
-                if (it.error == null) {
-                    it.copy(
-                        error = fire,
-                        showLoadingOverlay = false
-                    )
-                } else {
-                    it
-                }
+                it.withStartupWatchdogBox(fire, tried = failedOverSources)
             }
             // Committed state decides the wording — if another error already held the
             // slot, the watchdog fired but nothing surfaced (log/trace must not claim
@@ -970,6 +978,8 @@ internal fun PlayerRuntimeController.failStartOverToNextSource(
  * Spec 75 S4: the watchdog's failure: [networkBytes] over [elapsedMs] measured against what the
  * file needs (its size over the expected runtime) tells TOO_SLOW from NO_DATA (S2). Null bytes =
  * not measured (mpv fetches through its own HTTP stack, outside [PlaybackByteCounter]; Spec 85 G10).
+ * With nothing arrived, an HTTP error this start's loads kept getting names the cause and the Details
+ * line instead ([startupLoadHttpError], Spec 113 F2b).
  */
 internal fun PlayerRuntimeController.startupWatchdogFailure(
     fireReason: PlayerStartupWatchdogPolicy.FireReason,
@@ -978,10 +988,14 @@ internal fun PlayerRuntimeController.startupWatchdogFailure(
 ): PlaybackFailure {
     val measured = networkBytes?.let { PlaybackFailureCauses.mbps(it, elapsedMs) }
     val needed = com.nuvio.tv.core.assessment.filmMbps(currentMediaFileSize(), expectedRuntimeMinutes)
+    // Spec 113 D1 (F2b): the server's retried answer (a 503 every request) names the fire.
+    val answer = PlaybackFailureCauses.startupHttpAnswer(fireReason, networkBytes, startupLoadHttpError)
     return playbackFailure(
-        cause = PlaybackFailureCauses.ofStartupWatchdog(fireReason, measured, needed),
+        cause = PlaybackFailureCauses.ofStartupWatchdog(fireReason, measured, needed, answer?.httpCode),
         message = context.getString(PlayerStartupWatchdogPolicy.messageRes(fireReason)),
         facts = FailureFacts(
+            httpCode = answer?.httpCode,
+            httpStatus = answer?.httpStatus,
             watchdogFire = fireReason,
             waitedMs = elapsedMs,
             measuredMbps = measured,

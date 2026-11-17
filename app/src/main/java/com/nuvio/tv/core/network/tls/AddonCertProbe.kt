@@ -1,7 +1,7 @@
 package com.nuvio.tv.core.network.tls
 
 import com.nuvio.tv.core.network.AddonHostGuard
-import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.core.network.dns.AppDns
 import com.nuvio.tv.core.network.addonGuardKey
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -81,7 +81,7 @@ class AddonCertProbe internal constructor(
         policy = addonTls.policy,
         pins = store::current,
         guard = guard,
-        dns = IPv4FirstDns(),
+        dns = AppDns, // Spec 97 N3: the same resolver as @Api (68/X7 P7)
         io = Dispatchers.IO,
         nowMs = System::currentTimeMillis
     )

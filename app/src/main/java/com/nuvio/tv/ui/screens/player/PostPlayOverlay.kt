@@ -87,6 +87,8 @@ fun PostPlayOverlay(
     onContinueStillWatching: () -> Unit,
     onDismissStillWatching: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Spec 97 X6: the countdown's "Playing via <source>" line is left out. */
+    hideSourceNames: Boolean = false,
 ) {
     val marquee = NuvioTheme.marquee
     val osd = marquee.osd
@@ -163,6 +165,7 @@ fun PostPlayOverlay(
                         focused = cardFocused,
                         overview = overview,
                         accent = accent,
+                        hideSourceNames = hideSourceNames,
                     )
                     is PostPlayMode.StillWatching -> StillWatchingBody(
                         mode = current,
@@ -256,6 +259,7 @@ private fun AutoPlayBody(
     focused: Boolean,
     overview: String?,
     accent: () -> Color,
+    hideSourceNames: Boolean,
 ) {
     val osd = NuvioTheme.marquee.osd
     val nextEpisode = mode.nextEpisode
@@ -264,7 +268,7 @@ private fun AutoPlayBody(
     val statusText = when {
         !nextEpisode.hasAired -> nextEpisode.unairedMessage ?: stringResource(R.string.next_episode_unaired)
         mode.searching -> stringResource(R.string.next_episode_finding_source)
-        countdown != null -> stringResource(R.string.next_episode_via, mode.sourceName.orEmpty())
+        countdown != null && !hideSourceNames -> stringResource(R.string.next_episode_via, mode.sourceName.orEmpty())
         else -> null
     }
     val aired = nextEpisode.takeIf { focused && it.hasAired }?.released

@@ -55,6 +55,7 @@ class PlaybackSettingsThisTvTest {
         mockkObject(SeekThumbnailPreferences)
         every { SeekThumbnailPreferences.enabledFlow(any()) } returns flowOf(false)
         every { store.playerSettings } returns flowOf(PlayerSettings())
+        every { store.hideSourceNames } returns flowOf(false)
         coEvery { store.updateServiceNetworkTablesJson(any()) } answers {
             val next = firstArg<(String?) -> String?>()(tablesJson)
             if (next != tablesJson) tableWrites++

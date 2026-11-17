@@ -14,5 +14,7 @@ data class WatchedItem(
     val releaseInfo: String? = null,
     val trackingProviderId: String? = null,
     val trackingProviderItemId: String? = null,
-    val trackingSourceUrl: String? = null
+    val trackingSourceUrl: String? = null,
+    // Local only (Spec 118 R1): filled by WatchedArtworkHydrator, never pushed to the sync server.
+    val backdrop: String? = null
 )

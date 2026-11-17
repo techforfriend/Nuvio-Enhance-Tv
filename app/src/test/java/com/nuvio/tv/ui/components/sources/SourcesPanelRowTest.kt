@@ -170,6 +170,14 @@ class SourcesPanelRowTest {
         assertTrue(chips.none { it is PinnedChip.Filter && it.saved.id == "uhd" })
     }
 
+    // Spec 97 X6: an addon chip's label is the addon's name, so hidden names leave it out.
+    @Test
+    fun `hidden names keep pinned filters and leave pinned addons out`() {
+        val view = StreamListView(allCount = 5, addonCounts = mapOf("AIOStreams" to 3, "Torrentio" to 2))
+        val chips = pinnedChips(savedPins, view, availableAddons = listOf("AIOStreams", "Torrentio"), hideNames = true)
+        assertEquals(listOf<StreamPin>(StreamPin.Filter("atmos")), chips.map { it.pin })
+    }
+
     @Test
     fun `a pinned filter is active while exactly its values are on, a pinned addon while its view shows`() {
         val atmosOn = StreamListView(selection = Addon("Torrentio"), filter = filter(FacetGroup.AUDIO to "ATMOS"))

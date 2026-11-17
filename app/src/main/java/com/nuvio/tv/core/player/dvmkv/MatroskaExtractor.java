@@ -3125,6 +3125,8 @@ public class MatroskaExtractor implements Extractor {
     public float maxMasteringLuminance = Format.NO_VALUE;
     public float minMasteringLuminance = Format.NO_VALUE;
     public byte @MonotonicNonNull [] dolbyVisionConfigBytes;
+    // Spec 93 P2: the HEVC SPS VUI transfer, the base-layer colour's fallback evidence.
+    public @C.ColorTransfer int bitstreamColorTransfer = Format.NO_VALUE;
 
     // Audio elements. Initially set to their default values.
     public int channelCount = 1;
@@ -3194,6 +3196,7 @@ public class MatroskaExtractor implements Extractor {
           initializationData = hevcConfig.initializationData;
           nalUnitLengthFieldLength = hevcConfig.nalUnitLengthFieldLength;
           codecs = hevcConfig.codecs;
+          bitstreamColorTransfer = hevcConfig.colorTransfer;
           break;
         case CODEC_ID_FOURCC:
           Pair<String, @NullableType List<byte[]>> pair =
@@ -3360,7 +3363,7 @@ public class MatroskaExtractor implements Extractor {
               "Unrecognized codec identifier.", /* cause= */ null);
       }
       @Nullable String hevcCodecsString = codecs;
-      boolean signalHdr10BaseLayer = false;
+      @C.ColorTransfer int baseLayerTransfer = Format.NO_VALUE;
       if (dolbyVisionConfigBytes != null) {
         @Nullable
         DolbyVisionConfig dolbyVisionConfig =
@@ -3393,14 +3396,13 @@ public class MatroskaExtractor implements Extractor {
               if (dolbyVisionSampleTransformer.isHdr10BaseLayerModeActive()) {
                 mimeType = MimeTypes.VIDEO_H265;
                 codecs = hevcCodecsString;
-                // nt26: the P7/P8 base layer is HDR10, but DV MKVs often lack a Colour
-                // element. Some sinks (e.g. Amlogic AM9 Pro) act on Format.colorInfo, not
-                // the in-band SPS VUI, and stay in SDR (PQ shown as SDR reads as a purple
-                // tint), so tag BT.2020 / limited / PQ. P5's base is IPT-PQ, not BT.2020.
-                int dvProfile = dolbyVisionConfig.profile;
-                signalHdr10BaseLayer =
-                    (dvProfile == 7 || dvProfile == 8)
-                        && colorTransfer != C.COLOR_TRANSFER_ST2084;
+                // nt26 / Spec 93 P2: DV MKVs often lack a Colour element, so the base
+                // layer's colour comes from the DV config (applied below the ColorInfo).
+                baseLayerTransfer =
+                    DolbyVisionCompatibility.baseLayerTransfer(
+                        dolbyVisionConfig.profile,
+                        DolbyVisionCompatibility.compatibilityId(this.dolbyVisionConfigBytes),
+                        bitstreamColorTransfer);
               }
             }
           }
@@ -3430,18 +3432,19 @@ public class MatroskaExtractor implements Extractor {
           pixelWidthHeightRatio = ((float) (height * displayWidth)) / (width * displayHeight);
         }
         @Nullable ColorInfo colorInfo = null;
-        if (hasColorInfo || signalHdr10BaseLayer) {
+        if (hasColorInfo) {
           @Nullable byte[] hdrStaticInfo = getHdrStaticInfo();
           colorInfo =
               new ColorInfo.Builder()
-                  .setColorSpace(signalHdr10BaseLayer ? C.COLOR_SPACE_BT2020 : colorSpace)
-                  .setColorRange(signalHdr10BaseLayer ? C.COLOR_RANGE_LIMITED : colorRange)
-                  .setColorTransfer(signalHdr10BaseLayer ? C.COLOR_TRANSFER_ST2084 : colorTransfer)
+                  .setColorSpace(colorSpace)
+                  .setColorRange(colorRange)
+                  .setColorTransfer(colorTransfer)
                   .setHdrStaticInfo(hdrStaticInfo)
                   .setLumaBitdepth(bitsPerChannel)
                   .setChromaBitdepth(bitsPerChannel)
                   .build();
         }
+        colorInfo = DolbyVisionCompatibility.baseLayerColorInfo(colorInfo, baseLayerTransfer);
         int rotationDegrees = Format.NO_VALUE;
 
         if (name != null && TRACK_NAME_TO_ROTATION_DEGREES.containsKey(name)) {

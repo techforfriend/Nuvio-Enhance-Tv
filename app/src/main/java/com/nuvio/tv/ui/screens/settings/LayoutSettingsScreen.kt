@@ -21,6 +21,8 @@ import com.nuvio.tv.domain.model.ContinueWatchingSortMode
 import com.nuvio.tv.domain.model.DetailImdbRatingsVisibility
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
+import com.nuvio.tv.domain.model.TrailerPreviewDelay
 import com.nuvio.tv.ui.components.marquee.LocalMarqueeToast
 import com.nuvio.tv.ui.screens.addon.QrCodeOverlay
 
@@ -152,6 +154,12 @@ fun LayoutSettingsContent(
     }
 }
 
+private fun trailerModeLabel(mode: TrailerAutoplayMode): Int = when (mode) {
+    TrailerAutoplayMode.OFF -> R.string.layout_trailer_mode_off
+    TrailerAutoplayMode.HERO -> R.string.layout_trailer_mode_hero
+    TrailerAutoplayMode.CARD -> R.string.layout_trailer_mode_card
+}
+
 @Composable
 private fun layoutSectionLabel(section: LayoutSection): String = stringResource(
     when (section) {
@@ -162,7 +170,7 @@ private fun layoutSectionLabel(section: LayoutSection): String = stringResource(
     }
 )
 
-/** Stage `layout-home`: Card shape, Discover, Ratings on Home, Hero trailer; three rows in the group. */
+/** Stage `layout-home`: Card shape, Discover, Ratings on Home, Trailer (Spec 96); three rows in the group. */
 private fun LazyListScope.homeItems(
     state: LayoutSettingsUiState,
     onEvent: (LayoutSettingsEvent) -> Unit,
@@ -206,28 +214,55 @@ private fun LazyListScope.homeItems(
             }
         )
     }
-    item(key = "layout_hero_section") {
-        SettingsSectionLabel(text = stringResource(R.string.layout_hero_trailer_section))
+    // Spec 96 D7/D12/D14 (sandbox spec-96-trailer-preview v4): one three-way choice, then the In the card delay.
+    item(key = "layout_trailer_section") {
+        SettingsSectionLabel(text = stringResource(R.string.layout_trailer_section))
     }
-    item(key = "layout_hero_autoplay") {
-        SettingsSwitchRow(
+    item(key = "layout_trailer_mode") {
+        val mode = state.trailerAutoplayMode
+        val delay = state.trailerCardPreviewDelaySeconds
+        SettingsSegmentRow(
             title = stringResource(R.string.layout_hero_autoplay),
-            subtitle = stringResource(R.string.layout_hero_autoplay_sub),
-            checked = state.focusedPosterBackdropTrailerEnabled,
-            onCheckedChange = { onEvent(LayoutSettingsEvent.SetFocusedPosterBackdropTrailerEnabled(it)) }
+            subtitle = when (mode) {
+                TrailerAutoplayMode.OFF -> stringResource(R.string.layout_trailer_mode_off_sub)
+                TrailerAutoplayMode.HERO -> stringResource(R.string.layout_trailer_mode_hero_sub)
+                TrailerAutoplayMode.CARD -> stringResource(R.string.layout_trailer_mode_card_sub, delay, 2 * delay)
+            },
+            // Built from the enum, so the segment order cannot drift from the index mapping.
+            options = TrailerAutoplayMode.entries.map { stringResource(trailerModeLabel(it)) },
+            selectedIndex = mode.ordinal,
+            onSelect = { onEvent(LayoutSettingsEvent.SetTrailerAutoplayMode(TrailerAutoplayMode.entries[it])) }
+        )
+    }
+    item(key = "layout_trailer_preview_delay") {
+        // Dimmed outside In the card, value kept (as the Detail page's Trailer Delay).
+        val card = state.trailerAutoplayMode == TrailerAutoplayMode.CARD
+        SettingsStepperRow(
+            title = stringResource(R.string.layout_trailer_preview_delay),
+            subtitle = stringResource(
+                if (card) R.string.layout_trailer_preview_delay_sub else R.string.layout_needs_trailer_card
+            ),
+            value = state.trailerCardPreviewDelaySeconds,
+            min = TrailerPreviewDelay.MIN_S,
+            max = TrailerPreviewDelay.MAX_S,
+            step = 1,
+            valueText = stringResource(R.string.assessment_value_seconds, state.trailerCardPreviewDelaySeconds),
+            onValueChange = { onEvent(LayoutSettingsEvent.SetTrailerCardPreviewDelaySeconds(it)) },
+            enabled = card
         )
     }
     settingsAdvancedGroup(key = GROUP_HOME, count = 3, open = groupOpen, onToggle = onToggleGroup) {
         item(key = "layout_hero_muted") {
-            val autoplay = state.focusedPosterBackdropTrailerEnabled
+            // Governs only the hero trailer: the card is always muted, the large panel has sound (D11, D15).
+            val hero = state.trailerAutoplayMode == TrailerAutoplayMode.HERO
             SettingsSwitchRow(
                 title = stringResource(R.string.layout_trailer_muted),
                 subtitle = stringResource(
-                    if (autoplay) R.string.layout_trailer_muted_sub_preview else R.string.layout_needs_hero_autoplay
+                    if (hero) R.string.layout_trailer_muted_sub_preview else R.string.layout_needs_trailer_hero
                 ),
                 checked = state.focusedPosterBackdropTrailerMuted,
                 onCheckedChange = { onEvent(LayoutSettingsEvent.SetFocusedPosterBackdropTrailerMuted(it)) },
-                enabled = autoplay
+                enabled = hero
             )
         }
         item(key = "layout_catalog_type") {

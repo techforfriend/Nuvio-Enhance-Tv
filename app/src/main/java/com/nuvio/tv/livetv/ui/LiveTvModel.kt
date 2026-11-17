@@ -4,6 +4,7 @@ import com.nuvio.tv.livetv.data.ChannelEnricher
 import com.nuvio.tv.livetv.data.ChannelIdentity
 import com.nuvio.tv.livetv.data.EpgMatcher
 import com.nuvio.tv.livetv.data.EpgSource
+import com.nuvio.tv.livetv.data.GuideShift
 import com.nuvio.tv.livetv.data.IptvMetadata
 import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.EpgOverride
@@ -206,12 +207,15 @@ object LiveTvModel {
      * (broadcaster preset first, then each source in source order, the source's own order within),
      * so numbers do not change with the filter, hiding or NSFW. The listable channels (enriched,
      * not lost, not NSFW, not hidden) keep that order, and so do lost ones ([Lineup.withLost]).
+     * Each channel carries its guide shift ([Channel.guideShiftMs]: its own `tvg-shift`, else its
+     * source's from [headerShifts], by source id).
      */
     fun lineup(
         all: List<Channel>,
         sourceIds: List<String>,
         meta: IptvMetadata?,
-        hidden: Set<String>
+        hidden: Set<String>,
+        headerShifts: Map<String, Long> = emptyMap()
     ): Lineup {
         val sourceOrder = (listOf(LiveSourceManager.PRESET_ID) + sourceIds)
             .distinct()
@@ -222,7 +226,11 @@ object LiveTvModel {
         ordered.forEachIndexed { i, ch ->
             numbers[ch.key] = ch.channelNumber?.trim()?.ifEmpty { null } ?: (i + 1).toString()
         }
-        val withLost = ChannelEnricher.enrich(ordered, meta).filter { !it.nsfw && it.key !in hidden }
+        val shifted = ordered.map { ch ->
+            val shift = GuideShift.of(ch, headerShifts[ch.sourceId] ?: 0L)
+            if (shift == 0L) ch else ch.copy(guideShiftMs = shift)
+        }
+        val withLost = ChannelEnricher.enrich(shifted, meta).filter { !it.nsfw && it.key !in hidden }
         val listable = ChannelEnricher.listable(withLost)
         val tagsByKey = HashMap<String, ChannelTags>(withLost.size * 2)
         val labels = HashMap<String, String>()
@@ -437,10 +445,11 @@ object LiveTvModel {
         guides: Map<String, EpgSnapshot>,
         nowMs: Long,
         favorites: Set<String> = emptySet()
-    ): List<LiveRow> = channels.map { ch ->
-        val ref = refs[ch.key]
+    ): List<LiveRow> = channels.map { listed ->
+        val ref = refs[listed.key]
+        val ch = withGuideLogo(listed, ref, guides)
         val snapshot = ref?.let { guides[it.epgSourceId] }
-        val (now, next) = snapshot?.nowNext(ref.epgChannelId, nowMs) ?: (null to null)
+        val (now, next) = snapshot?.nowNext(ref.epgChannelId, nowMs, ch.guideShiftMs) ?: (null to null)
         val progress = now?.let { p ->
             ((nowMs - p.startMs).toFloat() / (p.stopMs - p.startMs).coerceAtLeast(1)).coerceIn(0f, 1f)
         }
@@ -448,5 +457,17 @@ object LiveTvModel {
             ch, numbers[ch.key].orEmpty(), now, next,
             hasGuide = snapshot != null, progress = progress, favorite = ch.key in favorites
         )
+    }
+
+    /**
+     * [ch] with its guide channel's XMLTV `<icon>` as the logo when the playlist gave none (Spec 94
+     * T1; the playlist's logo always wins). Only an http(s) URL is taken from the untrusted guide.
+     */
+    fun withGuideLogo(ch: Channel, ref: EpgRef?, guides: Map<String, EpgSnapshot>): Channel {
+        if (!ch.logo.isNullOrBlank() || ref == null) return ch
+        val icon = guides[ref.epgSourceId]?.channels?.get(ref.epgChannelId)?.icon
+            ?.takeIf { it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true) }
+            ?: return ch
+        return ch.copy(logo = icon)
     }
 }

@@ -100,8 +100,11 @@ internal fun PlaybackSettingsSections(
     onSetStillWatchingEnabled: (Boolean) -> Unit,
     onSetStillWatchingEpisodeThreshold: (Int) -> Unit,
     onSetShowPlayerLoadingStatus: (Boolean) -> Unit,
+    hideSourceNames: Boolean,
+    onSetHideSourceNames: (Boolean) -> Unit,
     onSetLoadingOverlayEnabled: (Boolean) -> Unit,
     onSetPauseOverlayEnabled: (Boolean) -> Unit,
+    onSetResumeRewindSeconds: (Int) -> Unit,
     onSetOsdClockEnabled: (Boolean) -> Unit,
     onSetSkipIntroEnabled: (Boolean) -> Unit,
     onSetParentalGuideEnabled: (Boolean) -> Unit,
@@ -221,6 +224,7 @@ internal fun PlaybackSettingsSections(
                 onClearSeekThumbnailCache = onClearSeekThumbnailCache,
                 onSetLoadingOverlayEnabled = onSetLoadingOverlayEnabled,
                 onSetPauseOverlayEnabled = onSetPauseOverlayEnabled,
+                onSetResumeRewindSeconds = onSetResumeRewindSeconds,
                 onSetOsdClockEnabled = onSetOsdClockEnabled,
                 onSetSkipIntroEnabled = onSetSkipIntroEnabled,
                 onSetParentalGuideEnabled = onSetParentalGuideEnabled,
@@ -245,6 +249,8 @@ internal fun PlaybackSettingsSections(
                 onSetThresholdPercent = onSetNextEpisodeThresholdPercent,
                 onSetThresholdMinutes = onSetNextEpisodeThresholdMinutesBeforeEnd,
                 onSetShowLoadingStatus = onSetShowPlayerLoadingStatus,
+                hideSourceNames = hideSourceNames,
+                onSetHideSourceNames = onSetHideSourceNames,
                 groupOpen = groups.isOpen(GROUP_STREAMS),
                 onToggleGroup = { groups.toggle(GROUP_STREAMS) },
                 entryFocus = initialFocusRequester
@@ -394,7 +400,7 @@ private fun playbackSectionLabel(section: PlaybackSection): String = stringResou
     }
 )
 
-/** General chip: overlays, clock, skip intro, content warnings; thumbnails and auto-skip in the group. */
+/** General chip: overlays, rewind on resume, clock, skip intro, content warnings; thumbnails and auto-skip in the group. */
 private fun LazyListScope.generalItems(
     playerSettings: PlayerSettings,
     seekThumbnailsEnabled: Boolean,
@@ -402,6 +408,7 @@ private fun LazyListScope.generalItems(
     onClearSeekThumbnailCache: () -> Unit,
     onSetLoadingOverlayEnabled: (Boolean) -> Unit,
     onSetPauseOverlayEnabled: (Boolean) -> Unit,
+    onSetResumeRewindSeconds: (Int) -> Unit,
     onSetOsdClockEnabled: (Boolean) -> Unit,
     onSetSkipIntroEnabled: (Boolean) -> Unit,
     onSetParentalGuideEnabled: (Boolean) -> Unit,
@@ -425,6 +432,21 @@ private fun LazyListScope.generalItems(
             subtitle = stringResource(R.string.playback_pause_overlay_sub),
             checked = playerSettings.pauseOverlayEnabled,
             onCheckedChange = onSetPauseOverlayEnabled
+        )
+    }
+    item(key = "general_resume_rewind") {
+        val seconds = playerSettings.resumeRewindSeconds
+        SettingsStepperRow(
+            title = stringResource(R.string.playback_resume_rewind),
+            subtitle = stringResource(R.string.playback_resume_rewind_sub),
+            values = PlayerSettings.RESUME_REWIND_VALUES,
+            selected = seconds,
+            valueText = if (seconds == 0) {
+                stringResource(R.string.playback_afr_off)
+            } else {
+                stringResource(R.string.playback_value_seconds, seconds)
+            },
+            onValueChange = onSetResumeRewindSeconds
         )
     }
     item(key = "general_osd_clock") {

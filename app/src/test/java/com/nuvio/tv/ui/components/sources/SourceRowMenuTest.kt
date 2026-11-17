@@ -44,4 +44,31 @@ class SourceRowMenuTest {
         // A menu taller than the room above stays on screen.
         assertEquals(0, top(rowTop = 60, rowBottom = 530, menuHeight = 200))
     }
+
+    // Spec 97 X6 stage 5: the hold menu's "Prefer" line never names the addon while names are hidden.
+    @Test
+    fun `prefer parts leave the addon out while names are hidden`() {
+        val stream = menuStream(name = "AIOStreams 1080p", filename = "Show.S01E02.1080p.WEB-DL.DDP5.1.H.264-NTb.mkv")
+        val shown = preferSourceParts(stream, hideNames = false)
+        assertEquals("Example Addon", shown.addon)
+        val hidden = preferSourceParts(stream, hideNames = true)
+        assertNull(hidden.addon)
+        assertEquals(shown.resolution, hidden.resolution)
+        assertEquals(shown.release, hidden.release)
+    }
+
+    @Test
+    fun `prefer parts with nothing parsed leave nothing while names are hidden`() {
+        val parts = preferSourceParts(menuStream(name = "Stream", filename = null), hideNames = true)
+        assertEquals(PreferSourceParts(addon = null, resolution = null, release = null), parts)
+    }
+
+    private fun menuStream(name: String, filename: String?) = com.nuvio.tv.domain.model.Stream(
+        name = name, title = null, description = null, url = "https://example.net/stream", ytId = null,
+        infoHash = null, fileIdx = null, externalUrl = null,
+        behaviorHints = com.nuvio.tv.domain.model.StreamBehaviorHints(
+            notWebReady = null, bingeGroup = null, countryWhitelist = null, proxyHeaders = null, filename = filename
+        ),
+        addonName = "Example Addon", addonLogo = null
+    )
 }

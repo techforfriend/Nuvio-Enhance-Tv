@@ -1,5 +1,8 @@
 package com.nuvio.tv.core.stream
 
+/** How many distinct upstreams failed: the panel foot's count while source names are hidden (Spec 97 X6). */
+internal fun missingUpstreamsCount(names: List<String>): Int = names.distinct().size
+
 /** The three phrasings of [missingUpstreamsText]: R.string.stream_upstreams_missing_one / _list / _more. */
 internal data class MissingUpstreamsTemplates(val one: String, val list: String, val more: String)
 

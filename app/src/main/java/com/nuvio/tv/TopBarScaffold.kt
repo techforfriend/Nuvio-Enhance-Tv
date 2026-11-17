@@ -72,6 +72,7 @@ import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.ui.components.AvatarArt
 import com.nuvio.tv.ui.components.ProfileAvatarCircle
 import com.nuvio.tv.ui.components.marquee.MarqueeTab
+import com.nuvio.tv.ui.components.trailerpreview.TrailerPreviewHost
 import com.nuvio.tv.ui.navigation.NuvioNavHost
 import com.nuvio.tv.ui.navigation.Screen
 import com.nuvio.tv.ui.screens.settings.SettingsAccess
@@ -255,60 +256,63 @@ internal fun TopBarScaffold(
         onExitApp()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        OwnedNavHostSection(
-            navController = navController,
-            navViewModelStoreOwner = navViewModelStoreOwner,
-            startDestination = startDestination,
-            topBarRoutes = topBarRoutes,
-            topBarHasFocus = topBarHasFocus,
-            contentFocusRequester = contentFocusRequester,
-            onHideTopBar = hideTopBar,
-            onOpenAddons = onOpenAddons,
-            onOpenTmdbKeySettings = onOpenTmdbKeySettings,
-            settingsLocked = Screen.Settings.route in blockedRoutes,
-            onSwitchProfile = onSwitchProfile
-        )
-        if (showTopBar) {
-            TopBar(
-                tabs = tabs,
-                blockedRoutes = blockedRoutes,
-                selectedRoute = selectedRoute,
-                tabFocusRequesters = tabFocusRequesters,
-                selectedTabRequester = selectedTabRequester,
+    // Spec 96 PD2: the card trailer preview's host, so its overlay draws over the top bar too.
+    TrailerPreviewHost(currentRoute = currentRoute) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            OwnedNavHostSection(
+                navController = navController,
+                navViewModelStoreOwner = navViewModelStoreOwner,
+                startDestination = startDestination,
+                topBarRoutes = topBarRoutes,
+                topBarHasFocus = topBarHasFocus,
                 contentFocusRequester = contentFocusRequester,
-                profile = profile,
-                onFocusChanged = { topBarHasFocus = it },
-                onTabClick = { route ->
-                    keyboardController?.hide()
-                    when {
-                        route in blockedRoutes -> onBlockedRoute()
-                        route != currentRoute -> {
-                            onNavigate(route)
-                            navigateToTopBarRoute(navController, route)
-                        }
-                        // OK on the selected Home tab: back to the top, focus into the rows.
-                        route == Screen.Home.route -> if (requestHomeScrollToTop(navController)) {
-                            coroutineScope.launch { contentFocusRequester.requestFocusAfterFrames() }
-                        }
-                    }
-                },
-                onProfileClick = onSwitchProfile,
-                showUpdate = showUpdate && Screen.Settings.route !in blockedRoutes,
-                pulseUpdate = pulseUpdate,
-                onUpdatePulsed = onUpdatePulsed,
-                onUpdateClick = {
-                    keyboardController?.hide()
-                    // On Settings already: hand the entry to it in place (a tab navigation to the
-                    // current destination would pop and restore it).
-                    navController.openSettingsAt(SettingsEntry.UPDATE) {
-                        if (currentRoute != Screen.Settings.route) {
-                            onNavigate(Screen.Settings.route)
-                            navigateToTopBarRoute(navController, Screen.Settings.route)
-                        }
-                    }
-                }
+                onHideTopBar = hideTopBar,
+                onOpenAddons = onOpenAddons,
+                onOpenTmdbKeySettings = onOpenTmdbKeySettings,
+                settingsLocked = Screen.Settings.route in blockedRoutes,
+                onSwitchProfile = onSwitchProfile
             )
+            if (showTopBar) {
+                TopBar(
+                    tabs = tabs,
+                    blockedRoutes = blockedRoutes,
+                    selectedRoute = selectedRoute,
+                    tabFocusRequesters = tabFocusRequesters,
+                    selectedTabRequester = selectedTabRequester,
+                    contentFocusRequester = contentFocusRequester,
+                    profile = profile,
+                    onFocusChanged = { topBarHasFocus = it },
+                    onTabClick = { route ->
+                        keyboardController?.hide()
+                        when {
+                            route in blockedRoutes -> onBlockedRoute()
+                            route != currentRoute -> {
+                                onNavigate(route)
+                                navigateToTopBarRoute(navController, route)
+                            }
+                            // OK on the selected Home tab: back to the top, focus into the rows.
+                            route == Screen.Home.route -> if (requestHomeScrollToTop(navController)) {
+                                coroutineScope.launch { contentFocusRequester.requestFocusAfterFrames() }
+                            }
+                        }
+                    },
+                    onProfileClick = onSwitchProfile,
+                    showUpdate = showUpdate && Screen.Settings.route !in blockedRoutes,
+                    pulseUpdate = pulseUpdate,
+                    onUpdatePulsed = onUpdatePulsed,
+                    onUpdateClick = {
+                        keyboardController?.hide()
+                        // On Settings already: hand the entry to it in place (a tab navigation to the
+                        // current destination would pop and restore it).
+                        navController.openSettingsAt(SettingsEntry.UPDATE) {
+                            if (currentRoute != Screen.Settings.route) {
+                                onNavigate(Screen.Settings.route)
+                                navigateToTopBarRoute(navController, Screen.Settings.route)
+                            }
+                        }
+                    }
+                )
+            }
         }
     }
 }

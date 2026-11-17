@@ -154,6 +154,7 @@ fun StreamScreen(
     }
     // The Sources panel's open sheet (Spec 65 P1): Back closes it before it leaves the screen.
     var sourcesSheet by remember { mutableStateOf<SourcesPanelSheet?>(null) }
+    val hideSourceNames by viewModel.hideSourceNames.collectAsStateWithLifecycle(initialValue = false)
     val savedStreamFilters by viewModel.savedStreamFilters.collectAsStateWithLifecycle(
         initialValue = com.nuvio.tv.core.stream.SavedStreamFilters.NONE
     )
@@ -334,6 +335,7 @@ fun StreamScreen(
                     focusMarkedRow = false,
                     failureMarkFor = failureMarkFor,
                     missingUpstreams = uiState.addonStreams.missingUpstreams(),
+                    hideSourceNames = hideSourceNames,
                     accent = accent,
                     sheet = sourcesSheet,
                     onSheetChange = { sourcesSheet = it },

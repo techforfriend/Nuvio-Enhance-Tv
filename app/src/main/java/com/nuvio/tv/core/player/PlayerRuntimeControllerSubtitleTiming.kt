@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.core.network.access.AccessHeaderInterceptor
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -25,6 +26,8 @@ private val subtitleAutoSyncHttpClient: OkHttpClient by lazy {
         .callTimeout(25_000, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
         .addNetworkInterceptor(subtitleRedirectCredentialInterceptor())
+        // Spec 97 A3: validated TLS, so a saved site's secret headers may ride it.
+        .addNetworkInterceptor(AccessHeaderInterceptor)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()

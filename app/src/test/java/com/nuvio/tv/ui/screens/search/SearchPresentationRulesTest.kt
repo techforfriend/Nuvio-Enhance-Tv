@@ -70,6 +70,26 @@ class SearchPresentationRulesTest {
     }
 
     @Test
+    fun `results rank exact then prefix title matches, otherwise keeping the addon's order`() {
+        fun item(name: String) = MetaPreview(
+            id = name, type = ContentType.MOVIE, name = name, poster = null,
+            posterShape = PosterShape.POSTER, background = null, logo = null, description = null,
+            releaseInfo = null, imdbRating = null, genres = emptyList()
+        )
+        val addonOrder = listOf("The Lost World: Jurassic Park", "Jurassic World", "Jurassic Park", "Jurassic City").map(::item)
+
+        assertEquals(
+            listOf("Jurassic Park", "The Lost World: Jurassic Park", "Jurassic World", "Jurassic City"),
+            rankByTitleMatch(addonOrder, "  JURASSIC park ").map { it.name }
+        )
+        assertEquals(
+            listOf("Jurassic World", "Jurassic Park", "Jurassic City", "The Lost World: Jurassic Park"),
+            rankByTitleMatch(addonOrder, "jurassic").map { it.name }
+        )
+        assertEquals(addonOrder, rankByTitleMatch(addonOrder, "  "))
+    }
+
+    @Test
     fun `a row shows see all from a full page of real items only`() {
         fun row(count: Int, loadingPlaceholders: Boolean = false) = CatalogRow(
             addonId = "cinemeta", addonName = "Cinemeta", addonBaseUrl = "", catalogId = "top",

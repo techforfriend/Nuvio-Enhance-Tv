@@ -17,6 +17,7 @@ import com.nuvio.tv.core.stream.ContentIdentity
 import com.nuvio.tv.core.player.PrefetchedSelectionGate
 import com.nuvio.tv.core.player.SelectionOutcome
 import com.nuvio.tv.core.player.SelectionSnapshot
+import com.nuvio.tv.core.player.isHttpLinkAlive
 import com.nuvio.tv.core.player.StreamAutoPlayPolicy
 import com.nuvio.tv.core.player.StreamAutoPlaySelector
 import com.nuvio.tv.core.network.NetworkTransportReader
@@ -178,6 +179,9 @@ class StreamScreenViewModel @Inject constructor(
 
     /** The profile's saved filters and Sources-row pins (Spec 65 P2). */
     val savedStreamFilters = savedStreamFiltersDataStore.state
+
+    /** Spec 97 X6: stream rows and sheets show no addon or service names. */
+    val hideSourceNames = playerSettingsDataStore.hideSourceNames
 
     fun saveStreamFilter(filter: FacetFilter, name: String) {
         viewModelScope.launch { savedStreamFiltersDataStore.save(filter, name) }
@@ -540,7 +544,7 @@ class StreamScreenViewModel @Inject constructor(
                 // links can die inside the reuse window. A positively-dead check evicts the entry
                 // and falls through to a fresh resolve instead of 404ing into the error
                 // screen on re-entry.
-                if (cached != null && cached.url.isNotBlank() && !isHttpLinkAlive(cached.url, cached.headers)) {
+                if (cached != null && cached.url.isNotBlank() && !withContext(Dispatchers.IO) { isHttpLinkAlive(cached.url, cached.headers) }) {
                     streamLinkCacheDataStore.evict(streamCacheKey)
                     cached = null
                 }
@@ -1276,32 +1280,6 @@ class StreamScreenViewModel @Inject constructor(
 
     fun onHostStopped() {
         hostInForeground.value = false
-    }
-
-    /**
-     * Fail-open HEAD check for a remembered stream link (2026-08-30): only a positive
-     * "gone" answer (400/401/403/404/410) invalidates the cached link; network errors
-     * and 429 keep it, so a flaky check or a host rate limit never blocks playback.
-     * 405 (HEAD unsupported) counts as alive — a GET may still work. Sends the link's
-     * cached proxy headers, so a link that needs them isn't misread as gone (401/403).
-     */
-    private suspend fun isHttpLinkAlive(url: String, headers: Map<String, String>): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-            conn.requestMethod = "HEAD"
-            headers.forEach { (name, value) -> conn.setRequestProperty(name, value) }
-            conn.connectTimeout = 3_000
-            conn.readTimeout = 3_000
-            conn.instanceFollowRedirects = true
-            try {
-                when (conn.responseCode) {
-                    400, 401, 403, 404, 410 -> false
-                    else -> true
-                }
-            } finally {
-                conn.disconnect()
-            }
-        }.getOrDefault(true)
     }
 
     /**

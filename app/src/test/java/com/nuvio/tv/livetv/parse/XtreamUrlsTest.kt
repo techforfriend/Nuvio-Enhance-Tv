@@ -57,4 +57,24 @@ class XtreamUrlsTest {
             "udp://239.0.0.1:1234"
         ).forEach { assertFalse(it, XtreamUrls.isBareLive(it)) }
     }
+
+    @Test
+    fun `live paths with or without their output extension are live (Spec 90 L5)`() {
+        listOf(
+            XtreamFixtures.LIVE_TS,
+            XtreamFixtures.LIVE_M3U8,
+            XtreamFixtures.LIVE_BARE,
+            XtreamFixtures.LIVE_BARE_LIVE_PREFIX,
+            "http://xt.example/u/p/1003.TS"
+        ).forEach { assertTrue(it, XtreamUrls.isLive(it)) }
+        listOf(
+            XtreamFixtures.MOVIE,
+            "http://xt.example/u/p/1003.mp4",
+            "http://xt.example/u/p/1003.ts?token=x",
+            "http://xt.example/u/p/abc.ts",
+            "http://xt.example/vod/u/p/1003.ts",
+            "http://xt.example/p/1003.ts",
+            "udp://239.0.0.1:1234"
+        ).forEach { assertFalse(it, XtreamUrls.isLive(it)) }
+    }
 }

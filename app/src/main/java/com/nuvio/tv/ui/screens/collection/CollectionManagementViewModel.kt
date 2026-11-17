@@ -128,7 +128,7 @@ class CollectionManagementViewModel @Inject constructor(
 
     private val importClient: okhttp3.OkHttpClient by lazy {
         okhttp3.OkHttpClient.Builder()
-            .dns(com.nuvio.tv.core.network.IPv4FirstDns())
+            .dns(com.nuvio.tv.core.network.dns.AppDns)
             // W2.1 parity — a user-supplied URL with no bounds reproduces the
             // indefinite-spinner class; the whole call is capped incl. DNS.
             .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)

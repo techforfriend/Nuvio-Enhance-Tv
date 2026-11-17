@@ -29,6 +29,8 @@ import java.time.ZoneId
  * Desktop JVM numbers: Shield figures are a separate, on-go measurement.
  *
  * `EPG_G1_DIR=/tmp/epg-g1 gradlew-serial :app:testFullDebugUnitTest --tests '*GuideWindowMeasureTest'`
+ * Optional: `EPG_NOW_MS` pins "now" (guides fetched days earlier), `EPG_LOOKBACK_H` starts the window that many
+ * hours before local midnight, as a positive `tvg-shift` does (Spec 92 W2).
  */
 class GuideWindowMeasureTest {
 
@@ -41,9 +43,11 @@ class GuideWindowMeasureTest {
         dir!!
         val guides = dir.listFiles { f -> f.name.endsWith(".xml") || f.name.endsWith(".xml.gz") }!!.sortedBy { it.name }
         val playlists = dir.listFiles { f -> f.name.endsWith(".m3u") }!!.sortedBy { it.name }
-        val now = System.currentTimeMillis()
+        val now = System.getenv("EPG_NOW_MS")?.toLong() ?: System.currentTimeMillis()
         val zone = ZoneId.systemDefault()
-        val (windowStart, windowEnd) = LiveSourceManager.dayWindow(now, zone)
+        val lookBackMs = (System.getenv("EPG_LOOKBACK_H")?.toLong() ?: 0L) * 3_600_000L
+        val (dayStart, windowEnd) = LiveSourceManager.dayWindow(now, zone)
+        val windowStart = LiveSourceManager.guideWindowStart(dayStart, lookBackMs)
         File(dir, "window.txt").writeText("$windowStart\n")
         // The SQLite script reads every rows-*.tsv: drop an earlier run's files first.
         dir.listFiles { f -> f.name.startsWith("rows-") && f.name.endsWith(".tsv") }!!.forEach { it.delete() }

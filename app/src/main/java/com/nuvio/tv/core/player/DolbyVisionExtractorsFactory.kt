@@ -2,7 +2,6 @@ package com.nuvio.tv.core.player
 
 import android.net.Uri
 import androidx.media3.common.C
-import androidx.media3.common.ColorInfo
 import androidx.media3.common.DataReader
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
@@ -15,6 +14,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
+import com.nuvio.tv.core.player.dvmkv.DolbyVisionCompatibility
 import com.nuvio.tv.core.player.dvmkv.MatroskaExtractor as DvMatroskaExtractor
 import java.io.EOFException
 import java.io.IOException
@@ -229,20 +229,6 @@ internal data class DolbyVisionConversionConfig(
     }
 }
 
-// nt26: fixed HDR10 (BT.2020 / limited-range / PQ) colour signalling. Applied to
-// the stripped base layer's Format so the Android display framework switches the
-// sink into HDR mode. The stripped stream is genuine HDR10 in-band (the SPS VUI
-// is preserved by the strip), but Format.colorInfo is usually null on DV
-// containers, and some sinks (e.g. Amlogic AM9 Pro) act on the framework's
-// colorInfo, not the in-band SPS - leaving the display in SDR (PQ shown as SDR
-// reads as a purple tint) until this is set.
-@UnstableApi
-private fun hdr10ColorInfo(): ColorInfo = ColorInfo.Builder()
-    .setColorSpace(C.COLOR_SPACE_BT2020)
-    .setColorRange(C.COLOR_RANGE_LIMITED)
-    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
-    .build()
-
 /** Wraps an [Extractor] to inject a DV-rewriting [ExtractorOutput]. */
 @UnstableApi
 private class DolbyVisionExtractor(
@@ -378,16 +364,18 @@ private class NativeOptimizedVideoTrackOutput(
         }
         if (stripDvRpu && strippedCodecs != null) {
             outFormat = outFormat.buildUpon().setSampleMimeType(MimeTypes.VIDEO_H265).build()
-            // nt26: the stripped base layer is HDR10, but the container/DV Format
-            // rarely carries colorInfo, so on some sinks (e.g. Amlogic AM9 Pro)
-            // the Android display framework never learns the content is HDR and
-            // leaves the display in SDR - PQ shown as SDR reads as a purple tint.
-            // Populate colorInfo so the framework drives the HDR mode switch.
-            // P7/P8.1 only (P5's base is IPT-PQ, not BT.2020).
-            if ((profile == 7 || profile == 8) &&
-                outFormat.colorInfo?.colorTransfer != C.COLOR_TRANSFER_ST2084
-            ) {
-                outFormat = outFormat.buildUpon().setColorInfo(hdr10ColorInfo()).build()
+            // nt26 / Spec 93 P2: the container/DV Format rarely carries colorInfo, and some
+            // sinks (e.g. Amlogic AM9 Pro) then leave the display in SDR. No dvcC bytes reach
+            // this point, so the format's own (SPS) transfer is the evidence: an HLG P8.4
+            // stays HLG and an SDR P8.2 stays unlabelled instead of being tagged PQ.
+            val baseLayerTransfer = DolbyVisionCompatibility.baseLayerTransfer(
+                profile ?: Format.NO_VALUE,
+                DolbyVisionCompatibility.COMPATIBILITY_UNKNOWN,
+                outFormat.colorInfo?.colorTransfer ?: Format.NO_VALUE
+            )
+            val colorInfo = DolbyVisionCompatibility.baseLayerColorInfo(outFormat.colorInfo, baseLayerTransfer)
+            if (colorInfo !== outFormat.colorInfo) {
+                outFormat = outFormat.buildUpon().setColorInfo(colorInfo).build()
             }
         }
 

@@ -34,6 +34,8 @@ data class EpgProgramme(
  * sorted by start (Spec 34 D14 look-ahead retention: the last in-window programme still has a next;
  * not kept when the per-channel cap dropped part of the window).
  * [complete] is false when the file was cut short (malformed XML, size cap): what was read is kept.
+ * [dayStartMs] is the local midnight the window is "today" from; [windowStartMs] is earlier when the parse kept
+ * look-back hours for a positive `tvg-shift` (Spec 92 W2). Equal for older caches and a parse without look-back.
  */
 @Serializable
 data class EpgSnapshot(
@@ -41,16 +43,36 @@ data class EpgSnapshot(
     val programmes: Map<String, List<EpgProgramme>>,
     val windowStartMs: Long,
     val windowEndMs: Long,
-    val complete: Boolean
+    val complete: Boolean,
+    val dayStartMs: Long = windowStartMs
 ) {
-    /** Current and next programme of [channelId] at [nowMs], re-derived from the retained window. */
-    fun nowNext(channelId: String, nowMs: Long): Pair<EpgProgramme?, EpgProgramme?> {
+    /**
+     * Whether [channelId] has a programme today or tomorrow in guide time (one not ended by [dayStartMs]): the
+     * matcher's live test. Look-back programmes alone (yesterday evening) do not count.
+     */
+    fun isLive(channelId: String): Boolean = programmes[channelId].orEmpty().any { it.stopMs > dayStartMs }
+
+    /**
+     * Current and next programme of [channelId] at [nowMs], re-derived from the retained window, with
+     * times moved by [shiftMs] (the channel's `tvg-shift`, Spec 94 T2).
+     */
+    fun nowNext(channelId: String, nowMs: Long, shiftMs: Long = 0L): Pair<EpgProgramme?, EpgProgramme?> {
         val list = programmes[channelId].orEmpty()
-        val now = list.lastOrNull { it.startMs <= nowMs && nowMs < it.stopMs }
-        val next = list.firstOrNull { it.startMs >= (now?.stopMs ?: nowMs) && it !== now }
-        return now to next
+        val at = nowMs - shiftMs
+        val now = list.lastOrNull { it.startMs <= at && at < it.stopMs }
+        val next = list.firstOrNull { it.startMs >= (now?.stopMs ?: at) && it !== now }
+        return now?.shifted(shiftMs) to next?.shifted(shiftMs)
+    }
+
+    /** [channelId]'s retained programmes with times moved by [shiftMs]; null when it has none. */
+    fun programmesOf(channelId: String, shiftMs: Long = 0L): List<EpgProgramme>? {
+        val list = programmes[channelId] ?: return null
+        return if (shiftMs == 0L) list else list.map { it.shifted(shiftMs) }
     }
 }
+
+private fun EpgProgramme.shifted(ms: Long): EpgProgramme =
+    if (ms == 0L) this else copy(startMs = startMs + ms, stopMs = stopMs + ms)
 
 /**
  * Streaming XMLTV parser (Spec 34 D10/D14). Input is untrusted: gzip is detected by magic bytes
@@ -81,13 +103,18 @@ class XmltvNowNextParser(
         var capped = false
     }
 
-    /** Parses [input] keeping the window [windowStartMs, windowStartMs + lookAheadMs) (the app passes a day window). */
+    /**
+     * Parses [input] keeping the window [windowStartMs, windowStartMs + lookAheadMs) (the app passes a day window),
+     * at most [maxPerChannel] in-window programmes per channel (a longer window passes a larger cap).
+     */
     fun parse(
         input: InputStream,
         windowStartMs: Long,
         lookAheadMs: Long = DEFAULT_LOOK_AHEAD_MS,
+        maxPerChannel: Int = maxProgrammesPerChannel,
         keepChannel: (String) -> Boolean = { true }
     ): EpgSnapshot {
+        require(maxPerChannel > 0) { "maxPerChannel must be positive" }
         val windowEnd = windowStartMs + lookAheadMs
         val channels = LinkedHashMap<String, EpgChannel>()
         val slots = HashMap<String, Slot>()
@@ -106,7 +133,7 @@ class XmltvNowNextParser(
                         "channel" -> readChannel(parser)?.let { ch ->
                             if (channels.size < MAX_CHANNELS || ch.id in channels) channels[ch.id] = ch
                         }
-                        "programme" -> readProgramme(parser, windowStartMs, windowEnd, keepChannel, slots)
+                        "programme" -> readProgramme(parser, windowStartMs, windowEnd, maxPerChannel, keepChannel, slots)
                     }
                 }
                 event = parser.next()
@@ -152,6 +179,7 @@ class XmltvNowNextParser(
         parser: XmlPullParser,
         windowStart: Long,
         windowEnd: Long,
+        maxPerChannel: Int,
         keepChannel: (String) -> Boolean,
         slots: MutableMap<String, Slot>
     ) {
@@ -172,7 +200,7 @@ class XmltvNowNextParser(
         val list = slot.inWindow
         val replaceAt: Int? = when {
             start >= windowEnd -> if ((slot.afterWindow?.startMs ?: Long.MAX_VALUE) > start) -1 else null
-            list.size < maxProgrammesPerChannel -> -1
+            list.size < maxPerChannel -> -1
             else -> list.indices.maxBy { list[it].startMs }.takeIf { list[it].startMs > start }.also { slot.capped = true }
         }
         if (replaceAt == null) {

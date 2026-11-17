@@ -15,15 +15,12 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.text.SubtitleParser
 import com.nuvio.tv.data.local.PlayerSettings
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
+import com.nuvio.tv.ui.screens.player.HlsParameterSetInitDataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLDecoder
 import java.util.Base64
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 internal class PlayerMediaSourceFactory(private val context: Context) {
     private var customExtractorsFactory: ExtractorsFactory? = null
@@ -81,8 +78,7 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
     // and cost two retractions in one session.
     private val chunkSessionHttpClient by lazy {
         chunkClientHttp2 = NuvioExoPlayerPerformanceHelper.enableHttp2
-        PlayerPlaybackNetworking.playbackHttpClient.newBuilder()
-            .cookieJar(playerCookieJar)
+        PlayerPlaybackNetworking.cookieClientBuilder()
             .let { NuvioExoPlayerPerformanceHelper.applyNetworkOptimizations(it) }
             .build()
     }
@@ -294,19 +290,24 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             progressiveUpstreamFactory
         }
 
+        // Spec 90 L3: HLS playlists get an SPS/PPS init segment when their later segments lack one.
+        // Every VOD HLS stream builds through defaultFactory (configureSubtitleParsing always sets an
+        // extractors factory), so the wrapper sits under it; probe GETs bypass the PMSF counting and logging
+        // (they still log under HTTP).
+        val streamUpstreamFactory: DataSource.Factory =
+            if (isHls) HlsParameterSetInitDataSource.Factory(scopedUpstreamFactory) else scopedUpstreamFactory
+
         val extractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
         // CountingDataSourceFactory attaches PlaybackByteCounter to every DataSource
         // the player creates. media3's bandwidth meter only reports bytes when a
         // transfer ends, and a plain progressive load holds one transfer open for the
         // whole file, so the HUD has to count for itself. See PlaybackByteCounter.
         val defaultFactory = DefaultMediaSourceFactory(
-            CountingDataSourceFactory(LoggingDataSourceFactory(scopedUpstreamFactory, "PMSF")),
+            CountingDataSourceFactory(LoggingDataSourceFactory(streamUpstreamFactory, "PMSF")),
             extractorsFactory
         ).apply {
             setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
-            customSubtitleParserFactory?.let { parserFactory ->
-                setSubtitleParserFactory(parserFactory)
-            }
+            setSubtitleParserFactory(reloadSubtitleParserFactory(customSubtitleParserFactory))
         }
         val forceDefaultFactory = customExtractorsFactory != null || customSubtitleParserFactory != null
 
@@ -319,7 +320,7 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         }
 
         val mediaSource = when {
-            isHls && !forceDefaultFactory -> HlsMediaSource.Factory(httpDataSourceFactory)
+            isHls && !forceDefaultFactory -> HlsMediaSource.Factory(HlsParameterSetInitDataSource.Factory(httpDataSourceFactory))
                 .setAllowChunklessPreparation(true)
                 .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
                 .createMediaSource(mediaItem)
@@ -362,33 +363,12 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         )
 
         /**
-         * In-memory cookie jar for [chunkSessionHttpClient], so cookies a stream
-         * host sets are sent back on later requests to that host. In the companion
-         * (process-wide, as when it lived on NuvioApplication) because the factory is
-         * per player: a host's cookies carry over to the next player instance.
+         * Subtitle parsers for [createMediaSource]'s default factory: the libass path's own, else Media3's with ASS
+         * drawings filtered (Spec 91 K5). Libass requested but off for the stream (a Dolby Vision conversion) still
+         * sends addon ASS through media reload, which used to reach the stock SsaParser.
          */
-        private val playerCookieJar: CookieJar = object : CookieJar {
-            private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
-
-            override fun loadForRequest(url: HttpUrl): List<Cookie> {
-                val hostCookies = store[url.host] ?: return emptyList()
-                synchronized(hostCookies) {
-                    return hostCookies.filter { cookie ->
-                        cookie.expiresAt > System.currentTimeMillis()
-                    }
-                }
-            }
-
-            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-                val hostCookies = store.getOrPut(url.host) { mutableListOf() }
-                synchronized(hostCookies) {
-                    cookies.forEach { newCookie ->
-                        hostCookies.removeAll { it.name == newCookie.name }
-                        hostCookies.add(newCookie)
-                    }
-                }
-            }
-        }
+        internal fun reloadSubtitleParserFactory(custom: SubtitleParser.Factory?): SubtitleParser.Factory =
+            custom ?: AssDrawingFilter.parserFactory()
 
         /**
          * Request headers safe to send: blank names/values and Range dropped, and any header OkHttp's
@@ -654,7 +634,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
             query.split('&').forEach { parameter ->
                 val key = parameter.substringBefore('=', missingDelimiterValue = "").trim()
-                val value = parameter.substringAfter('=', missingDelimiterValue = "").trim()
+                // Spec 91 K4 (NM e85b29072): `type=application%2Fdash%2Bxml`; a literal `+` stays a plus.
+                val rawValue = parameter.substringAfter('=', missingDelimiterValue = "").trim()
+                val value = runCatching {
+                    URLDecoder.decode(rawValue.replace("+", "%2B"), Charsets.UTF_8.name())
+                }.getOrDefault(rawValue).lowercase(Locale.US)
                 if (key.isBlank() || value.isBlank()) return@forEach
 
                 when (key) {

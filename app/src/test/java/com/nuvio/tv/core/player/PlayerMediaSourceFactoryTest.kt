@@ -4,6 +4,7 @@ import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
@@ -102,6 +103,47 @@ class PlayerMediaSourceFactoryTest {
         )
 
         assertEquals(MimeTypes.APPLICATION_M3U8, mimeType)
+    }
+
+    // Spec 91 K4: NuvioMedia e85b29072 (W8-08) and its tests.
+    @Test
+    fun `inferMimeType recognizes percent encoded DASH MIME query values`() {
+        for (key in listOf("format", "mime", "mime_type", "content_type", "type")) {
+            val url = "https://example.com/playback?$key=application%2Fdash%2Bxml"
+            assertEquals(
+                url,
+                MimeTypes.APPLICATION_MPD,
+                PlayerMediaSourceFactory.inferMimeType(url = url, filename = null)
+            )
+        }
+    }
+
+    @Test
+    fun `inferMimeType preserves literal MIME plus signs and tolerates invalid escapes`() {
+        assertEquals(
+            MimeTypes.APPLICATION_MPD,
+            PlayerMediaSourceFactory.inferMimeType(
+                url = "https://example.com/playback?mime=application/dash+xml",
+                filename = null
+            )
+        )
+        assertNull(
+            PlayerMediaSourceFactory.inferMimeType(
+                url = "https://example.com/playback?mime=%ZZ",
+                filename = null
+            )
+        )
+    }
+
+    // Spec 91 K5: the media-reload path filters ASS drawings unless the libass path set its own parsers.
+    @Test
+    fun `media reload subtitles use the drawing filter unless libass supplies parsers`() {
+        val custom = AssDrawingFilter.parserFactory()
+        assertSame(custom, PlayerMediaSourceFactory.reloadSubtitleParserFactory(custom))
+        assertEquals(
+            AssDrawingFilter.parserFactory().javaClass,
+            PlayerMediaSourceFactory.reloadSubtitleParserFactory(null).javaClass
+        )
     }
 
     @Test

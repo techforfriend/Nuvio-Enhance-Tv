@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.home
 
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
@@ -14,7 +15,7 @@ internal val TEST_LAYOUT_PREFS = LayoutUiPrefs(
     showFullReleaseDate = false,
     modernLandscapePostersEnabled = false,
     homeImdbRatingsVisibility = HomeImdbRatingsVisibility.HIDE_ALL,
-    focusedPosterBackdropTrailerEnabled = false,
+    trailerAutoplayMode = TrailerAutoplayMode.OFF,
     focusedPosterBackdropTrailerMuted = false
 )
 
@@ -27,6 +28,6 @@ internal fun layoutPrefsStoreEmitting(prefs: LayoutUiPrefs = TEST_LAYOUT_PREFS):
         every { showFullReleaseDate } returns flowOf(prefs.showFullReleaseDate)
         every { modernLandscapePostersEnabled } returns flowOf(prefs.modernLandscapePostersEnabled)
         every { homeImdbRatingsVisibility } returns flowOf(prefs.homeImdbRatingsVisibility)
-        every { focusedPosterBackdropTrailerEnabled } returns flowOf(prefs.focusedPosterBackdropTrailerEnabled)
+        every { trailerAutoplayMode } returns flowOf(prefs.trailerAutoplayMode)
         every { focusedPosterBackdropTrailerMuted } returns flowOf(prefs.focusedPosterBackdropTrailerMuted)
     }

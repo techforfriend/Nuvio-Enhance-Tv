@@ -270,6 +270,55 @@ class LiveTvModelTest {
         assertEquals("1", later[0].number)
     }
 
+    @Test
+    fun `lineup carries each channel's tvg-shift, else its playlist's, and rows read the guide shifted`() {
+        val all = listOf(
+            ch("a", "own").copy(attrs = mapOf("tvg-shift" to "-1")),
+            ch("a", "header"),
+            ch("a", "zero").copy(attrs = mapOf("tvg-shift" to "0")),
+            ch("b", "plain")
+        )
+        val lineup = LiveTvModel.lineup(all, listOf("a", "b"), meta = null, hidden = emptySet(), headerShifts = mapOf("a" to 2 * hour))
+        val shifts = lineup.channels.associate { it.key to it.guideShiftMs }
+        assertEquals(mapOf("own" to -hour, "header" to 2 * hour, "zero" to 0L, "plain" to 0L), shifts)
+
+        val refs = lineup.channels.associate { it.key to EpgRef("guide", "g1") }
+        // At 0:30 the guide's "Second" (1:00-2:00) airs on a -1 h channel; "First" moves to 2:00-3:00 on +2 h.
+        val rows = LiveTvModel.rows(lineup.channels, lineup.numbers, refs, mapOf("guide" to snapshot), nowMs = hour / 2)
+            .associateBy { it.channel.key }
+        assertEquals("Second", rows.getValue("own").now?.title)
+        assertEquals(0L, rows.getValue("own").now?.startMs)
+        assertEquals(0.5f, rows.getValue("own").progress!!, 0.001f)
+        assertNull(rows.getValue("header").now)
+        assertEquals("First", rows.getValue("header").next?.title)
+        assertEquals(2 * hour, rows.getValue("header").next?.startMs)
+        assertEquals("First", rows.getValue("plain").now?.title)
+    }
+
+    @Test
+    fun `a channel without a playlist logo takes its guide's http icon`() {
+        val guides = mapOf(
+            "guide" to snapshot.copy(
+                channels = mapOf(
+                    "g1" to EpgChannel("g1", listOf("x1"), "https://img.example.org/g1.png"),
+                    "g2" to EpgChannel("g2", listOf("x2"), "file:///data/local/x.png")
+                )
+            )
+        )
+        val ref = EpgRef("guide", "g1")
+        assertEquals("https://img.example.org/g1.png", LiveTvModel.withGuideLogo(ch("a", "x1"), ref, guides).logo)
+        assertEquals("https://img.example.org/g1.png", LiveTvModel.withGuideLogo(ch("a", "x1").copy(logo = " "), ref, guides).logo)
+        // The playlist's logo wins; no ref, a missing guide or a non-http icon leave the channel as it was.
+        val own = ch("a", "x1").copy(logo = "https://example.org/own.png")
+        assertEquals(own, LiveTvModel.withGuideLogo(own, ref, guides))
+        assertNull(LiveTvModel.withGuideLogo(ch("a", "x1"), null, guides).logo)
+        assertNull(LiveTvModel.withGuideLogo(ch("a", "x1"), EpgRef("gone", "g1"), guides).logo)
+        assertNull(LiveTvModel.withGuideLogo(ch("a", "x2"), EpgRef("guide", "g2"), guides).logo)
+
+        val row = LiveTvModel.rows(listOf(ch("a", "x1")), mapOf("x1" to "1"), mapOf("x1" to ref), guides, nowMs = 0L).single()
+        assertEquals("https://img.example.org/g1.png", row.channel.logo)
+    }
+
     private fun row(key: String) = LiveRow(ch("a", key), key, null, null, hasGuide = false, progress = null)
 
     @Test

@@ -25,16 +25,30 @@ SIL Open Font License 1.1 (`OFL-1.1_Inter.txt`). Unmodified.
 Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)
 SIL Open Font License 1.1 (`OFL-1.1_OpenSans.txt`). Unmodified.
 
+**libass fallback fonts** (`res/raw/libass_fallback_regular.ttf`, `libass_fallback_bold.ttf`, the ASS/SSA subtitle
+fallback for Latin, Greek and Cyrillic). Modified Version of Open Sans 3.003 above, same copyright and licence:
+static instances at weight 400 and 700, subset to Latin, Latin Extended, Greek, Cyrillic and combining marks,
+family renamed `sans-serif`.
+
 **DM Sans** 4.004, variable
 Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts)
 SIL Open Font License 1.1 (`OFL-1.1_DMSans.txt`). Unmodified.
 
-**Droid Sans Fallback** 2.56, merged with Droid Sans, Droid Sans Arabic, Droid Sans Devanagari, Droid Sans Hebrew,
-Droid Sans Tamil and Droid Sans Thai (`assets/subfont.ttf`, the mpv subtitle fallback font)
-Digitized data copyright Google Corporation © 2006; Droid is a trademark of Google.
-Apache-2.0 (`Apache-2.0.txt`). Modified: the mpv-android project merged these fonts into one file with FontForge
-(2024-10-18, commit `1faf835` of https://github.com/mpv-android/mpv-android). Shipped unchanged from
-mpv-android-lib 0.1.12.
+**mpv subtitle fallback font** (`assets/subfont.ttf`), one file merged from the two font sets below. The merged
+font is distributed under the SIL Open Font License 1.1 (`OFL-1.1_Noto.txt`); the Droid parts keep their Apache-2.0
+notice. Built by `scripts/fonts/build_mpv_subfont.py` in the source repository (fontTools: Noto glyphs scaled to
+256 units per em and merged into the Droid file, its vertical metrics kept).
+
+- **Droid Sans Fallback** 2.56, merged with Droid Sans, Droid Sans Arabic, Droid Sans Devanagari, Droid Sans
+  Hebrew, Droid Sans Tamil and Droid Sans Thai. Digitized data copyright Google Corporation © 2006; Droid is a
+  trademark of Google. Apache-2.0 (`Apache-2.0.txt`). Modified: the mpv-android project merged these fonts into one
+  file with FontForge (2024-10-18, commit `1faf835` of https://github.com/mpv-android/mpv-android), taken from
+  mpv-android-lib 0.1.12.
+- **Noto Sans** Armenian, Bengali, Ethiopic, Georgian, Gujarati, Gurmukhi, Kannada, Khmer, Lao, Malayalam, Myanmar,
+  Sinhala and Telugu, Regular. Copyright 2022, 2025 The Noto Project Authors (https://github.com/notofonts/).
+  SIL Open Font License 1.1 (`OFL-1.1_Noto.txt`). Source:
+  https://github.com/notofonts/notofonts.github.io/tree/3460ae9d93e7ac7a90d38a247d5d4d0f6147d239/fonts
+  (`NotoSans<Script>/unhinted/ttf/`). Modified: scaled and merged as above.
 
 **Roboto Medium** 2.137 (numerals subset, `roboto_medium_numbers`, from AndroidX Media3 UI 1.8.0)
 Copyright 2011 Google Inc. All Rights Reserved.

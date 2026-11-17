@@ -110,6 +110,40 @@ class StreamSourceRowTest {
         assertNull(streamRowLanguageLine(null, null))
     }
 
+    // Spec 97 X6: hidden names show only a release file name, whatever the formatting setting.
+    @Test
+    fun `hidden names keep the file name and never show the addon description`() {
+        val named = stream(description = "[RD+] Torrentio 4K | 58 GB", aioFilename = "Movie.2012.2160p.REMUX-GRP.mkv")
+        assertEquals("Movie.2012.2160p.REMUX-GRP.mkv", hiddenText(named, useAddonFormatting = false))
+        assertEquals("Movie.2012.2160p.REMUX-GRP.mkv", hiddenText(named, useAddonFormatting = true))
+        assertNull(hiddenText(stream(description = "[RD+] Torrentio 4K | 58 GB"), useAddonFormatting = false))
+        assertNull(hiddenText(stream(description = "[RD+] Torrentio 4K | 58 GB"), useAddonFormatting = true))
+    }
+
+    @Test
+    fun `hidden names fall back through the hint and resolver file names, never past them`() {
+        assertEquals("Movie.2012.1080p.Hint-GRP.mkv", hiddenText(stream(aioFilename = " ", hintFilename = "Movie.2012.1080p.Hint-GRP.mkv"), false))
+        assertEquals("Movie.2012.1080p.Resolve-GRP.mkv", hiddenText(stream(resolveFilename = "Movie.2012.1080p.Resolve-GRP.mkv"), false))
+        assertEquals("Movie.2012.1080p.Raw-GRP.mkv", hiddenText(stream(rawFilename = "Movie.2012.1080p.Raw-GRP.mkv"), false))
+        // No file name: no line, not the title or description (D8).
+        assertNull(hiddenText(stream(title = "Torrentio 720p", description = "AIOStreams 720p"), false))
+    }
+
+    @Test
+    fun `hidden names drop the debrid code and keep WEB and P2P`() {
+        fun kind(type: String?, service: String? = null) = streamKindLabel(
+            AioStreamData(size = null, filename = null, cached = null, parsedFile = null, type = type, serviceId = service),
+            hideNames = true
+        )
+        assertNull(kind("debrid", "premiumize"))
+        assertNull(kind("debrid"))
+        assertEquals("WEB", kind("http"))
+        assertEquals("P2P", kind("p2p"))
+    }
+
+    private fun hiddenText(stream: Stream, useAddonFormatting: Boolean): String? =
+        streamRowDetailText(stream, NAME, useAddonFormatting, hideNames = true)
+
     private fun badgesText(stream: Stream): String? = streamRowDetailText(stream, NAME, useAddonFormatting = false)
 
     private fun addonText(stream: Stream): String? = streamRowDetailText(stream, NAME, useAddonFormatting = true)

@@ -213,6 +213,11 @@
         <item quantity="other">%d titles</item>
     </plurals>
     <string name="detail_hint_stop_trailer">Stop trailer</string>
+    <!-- Spec 96: the trailer preview's large panel, key hints (BACK Close reuses detail_key_back/detail_hint_close). -->
+    <string name="trailer_preview_key_ok" translatable="false">OK</string>
+    <string name="trailer_preview_hint_details">Details</string>
+    <string name="trailer_preview_key_arrows" translatable="false">◀ ▶</string>
+    <string name="trailer_preview_hint_close_move">Close and move</string>
     <!-- Marquee detail (wave U2c): scrolled-state block for a focused season chip. -->
     <plurals name="detail_band_episode_count">
         <item quantity="one">%d episode</item>
@@ -403,6 +408,13 @@
     <string name="update_you_have">You have %1$s</string>
     <string name="update_auto_title">Check automatically</string>
     <string name="update_auto_subtitle">Once a day, from the releases at %1$s</string>
+    <!-- Spec 89: Get test releases (GitHub pre-releases) -->
+    <string name="update_test_title">Get test releases</string>
+    <string name="update_test_subtitle">Also offer releases still being tested on GitHub, before they reach everyone. They may have bugs.</string>
+    <string name="update_test_tag">Test</string>
+    <string name="update_test_label">Test update</string>
+    <string name="update_panel_test_released">Test release · %1$s</string>
+    <string name="whats_new_test_eyebrow">TEST RELEASE</string>
     <!-- The top-bar pill and the panel's eyebrow. -->
     <string name="update_label">Update</string>
     <string name="update_panel_released">Released %1$s</string>
@@ -519,6 +531,42 @@
     <string name="advanced_addon_health_title">Addon health indicators</string>
     <string name="advanced_addon_health_subtitle">OK, Slow or Down on addons and resolvers. Passive, no background checks.</string>
     <string name="advanced_section_diagnostics">Diagnostics</string>
+    <!-- Spec 97 S6: Advanced › General › Network (sandbox s097-x4-x5-network v5, stages 1-9) -->
+    <string name="advanced_section_network">Network</string>
+    <string name="access_headers_title">Access headers</string>
+    <string name="access_headers_subtitle">Secret headers some servers ask for, such as a Cloudflare Access token. This TV only.</string>
+    <string name="access_headers_none">None</string>
+    <plurals name="access_headers_sites">
+        <item quantity="one">%1$d site</item>
+        <item quantity="other">%1$d sites</item>
+    </plurals>
+    <string name="access_headers_cant_read">Can\'t read</string>
+    <string name="access_headers_note">Some servers only answer requests that carry secret headers, such as a Cloudflare Access service token. Nuvio sends a site\'s headers to that exact site only, over https, and keeps them encrypted on this TV.</string>
+    <string name="access_headers_empty">No sites yet</string>
+    <string name="access_headers_phone_divider">Add from your phone</string>
+    <string name="access_headers_phone_divider_another">Add another from your phone</string>
+    <string name="access_headers_phone_title">Scan, then enter the site and its headers</string>
+    <string name="access_headers_saved_note">Header values never show on the TV. Sending a saved site again from the phone replaces its headers.</string>
+    <string name="access_headers_remove">Remove</string>
+    <string name="access_headers_done">Done</string>
+    <string name="access_headers_remove_site_title">Remove %1$s?</string>
+    <plurals name="access_headers_remove_site_body">
+        <item quantity="one">Nuvio stops sending its %1$d header. If the server needs it, it stops answering this TV.</item>
+        <item quantity="other">Nuvio stops sending its %1$d headers. If the server needs them, it stops answering this TV.</item>
+    </plurals>
+    <string name="access_headers_unread_title">This TV couldn\'t read its saved sites</string>
+    <string name="access_headers_unread_note">Their headers aren\'t sent until it can. Nuvio tries again on its own; adding or changing a site waits until then, so nothing saved is lost. If they never come back, remove them and add the sites again from your phone.</string>
+    <string name="access_headers_remove_all">Remove saved sites</string>
+    <string name="access_headers_remove_all_title">Remove saved sites?</string>
+    <string name="access_headers_remove_all_body">Nuvio deletes every saved site and its headers from this TV. Servers that need them stop answering until you add them again from your phone.</string>
+    <string name="private_dns_title">Private DNS</string>
+    <string name="private_dns_subtitle">Look up addresses over HTTPS. Streams keep this TV\'s DNS.</string>
+    <string name="private_dns_off">Off</string>
+    <string name="private_dns_off_sub">This TV\'s network DNS</string>
+    <string name="private_dns_cloudflare">Cloudflare</string>
+    <string name="private_dns_google">Google</string>
+    <string name="private_dns_quad9">Quad9</string>
+    <string name="private_dns_note">Addons, catalogs, posters and sign-in look up addresses over HTTPS, so the network can\'t see or change them. Streams and local names such as tower.local keep this TV\'s DNS. If the provider can\'t be reached, addons and catalogs won\'t load until you turn this off.</string>
     <string name="advanced_last_close_title">Last unexpected close</string>
     <string name="advanced_last_close_subtitle">Crashes, freezes and memory kills. This TV only.</string>
     <string name="advanced_last_close_none">None recorded</string>
@@ -557,6 +605,10 @@
     <string name="playback_chip_buffer_network">Buffer &amp; network</string>
     <string name="playback_needs_skip_intro">Turn on Skip Intro first</string>
     <string name="playback_section_autoplay">Auto-play</string>
+    <!-- Spec 97 S6: Player & streams › Sources (sandbox s097-x6-hidden-names, stage 1) -->
+    <string name="playback_section_sources">Sources</string>
+    <string name="playback_hide_source_names">Hide source names</string>
+    <string name="playback_hide_source_names_sub">Stream lists and the player show quality, size and language, not addon or service names. This TV only.</string>
     <string name="playback_auto_stream_selection">Auto stream selection</string>
     <string name="playback_mode_manual_desc">Always show the source list and let me choose.</string>
     <string name="playback_mode_regex_desc">Play the first source whose text matches your regex pattern.</string>
@@ -597,7 +649,7 @@
     <string name="playback_needs_outline_edge">Needs Text edge: Outline</string>
     <string name="playback_not_with_managed_budget">Not with Managed Memory Budget</string>
     <string name="playback_frame_rate_matching">Frame rate matching</string>
-    <string name="playback_frame_rate_matching_sub">Switch the display refresh rate to the video\'s</string>
+    <string name="playback_frame_rate_matching_sub">Switch the display refresh rate to the video\'s, Live TV too</string>
     <string name="playback_afr_start_stop">On start + stop</string>
     <string name="playback_resolution_matching_desc">Allow display mode changes to match the video resolution</string>
     <!-- Spec 62 H1 -->
@@ -611,6 +663,8 @@
     <string name="playback_loading_overlay_sub">Show loading screen until first video frame appears.</string>
     <string name="playback_pause_overlay">Pause Overlay</string>
     <string name="playback_pause_overlay_sub">Show details overlay after 5 seconds while paused.</string>
+    <string name="playback_resume_rewind">Rewind on resume</string>
+    <string name="playback_resume_rewind_sub">Start a few seconds back when continuing from saved progress or after a pause of 30 seconds or more.</string>
     <string name="playback_show_clock_sub">Show current time and end time while controls are visible.</string>
     <string name="playback_osd_clock">OSD Clock</string>
     <string name="playback_skip_intro">Skip Intro</string>
@@ -902,6 +956,17 @@
     <string name="layout_hero_autoplay_sub">Play the focused title\'s trailer behind the hero</string>
     <string name="layout_needs_hero_autoplay">Turn on Autoplay trailer first</string>
     <string name="layout_needs_detail_autoplay">Turn on Auto-play Trailers first</string>
+    <string name="layout_trailer_section">Trailer</string>
+    <string name="layout_trailer_mode_off">Off</string>
+    <string name="layout_trailer_mode_hero">Behind hero</string>
+    <string name="layout_trailer_mode_card">In the card</string>
+    <string name="layout_trailer_mode_off_sub">Off, behind the hero, or in the focused card</string>
+    <string name="layout_trailer_mode_hero_sub">Plays the focused title\'s trailer behind the hero</string>
+    <string name="layout_trailer_mode_card_sub">In the card after %1$d s, then large after %2$d s</string>
+    <string name="layout_trailer_preview_delay">Preview delay</string>
+    <string name="layout_trailer_preview_delay_sub">Wait before the card plays, and again before it grows</string>
+    <string name="layout_needs_trailer_card">Set Autoplay trailer to In the card first</string>
+    <string name="layout_needs_trailer_hero">Set Autoplay trailer to Behind hero first</string>
     <string name="layout_imdb_trailers">Use IMDb trailers</string>
     <string name="layout_imdb_trailers_sub">Play ad-free IMDb trailers when available (HD only); otherwise falls back to YouTube. IMDb discovery runs in the background.</string>
     <string name="layout_size_badges_sub">File size on stream rows and in the player\'s source panel</string>
@@ -1093,6 +1158,34 @@
     <string name="web_tmdb_rejected_body">Check you copied the API Key, all 32 characters. Nothing was saved.</string>
     <string name="web_tmdb_send_again">Send again</string>
     <string name="web_tmdb_error_send">Couldn\'t send the key. Check the TV still shows the code, then try again.</string>
+    <!-- Spec 97 X4 A5: the Access headers phone page -->
+    <string name="web_access_title">Add access headers</string>
+    <string name="web_access_sub">Sent only to this site, over https.</string>
+    <string name="web_access_site">Site</string>
+    <string name="web_access_cloudflare">Cloudflare Access</string>
+    <string name="web_access_header_label">Header %1$d · name, value</string>
+    <string name="web_access_name">Name</string>
+    <string name="web_access_value">Value</string>
+    <string name="web_access_add_header">+ Add a header</string>
+    <plurals name="web_access_saved_body">
+        <item quantity="one">%1$s gets this header from now on. The value stays on the TV; this page can\'t show it again.</item>
+        <item quantity="other">%1$s gets these %2$d headers from now on. The values stay on the TV; this page can\'t show them again.</item>
+    </plurals>
+    <string name="web_access_add_another">Add another site</string>
+    <string name="web_access_https_title">Use an https address</string>
+    <string name="web_access_https_body">Over http the headers would cross the network unencrypted, so Nuvio never sends them there. Nothing was saved.</string>
+    <string name="web_access_error_address">Enter the site\'s address, starting with https://</string>
+    <string name="web_access_error_userinfo">Leave out the name and password before the @.</string>
+    <string name="web_access_error_no_headers">Add at least one header.</string>
+    <string name="web_access_error_too_many_headers">A site takes at most %1$d headers.</string>
+    <string name="web_access_error_name">Not a header name: letters, digits and - work.</string>
+    <string name="web_access_error_reserved">Nuvio sets this header itself; it can\'t be replaced.</string>
+    <string name="web_access_error_duplicate">This header is already above.</string>
+    <string name="web_access_error_value">Enter a value in plain text (no accents or emoji), up to %1$d characters.</string>
+    <string name="web_access_error_unreadable">The TV couldn\'t read its saved sites. Nothing was saved.</string>
+    <string name="web_access_error_full">This TV already has %1$d sites. Remove one on the TV, then send again.</string>
+    <string name="web_access_error_save">The TV couldn\'t save this site. Nothing was saved; try again.</string>
+    <string name="web_access_error_send">Couldn\'t send the site. Check the TV still shows the code, then try again.</string>
     <string name="profile_avatar_category_anime">Anime</string>
     <string name="profile_avatar_category_animation">Animation</string>
     <string name="profile_avatar_category_movie">Movie</string>
@@ -1882,6 +1975,7 @@
     <string name="live_tv_error_network">network error</string>
     <string name="live_tv_error_stall">stream stalled</string>
     <string name="live_tv_error_parse">unreadable stream</string>
+    <string name="live_tv_error_protocol">protocol not supported (%1$s)</string>
     <string name="live_tv_error_licence_refused">licence refused (%1$s)</string>
     <string name="live_tv_error_no_drm">this TV has no %1$s DRM</string>
     <string name="live_tv_error_no_drm_unknown">this TV has no DRM for this stream</string>
@@ -2840,6 +2934,11 @@
     <string name="stream_upstreams_missing_list">%1$s and %2$s didn\'t answer</string>
     <string name="stream_upstreams_missing_more">%1$s and %2$d more didn\'t answer</string>
     <string name="stream_upstreams_missing_suffix">results without them</string>
+    <!-- Spec 97 X6: the foot while source names are hidden, a count in place of the names. -->
+    <plurals name="stream_upstreams_missing_count">
+        <item quantity="one">%1$d source didn\'t answer</item>
+        <item quantity="other">%1$d sources didn\'t answer</item>
+    </plurals>
     <!-- Spec 51 P6: the stream limit on the Sources panel -->
     <!-- %1$s = a resolution ("1080p", "4K"): a row hidden for its resolution -->
     <string name="stream_limit_over_resolution">Over %1$s</string>
@@ -2856,6 +2955,8 @@
     <string name="stream_limit_why_resolution_tv">over this TV\'s %1$s screen</string>
     <!-- %1$s = the test's date ("4 Nov"), %2$d = the speed it measured, %3$s = the service ("real-debrid.com"), %4$d = the limit (80% of %2$d) -->
     <string name="stream_limit_hidden_network">The network test (%1$s) measured %2$d Mbps from %3$s; this list keeps to %4$d Mbps.</string>
+    <!-- Spec 97 D18/D20: the same line with source names hidden (no service host). -->
+    <string name="stream_limit_hidden_network_unnamed">The network test (%1$s) measured %2$d Mbps; this list keeps to %3$d Mbps.</string>
     <!-- Spec 51 P7: Settings › Playback › Buffer & network › This TV, the Stream list limit row and its picker -->
     <string name="stream_limit_setting">Stream list limit</string>
     <string name="stream_limit_mode_network">From the network test</string>
@@ -3082,6 +3183,8 @@
     <string name="this_tv_setup_again_done_toast">This TV is set up again: %1$d settings written</string>
     <!-- Spec 33 D6: the first-play network test hold (sandbox u33-welcome-setup v3, stage t-hold) -->
     <string name="network_test_hold_checking">Checking %1$s for this TV</string>
+    <!-- Spec 97 X6: hidden names (sandbox s097-x6-hidden-names v3, stage 13) -->
+    <string name="network_test_hold_checking_hidden">Checking this TV\u2019s network</string>
     <string name="network_test_hold_step">Step %1$d of %2$d</string>
     <plurals name="network_test_hold_minutes_left">
         <item quantity="one">About %1$d min left</item>
@@ -3095,8 +3198,12 @@
         <item quantity="other">%1$d connections</item>
     </plurals>
     <string name="network_test_notice">Network set for %1$s \u00b7 %2$s for this film</string>
+    <!-- Spec 97 X6: hidden names (s097-x6-hidden-names v3, stage 14); %1$s = network_test_connections -->
+    <string name="network_test_notice_hidden">Network set \u00b7 %1$s for this film</string>
     <string name="pause_network_label">Network</string>
     <string name="pause_network_chip">Set for %1$s \u00b7 %2$s \u203a</string>
+    <!-- Spec 97 X6 D29: hidden names (sandbox s097-x6-hidden-names v4, stage 15); %1$s = network_test_connections -->
+    <string name="pause_network_chip_hidden">Set \u00b7 %1$s \u203a</string>
     <!-- Spec 33 D8: the first-launch welcome card (sandbox u33-welcome-setup v3, stage a-summary) -->
     <string name="welcome_eyebrow">SET UP FOR THIS TV</string>
     <string name="welcome_device_memory">%1$s memory</string>
@@ -3428,6 +3535,8 @@
     <string name="player_tray_stats">Stats</string>
     <string name="player_tray_external_player">External player</string>
     <string name="player_tray_switch_engine">Switch engine</string>
+    <!-- Spec 97 D31: reason line over the More tray while the dimmed Switch engine pill is focused. -->
+    <string name="player_tray_switch_engine_saved_site">This site plays on ExoPlayer only: it needs its access headers on every request</string>
     <string name="player_degraded_audio_off">Audio turned off after repeated errors, so the video keeps playing</string>
     <string name="player_degraded_audio_pcm">Audio fell back to PCM after an audio error</string>
     <string name="player_degraded_audio_safe">Audio switched to safe mode after an error</string>
@@ -3508,8 +3617,19 @@
     <string name="tip_done">Done</string>
     <string name="tip_terms">Payments by Stripe. Your tip and message are private: only the developer sees them, with the email you enter.</string>
     <string name="tip_terms_sponsors">Payments through GitHub Sponsors. Only the developer sees your tip and message.</string>
+    <!-- Spec 125: the Ko-fi card's foot (sandbox spec-125-ko-fi-tip-card v2) -->
+    <string name="tip_terms_kofi">Payments through Ko-fi. Pick any amount there.</string>
     <string name="cd_tip_qr">QR code for the tip page</string>
     <string name="tip_thanks_title">Thank you</string>
     <string name="tip_thanks_line">Your tip keeps Nuvio KE free for everyone, and it honestly makes my day.</string>
     <string name="tip_thanks_signature">Arshad · Nuvio KE</string>
+    <!-- Spec 124: the subreddit row and its QR dialog (sandbox spec-124-community-row v1) -->
+    <string name="community_section">Community</string>
+    <string name="community_row_title">r/nuvioke</string>
+    <string name="community_row_subtitle">Join the subreddit: news, help and requests</string>
+    <string name="community_title">r/nuvioke</string>
+    <string name="community_pitch">The Nuvio KE subreddit: release news, help from other viewers, and a place to ask for features. Scan the code to open it on your phone.</string>
+    <string name="community_scan_eyebrow">Scan to open</string>
+    <string name="community_scan_line">Opens on your phone, in the Reddit app or your browser.</string>
+    <string name="cd_community_qr">QR code for the Nuvio KE subreddit</string>
 </resources>

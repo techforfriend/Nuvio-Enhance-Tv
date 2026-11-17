@@ -133,6 +133,7 @@ class MpvEngineHopPolicyTest {
         firstFrameRendered = false,
         inBackground = false,
         switchUsedForUrl = false,
+        mpvBarred = false,
         videoMime = MimeTypes.VIDEO_H264,
         videoCodecs = "avc1.6E0028",
         dvSourceProfile = null,
@@ -149,6 +150,8 @@ class MpvEngineHopPolicyTest {
         assertFalse(MpvEngineHopPolicy.hopAllowed(open.copy(inBackground = true)))
         // D3: the URL already switched once (either direction, or a manual switch to ExoPlayer).
         assertFalse(MpvEngineHopPolicy.hopAllowed(open.copy(switchUsedForUrl = true)))
+        // Spec 97 D30: mpv never plays a stream on a saved access site.
+        assertFalse(MpvEngineHopPolicy.hopAllowed(open.copy(mpvBarred = true)))
     }
 
     @Test

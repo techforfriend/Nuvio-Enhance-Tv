@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.player
 
 import com.nuvio.tv.core.player.AspectMode
 import com.nuvio.tv.core.player.PLAYBACK_SPEEDS
+import com.nuvio.tv.data.local.InternalPlayerEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -31,5 +32,15 @@ class SpeedPanelAndTrayTest {
         assertTrue(speedValueMarked(0.5f))
         assertFalse(aspectValueMarked(AspectMode.ORIGINAL))
         AspectMode.entries.filter { it != AspectMode.ORIGINAL }.forEach { assertTrue(aspectValueMarked(it)) }
+    }
+
+    @Test
+    fun switchEngineDimsOnlyWhenItWouldGoToABarredMpv() {
+        // Spec 97 D31 stage 16: on ExoPlayer (or AUTO) the switch goes to mpv.
+        assertTrue(switchEngineDimmed(mpvBarredForStream = true, engine = InternalPlayerEngine.EXOPLAYER))
+        assertTrue(switchEngineDimmed(mpvBarredForStream = true, engine = InternalPlayerEngine.AUTO))
+        // On mpv the switch goes to ExoPlayer, never barred.
+        assertFalse(switchEngineDimmed(mpvBarredForStream = true, engine = InternalPlayerEngine.MVP_PLAYER))
+        assertFalse(switchEngineDimmed(mpvBarredForStream = false, engine = InternalPlayerEngine.EXOPLAYER))
     }
 }

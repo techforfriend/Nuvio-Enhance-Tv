@@ -6,15 +6,20 @@
 
 package com.nuvio.tv.ui.screens.home
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,10 +32,15 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -61,6 +71,13 @@ import com.nuvio.tv.ui.components.continueWatchingImageModel
 import com.nuvio.tv.ui.components.continueWatchingShouldBlur
 import com.nuvio.tv.ui.components.continueWatchingUsesEpisodeThumbnails
 import com.nuvio.tv.ui.components.rememberFolderCoverFallback
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreview
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
+import com.nuvio.tv.ui.components.trailerpreview.TrailerPreviewAnchor
+import com.nuvio.tv.ui.components.trailerpreview.TrailerPreviewCandidate
+import com.nuvio.tv.ui.components.trailerpreview.TrailerPreviewStage
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import com.nuvio.tv.ui.theme.NuvioMarqueeHomeTokens
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -145,6 +162,32 @@ internal fun marqueeBandCardHeight(
 
 internal fun ModernCarouselItem.isPlaceholderCard(): Boolean =
     (payload as? ModernPayload.Catalog)?.itemId.isPlaceholderItemId()
+
+// Spec 96 row form (PD3): the playing card's 16:9 size, widening over ~250 ms (sandbox s96-home-1).
+private val PREVIEW_CARD_WIDTH = 320.dp
+private val PREVIEW_CARD_HEIGHT = 180.dp
+private const val PREVIEW_WIDEN_MS = 250
+
+/**
+ * The card's trailer preview candidate (Spec 96 PD3): a catalog card with a real title; never Continue Watching,
+ * folders or placeholders. Its click opens Details, which stage 2's OK reuses.
+ */
+internal fun ModernCarouselItem.trailerPreviewCandidate(): TrailerPreviewCandidate? {
+    val catalog = payload as? ModernPayload.Catalog ?: return null
+    val meta = metaPreview ?: return null
+    if (isPlaceholderCard()) return null
+    return TrailerPreviewCandidate(
+        key = catalog.focusKey,
+        itemId = meta.id,
+        title = meta.name,
+        releaseInfo = meta.releaseInfo,
+        apiType = meta.apiType,
+        fallbackYtId = meta.trailerYtIds.firstOrNull(),
+        genre = meta.genres.firstOrNull(),
+        runtime = meta.runtime,
+        imdbRating = meta.imdbRating
+    )
+}
 
 /** The artwork a catalog/folder card shows (CW cards resolve theirs from the CW settings); also
  *  the collection editor's preview tiles (Spec 28 stage 10). */
@@ -314,6 +357,56 @@ internal fun MarqueeRowItem(
     val isWatched = item.metaPreview?.let(isCatalogItemWatched) ?: false
     val glowEnabled = folder?.focusGlowEnabled ?: true
 
+    // Spec 96 trailer preview (PD3): Library's Hidden and History cards never preview.
+    val preview = LocalTrailerPreview.current
+    // Built only for the focused card; unfocused cards pay nothing while rows scroll.
+    val previewCandidate = if (isFocused && preview != null && LocalTrailerPreviewEnabled.current && !captioned && !dimUntilFocused) {
+        remember(item, imageModel, cardSize) { item.trailerPreviewCandidate()?.copy(poster = imageModel?.takeIf { cardSize != null }) }
+    } else null
+    // Only the focused card reads the host's state, so a preview recomposes one card.
+    val previewState = if (preview != null && previewCandidate != null && isFocused) preview.state.value else null
+    val previewPlaying = previewState != null && previewState.candidate.key == previewCandidate?.key &&
+        previewState.stage != TrailerPreviewStage.LOADING
+    val gridForm = cardSize != null
+    val rowPreview = previewPlaying && !gridForm
+    // Everything below lives only while the card is focused: unfocused cards compose no preview machinery.
+    var widen: Animatable<Float, *>? = null
+    var bringIntoView: BringIntoViewRequester? = null
+    if (isFocused && preview != null && previewCandidate != null) {
+        // Registering is a plain call (no snapshot write, PD3); blur and dispose both unregister. Keyed on the mode,
+        // so a setting that loads late or changes registers again.
+        // Keyed on the card's key, not the candidate: enrichment rewrites the meta of a focused card (genres,
+        // runtime, rating, trailer ids) and must not close or restart its preview. The candidate registered is the
+        // one at focus; the machine keeps the first candidate of a key by design (P3 round 4).
+        val cardMode = preview.cardMode.value
+        val latestOnClick by rememberUpdatedState(onClick)
+        DisposableEffect(previewCandidate.key, cardMode) {
+            val token = preview.register(previewCandidate) { latestOnClick() }
+            onDispose { preview.unregister(token) }
+        }
+        if (!gridForm) {
+            // Row form: the card takes 0 -> 1 of the way to 320 dp of the row while it plays; it snaps back on close.
+            val rowWiden = remember { Animatable(0f) }
+            val requester = remember { BringIntoViewRequester() }
+            widen = rowWiden
+            bringIntoView = requester
+            if (rowPreview) {
+                val bringRect = with(density) {
+                    previewRowBringRect(PREVIEW_CARD_WIDTH.toPx(), size.height.toPx())
+                }
+                LaunchedEffect(Unit) {
+                    // After the widened slot's first layout.
+                    withFrameNanos {}
+                    launch { requester.bringIntoView(bringRect) }
+                    rowWiden.animateTo(1f, tween(PREVIEW_WIDEN_MS))
+                }
+            } else if (rowWiden.targetValue != 0f) { // targetValue: no per-frame read
+                // Closed: the next play (a resume while still focused) widens from the rest width again.
+                LaunchedEffect(Unit) { rowWiden.snapTo(0f) }
+            }
+        }
+    }
+
     val fastScrollState = LocalFastScrollActive.current
     // Only the focused card shows chrome, so only it subscribes to fast-scroll changes.
     val isFastScrolling = isFocused && fastScrollState.value
@@ -335,12 +428,57 @@ internal fun MarqueeRowItem(
         MarqueeCard(
             onClick = onClick,
             onLongPress = onLongPress,
-            width = size.width,
-            height = size.height,
+            width = if (rowPreview) PREVIEW_CARD_WIDTH else size.width,
+            height = if (rowPreview) PREVIEW_CARD_HEIGHT else size.height,
             glowColor = glowColor,
             containerColor = containerColor,
             showFocusChrome = !isFastScrolling,
+            // The playing card does not scale (PD3); the grid form also hides under its lifted copy (D10).
+            focusedScale = if (previewPlaying) 1f else NuvioTheme.marquee.cardScale,
             modifier = Modifier
+                .then(
+                    // Before the slot, so its coordinates are the slot's (the rect in bringIntoView above).
+                    bringIntoView?.takeIf { rowPreview }?.let { Modifier.bringIntoViewRequester(it) } ?: Modifier
+                )
+                .then(
+                    widen?.takeIf { rowPreview }?.let { rowWiden ->
+                        Modifier.previewRowSlot(
+                            restWidth = size.width,
+                            restHeight = size.height,
+                            landscapeRow = landscapeRow,
+                            progress = { rowWiden.value }
+                        )
+                    } ?: Modifier
+                )
+                .then(
+                    // Playing: the overlay's anchor; loading (Spec 123 C6): the spinner's, with the scale it draws at. A grid
+                    // card also pushes while its preview loads hidden (C2), for the Morph's start.
+                    if (preview != null && previewCandidate != null && (previewPlaying ||
+                            preview.loadingKey.value == previewCandidate.key ||
+                            (gridForm && previewState?.candidate?.key == previewCandidate.key &&
+                                previewState.stage == TrailerPreviewStage.LOADING))
+                    ) {
+                        val drawnScale = if (previewPlaying || isFastScrolling) 1f else NuvioTheme.marquee.cardScale
+                        Modifier.onGloballyPositioned { coordinates ->
+                            if (!coordinates.isAttached) return@onGloballyPositioned
+                            val position = coordinates.positionInRoot()
+                            val anchor = TrailerPreviewAnchor(
+                                key = previewCandidate.key,
+                                boundsInRoot = Rect(
+                                    position.x,
+                                    position.y,
+                                    position.x + coordinates.size.width,
+                                    position.y + coordinates.size.height
+                                ),
+                                grid = gridForm,
+                                accent = accent(),
+                                scale = drawnScale
+                            )
+                            if (previewPlaying) preview.pushAnchor(anchor) else preview.pushLoadingAnchor(anchor)
+                        }
+                    } else Modifier
+                )
+                .then(if (previewPlaying && gridForm) Modifier.graphicsLayer { alpha = 0f } else Modifier)
                 .then(
                     if (dimUntilFocused) Modifier.graphicsLayer { alpha = if (isFocused) 1f else DIMMED_CARD_ALPHA }
                     else Modifier
@@ -461,3 +599,33 @@ private fun FocusGifOverlay(url: String, spec: MarqueeImageSpec?) {
         onSuccess = { loaded = true }
     )
 }
+
+/**
+ * Spec 96 row form (PD3): measures the card at 320x180 but takes [restWidth] -> 320 dp of the row ([progress]) and
+ * its rest height, so the row shifts aside (D6) without growing; poster-height rows (wide-shape cards included)
+ * overflow evenly above and below, landscape rows downward (sandbox s96-home-1, s96-home-land).
+ */
+private fun Modifier.previewRowSlot(restWidth: Dp, restHeight: Dp, landscapeRow: Boolean, progress: () -> Float): Modifier =
+    layout { measurable, _ ->
+        val width = PREVIEW_CARD_WIDTH.roundToPx()
+        val height = PREVIEW_CARD_HEIGHT.roundToPx()
+        val placeable = measurable.measure(Constraints.fixed(width, height))
+        val slotHeight = restHeight.roundToPx()
+        layout(previewRowSlotWidth(restWidth.roundToPx(), width, progress()), slotHeight) {
+            placeable.place(0, previewRowCardY(slotHeight, height, landscapeRow))
+        }
+    }
+
+/** The row slot's width at [progress] of the widen: the rest card's [rest] -> the preview card's [full]. */
+internal fun previewRowSlotWidth(rest: Int, full: Int, progress: Float): Int = (rest + (full - rest) * progress).roundToInt()
+
+/** Where the preview card sits in its slot: centred on a poster-height row (overflow above and below), top on a landscape row. */
+internal fun previewRowCardY(slotHeight: Int, cardHeight: Int, landscapeRow: Boolean): Int =
+    if (landscapeRow) 0 else (slotHeight - cardHeight) / 2
+
+/**
+ * The rect the widened card brings into view, in the slot's coordinates: the full 320 dp width at the row's own
+ * height, so the row scrolls sideways and the Home band never moves vertically (PD3, D6).
+ */
+internal fun previewRowBringRect(fullWidth: Float, restHeight: Float): Rect = Rect(0f, 0f, fullWidth, restHeight)
+

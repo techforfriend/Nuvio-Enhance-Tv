@@ -40,8 +40,8 @@ class WhatsNewTest {
         }
     }
 
-    private fun viewModel(updatedSinceInstall: Boolean = true) =
-        WhatsNewViewModel(store, ChangelogRepository(api, "o", "r"), installed, { updatedSinceInstall })
+    private fun viewModel(updatedSinceInstall: Boolean = true, testReleases: Boolean = false) =
+        WhatsNewViewModel(store, ChangelogRepository(api, "o", "r") { testReleases }, installed, { updatedSinceInstall })
 
     private fun release(code: Int, body: String) = GitHubReleaseDto(
         name = "Nuvio KE $code",
@@ -165,5 +165,23 @@ class WhatsNewTest {
             ),
             whatsNewRows("* **HDR subtitles**: Their own style: dimmer\n\n- [See docs](https://x.y)\n  - Nested\n")
         )
+    }
+
+    @Test
+    fun `a test build finds its pre-release only while test releases are on`() = runTest(main.dispatcher) {
+        answer = Response.success(listOf(release(1411, whatsNewBody).copy(prerelease = true)))
+        store.setSeenBuild(SeenBuild(1392, "0.9.0-ke52"))
+        val on = viewModel(testReleases = true)
+        on.start()
+        advanceUntilIdle()
+        assertEquals(true, on.card.value?.release?.prerelease)
+
+        store.setSeenBuild(SeenBuild(1392, "0.9.0-ke52"))
+        val before = calls
+        val off = viewModel(testReleases = false)
+        off.start()
+        advanceUntilIdle()
+        assertEquals(before + 1, calls)
+        assertNull(off.card.value)
     }
 }

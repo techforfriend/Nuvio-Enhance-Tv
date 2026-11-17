@@ -3,14 +3,16 @@ package com.nuvio.tv.livetv.player
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
-import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.nuvio.tv.R
 import com.nuvio.tv.core.player.AudioOutputPlan
 import com.nuvio.tv.core.player.AudioOutputRouteDetector
 import com.nuvio.tv.core.player.DeniedTranscodePlanner
@@ -19,11 +21,13 @@ import com.nuvio.tv.core.player.PLAYER_RELEASE_TIMEOUT_MS
 import com.nuvio.tv.core.player.SubtitleOffsetRenderersFactory
 import com.nuvio.tv.core.player.audioPassthroughPolicyOf
 import com.nuvio.tv.core.player.effectiveDecoderPriority
+import com.nuvio.tv.core.player.findCause
 import com.nuvio.tv.core.player.learnedDeniedAudioGroups
 import com.nuvio.tv.core.player.movieAudioAttributes
 import com.nuvio.tv.core.player.resolveDeviceAudioLanguages
 import com.nuvio.tv.core.player.resolvePreferredAudioLanguages
 import com.nuvio.tv.data.local.DeniedCodecHandling
+import com.nuvio.tv.data.local.FrameRateMatchingMode
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
 import com.nuvio.tv.livetv.model.Channel
@@ -40,12 +44,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.IOException
 import javax.inject.Inject
@@ -119,7 +125,8 @@ class LivePlayer @Inject constructor(
     private val health: StreamHealthStore,
     private val playerSettingsDataStore: PlayerSettingsDataStore,
     private val resolver: StreamResolver,
-    private val playbackActivity: PlaybackActivity
+    private val playbackActivity: PlaybackActivity,
+    private val network: LiveNetwork
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -132,6 +139,29 @@ class LivePlayer @Inject constructor(
             _state.map { it is LiveTuneState.Tuning || it is LiveTuneState.Playing }
                 .distinctUntilChanged()
                 .collect { playbackActivity.setLive(this@LivePlayer, it) }
+        }
+    }
+
+    private val _rateFamily = MutableStateFlow<LiveFrameRate.Family?>(null)
+
+    /**
+     * The playing stream's frame-rate family (Spec 94 T4); null while tuning or not yet known. Reset by
+     * each tune and each stream load; the screen switches the display from it.
+     */
+    val rateFamily: StateFlow<LiveFrameRate.Family?> = _rateFamily.asStateFlow()
+
+    /** Frame rate matching is on (Spec 94 D1: the Playback setting governs Live TV too); null until read. */
+    val frameRateMatching: StateFlow<Boolean?> = playerSettingsDataStore.playerSettings
+        .map<PlayerSettings, Boolean?> { it.frameRateMatchingMode != FrameRateMatchingMode.OFF }
+        .stateIn(scope, SharingStarted.Eagerly, null)
+
+    /** Measures [rateFamily] while a stream plays; cancelled with the tune or the stream. */
+    private var rateJob: Job? = null
+
+    init {
+        // The setting may change while this player lives (it is built once): keep Media3's strategy in step.
+        scope.launch {
+            frameRateMatching.collect { on -> if (on != null) exo?.setVideoChangeFrameRateStrategy(LiveFrameRate.strategy(on)) }
         }
     }
 
@@ -157,6 +187,9 @@ class LivePlayer @Inject constructor(
         val streams: List<LiveStream>,
         val ladder: LiveTuneLadder
     ) {
+        /** How many times a stream of this session reached READY: an outage answer older than a READY is moot (L1). */
+        var readies = 0
+
         /** Try-order [index] as its 1-based place in [playable] (what the screen numbers). */
         fun position(index: Int): Int = playable.indexOfFirst { it === streams[index] } + 1
 
@@ -180,17 +213,22 @@ class LivePlayer @Inject constructor(
     private var loadJob: Job? = null
     private var timerJob: Job? = null
 
+    /** Waiting out a device outage before tuning the channel again (Spec 90 L1); cancelled with the tune. */
+    private var waitJob: Job? = null
+
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             val s = session ?: return
             val now = SystemClock.elapsedRealtime()
             when (playbackState) {
                 Player.STATE_READY -> {
+                    s.readies++
                     if (_state.value is LiveTuneState.Tuning) {
                         _state.value = LiveTuneState.Playing(s.channel)
                         val stream = s.streams[s.ladder.index]
                         scope.launch { health.recordPlayed(stream, System.currentTimeMillis()) }
                     }
+                    if (_rateFamily.value == null && rateJob?.isActive != true) measureRate(s)
                     apply(s, s.ladder.onReady(now))
                 }
                 Player.STATE_BUFFERING -> apply(s, s.ladder.onBuffering(now))
@@ -210,7 +248,11 @@ class LivePlayer @Inject constructor(
             } else {
                 classified
             }
-            apply(s, s.ladder.onError(failure, behindLiveWindow, SystemClock.elapsedRealtime()))
+            // Spec 90 L5: an Xtream panel's refusal reloads after a wait for the old connection to close.
+            val refusal = LiveTuneLadder.panelRefusal(failure, s.streams[s.ladder.index].url)
+            val servedTs = error.findCause<HlsBodyIsTs>() != null
+            val step = s.ladder.onError(refusal ?: failure, behindLiveWindow, SystemClock.elapsedRealtime(), servedTs)
+            apply(s, step, reloadDelayMs = if (refusal != null) LiveTuneLadder.PANEL_RETRY_DELAY_MS else 0L)
         }
     }
 
@@ -229,6 +271,11 @@ class LivePlayer @Inject constructor(
             val streams = try {
                 sources.streamsFor(channel)
             } catch (e: IOException) {
+                // Spec 90 L1: an outage is waited out, not shown as a failed lookup.
+                if (!network.online()) {
+                    waitForNetwork(channel)
+                    return@launch
+                }
                 // Only SourceFetchException's fixed reasons reach the screen; raw IOException text may carry the addon URL.
                 unavailable(channel, 0, 0, LiveFailure(FailureKind.NETWORK, detail = (e as? SourceFetchException)?.message))
                 return@launch
@@ -296,25 +343,127 @@ class LivePlayer @Inject constructor(
         tuneJob?.cancel()
         loadJob?.cancel()
         timerJob?.cancel()
+        waitJob?.cancel()
         tuneJob = null
         loadJob = null
         timerJob = null
+        waitJob = null
         session = null
+        resetRate()
     }
 
-    /** Does what the ladder answered, records an abandoned stream, and re-arms the timer. */
-    private fun apply(s: Session, step: LadderStep) {
+    private fun resetRate() {
+        rateJob?.cancel()
+        rateJob = null
+        _rateFamily.value = null
+    }
+
+    /**
+     * Spec 94 T4: [s]'s stream family, from its format's frame rate when the stream declares one (HLS
+     * `FRAME-RATE`), else counted from the video decoder ([LiveFrameRate.Meter]) every
+     * [RATE_SAMPLE_MS] of real playback. Stops once known: a channel keeps its rate. Logged for the
+     * Shield acceptance (no URLs or channel data).
+     */
+    private fun measureRate(s: Session) {
+        val player = exo ?: return
+        rateJob = scope.launch {
+            val probe = LiveFrameRate.Probe()
+            while (session === s) {
+                val counters = player.videoDecoderCounters?.also { it.ensureUpdated() }
+                val frames = counters?.let {
+                    it.renderedOutputBufferCount.toLong() + it.droppedBufferCount + it.skippedOutputBufferCount
+                }
+                val settled = probe.step(
+                    declaredFps = player.videoFormat?.frameRate,
+                    frames = frames,
+                    playing = player.isPlaying,
+                    mediaMs = streamPositionMs(player),
+                    wallMs = SystemClock.elapsedRealtime()
+                )
+                if (settled != null) {
+                    Log.i(TAG, "Rate family ${settled.family} (${if (settled.declared) "declared" else "measured"})")
+                    _rateFamily.value = settled.family
+                    return@launch
+                }
+                delay(RATE_SAMPLE_MS)
+            }
+        }
+    }
+
+    private val rateWindow = Timeline.Window()
+
+    /**
+     * Media time that only moves with playback (the meter's clock): the position from the start of the
+     * stream's period. A live window's own position drops back each time the playlist slides.
+     */
+    private fun streamPositionMs(player: Player): Long {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return player.currentPosition
+        return timeline.getWindow(player.currentMediaItemIndex, rateWindow).positionInFirstPeriodMs + player.currentPosition
+    }
+
+    /**
+     * Spec 90 L1 (D1, D5): the device is offline, so nothing is held against the channel's streams.
+     * The tune stops, the screen keeps "Tuning <channel>", and the network is asked again on
+     * [LiveNetwork.retryDelayMs]; the first yes tunes the channel again (fresh lookup, ladder and
+     * budget). Any tune, [stop] or [release] cancels the wait.
+     */
+    private fun waitForNetwork(channel: Channel) {
+        cancelTune()
+        exo?.stop()
+        _state.value = LiveTuneState.Tuning(channel, 0, 0)
+        waitJob = scope.launch {
+            var attempt = 0
+            while (true) {
+                delay(LiveNetwork.retryDelayMs(attempt++))
+                if (network.online()) {
+                    tune(channel)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    /**
+     * Spec 90 L1: runs [onOnline] when the device reaches the internet. Offline: waits the outage
+     * out if [s] is still the session and none of its streams reached READY since the question
+     * (`LiveNetwork.outcome`); else does nothing. Used before an outage-shaped failure is recorded
+     * against a stream or ends the channel.
+     */
+    private fun whenOnline(s: Session, onOnline: () -> Unit) {
+        val readiesAsked = s.readies
+        scope.launch {
+            val online = network.online()
+            when (LiveNetwork.outcome(online, sameSession = session === s, playing = s.readies != readiesAsked)) {
+                LiveNetwork.Outcome.PROCEED -> onOnline()
+                LiveNetwork.Outcome.WAIT -> waitForNetwork(s.channel)
+                LiveNetwork.Outcome.NONE -> Unit
+            }
+        }
+    }
+
+    /**
+     * Does what the ladder answered, records an abandoned stream, and re-arms the timer. A Reload
+     * waits [reloadDelayMs] first.
+     */
+    private fun apply(s: Session, step: LadderStep, reloadDelayMs: Long = 0L) {
         if (session !== s) return
         val abandoned = step.abandoned
         val failure = step.failure
         if (abandoned != null && failure != null) {
             val stream = s.streams[abandoned]
-            scope.launch { health.recordFailed(stream, failure.kind, System.currentTimeMillis()) }
+            val record = { scope.launch { health.recordFailed(stream, failure.kind, System.currentTimeMillis()) } }
+            // The ladder goes on meanwhile; an offline answer stops it (Spec 90 L1).
+            if (LiveNetwork.isNetworkClass(failure)) whenOnline(s) { record() } else record()
+            // An answer without a probe (no network link) can run inline on Main.immediate and has then
+            // already ended this session with the wait.
+            if (session !== s) return
         }
         val player = exo ?: return
         when (val action = step.action) {
             is LadderAction.Play -> load(s, action.index)
-            LadderAction.Reload -> load(s, s.ladder.index, fresh = true)
+            LadderAction.Reload -> load(s, s.ladder.index, fresh = true, delayMs = reloadDelayMs, progressive = s.ladder.asProgressive)
+            LadderAction.ReloadAsProgressive -> load(s, s.ladder.index, progressive = true)
             LadderAction.SeekToDefault -> {
                 _state.value = s.tuning(s.ladder.index)
                 player.seekToDefaultPosition()
@@ -322,9 +471,21 @@ class LivePlayer @Inject constructor(
             }
             is LadderAction.Unavailable -> {
                 player.stop()
-                session = null
+                // A load still resolving must not start playback behind a pending decision.
+                loadJob?.cancel()
+                loadJob = null
                 val tried = if (s.streams.isEmpty()) 0 else s.ladder.index + 1
-                unavailable(s.channel, tried, s.streams.size, action.failure, licensed = s.streams.count { it.drm })
+                val giveUp = {
+                    session = null
+                    unavailable(s.channel, tried, s.streams.size, action.failure, licensed = s.streams.count { it.drm })
+                }
+                // Spec 90 L1: the session stays, shown as "Tuning" (D1), until the network answers.
+                if (LiveNetwork.isNetworkClass(action.failure)) {
+                    _state.value = s.tuning(s.ladder.index)
+                    whenOnline(s) { if (session === s) giveUp() }
+                } else {
+                    giveUp()
+                }
             }
             LadderAction.None -> Unit
         }
@@ -334,9 +495,11 @@ class LivePlayer @Inject constructor(
     /**
      * Stream [index] from a fresh source at the live edge (a Play and a Reload alike). The stored
      * stream stays the identity (pick, health); what plays is its [StreamResolver] answer, resolved
-     * inside the ladder's watchdog; [fresh] (a Reload) skips cached tokens (Spec 72 D1).
+     * inside the ladder's watchdog; [fresh] (a Reload) skips cached tokens (Spec 72 D1). [delayMs]
+     * waits after the stop, inside the watchdog too (a panel refusal's retry, Spec 90 L5).
+     * [progressive] skips the mime resolve: the HLS link sent MPEG-TS (Spec 90 L2).
      */
-    private fun load(s: Session, index: Int, fresh: Boolean = false) {
+    private fun load(s: Session, index: Int, fresh: Boolean = false, delayMs: Long = 0L, progressive: Boolean = false) {
         val player = exo ?: return
         val stream = s.streams[index]
         val position = s.position(index)
@@ -344,14 +507,23 @@ class LivePlayer @Inject constructor(
         val pick = LiveStreamPick(s.channel.key, stream, position, s.playable.size)
         _stream.value = pick
         player.stop()
+        // Another stream may have another rate; the display stays as it is until it is known (D3).
+        resetRate()
         loadJob?.cancel()
         // Assigned before the body runs: on Main.immediate it can run inline and reach apply() (an
         // unsupported key system), whose next load must find this job to cancel, not lose its own.
         val job = scope.launch(start = CoroutineStart.LAZY) {
+            if (delayMs > 0) delay(delayMs)
             val resolution = resolver.resolve(stream, fresh)
             if (session !== s) return@launch
             s.ladder.onResolved(resolution.fromCache)
             val request = LiveMediaSources.normalize(resolution.stream)
+            // Spec 90 L4: a scheme no source opens fails now, not after the 10 s watchdog.
+            LiveMediaSources.unsupportedScheme(request.url)?.let { scheme ->
+                val failure = LiveFailure(FailureKind.PARSE, detail = context.getString(R.string.live_tv_error_protocol, scheme))
+                apply(s, s.ladder.onError(failure, false, SystemClock.elapsedRealtime()))
+                return@launch
+            }
             // Licence details from the stored stream: a resolve (Pluto/Plex) answers with a bare URL.
             val drm = LiveDrm.from(stream.kodiProps)
             if (drm != null && !LiveMediaSources.supported(drm)) {
@@ -360,7 +532,7 @@ class LivePlayer @Inject constructor(
                 return@launch
             }
             val client = LiveMediaSources.client(request.headers)
-            val mime = LiveMediaSources.resolveMimeType(request, client)
+            val mime = if (progressive) null else LiveMediaSources.resolveMimeType(request, client)
             if (session !== s) return@launch
             _stream.value = pick.copy(mimeType = mime)
             val drmManager = drm?.let { LiveMediaSources.drmSessionManager(it, request) }
@@ -463,8 +635,8 @@ class LivePlayer @Inject constructor(
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setReleaseTimeoutMs(PLAYER_RELEASE_TIMEOUT_MS)
-            // No mode switch per zap (no app AFR on live); seamless-only matching is free.
-            .setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS)
+            // Spec 94 T4: followed live from frameRateMatching (init); this is the build-time value.
+            .setVideoChangeFrameRateStrategy(LiveFrameRate.strategy(settings.frameRateMatchingMode != FrameRateMatchingMode.OFF))
             .build()
             .apply {
                 // TV: no focus handling, as VOD: ducking would drop a passthrough bitstream to PCM.
@@ -476,6 +648,8 @@ class LivePlayer @Inject constructor(
     }
 
     private companion object {
+        const val TAG = "LivePlayer"
+        const val RATE_SAMPLE_MS = 3_000L
         const val START_BUFFER_MS = 1_000
         const val REBUFFER_START_MS = 2_000
     }

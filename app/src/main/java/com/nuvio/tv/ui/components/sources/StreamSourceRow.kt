@@ -78,8 +78,10 @@ private val FAILURE_MARK_GAP = 5.dp
  * glass fill + inset ring, no scale. [failureMark] (Spec 75 S6, sandbox `spec-75-failure-reasons` stages 9-10): a
  * source that failed in the last day gets a red line under its file name (the reason and its age)
  * and the rest of the row faded. [onLongPress] (hold OK, or MENU; Spec 65 P6's row menu): the
- * release that follows does not click. Callers put `focusRequester`/`onFocusChanged`/key handling
- * in [modifier].
+ * release that follows does not click. [hideNames] (Spec 97 X6, sandbox `s097-x6-hidden-names` stage 3): no
+ * addon label line, no addon in the side column, the second line only a release file name, no debrid
+ * short code, and badges mode whatever [useAddonFormatting] says. Callers put
+ * `focusRequester`/`onFocusChanged`/key handling in [modifier].
  */
 @Composable
 internal fun StreamSourceRow(
@@ -94,8 +96,11 @@ internal fun StreamSourceRow(
     overResolutionCap: ReleaseResolution? = null,
     decode: DecodeCapability = DecodeCapability.UNKNOWN,
     onLongPress: (() -> Unit)? = null,
-    failureMark: SourceFailureMark? = null
+    failureMark: SourceFailureMark? = null,
+    hideNames: Boolean = false
 ) {
+    // Hidden names show only parsed facts: addon formatting is the addon's own text.
+    val useAddonText = useAddonFormatting && !hideNames
     val marquee = NuvioTheme.marquee
     val tokens = marquee.stream
     val styles = NuvioTheme.textStyles
@@ -104,8 +109,8 @@ internal fun StreamSourceRow(
     val mbTemplate = stringResource(R.string.unit_size_mb)
     // Classify once per stream: cheap enough for the visible rows. Null with addon formatting,
     // which shows nothing derived from the facts.
-    val facts = remember(stream, useAddonFormatting) {
-        if (useAddonFormatting) null else ReleaseFactsParser.factsFor(stream)
+    val facts = remember(stream, useAddonText) {
+        if (useAddonText) null else ReleaseFactsParser.factsFor(stream)
     }
     // Its own parse only with addon formatting, and only on a device with something to say.
     val decodeFacts = remember(stream, facts, decode) {
@@ -121,15 +126,15 @@ internal fun StreamSourceRow(
     // Spec 75: a marked row fades all but its mark line (`.sr.p75dim`).
     val fade = if (failureMark != null) softwareFade.alpha(FAILED_ROW_ALPHA) else softwareFade
     val name = stream.getDisplayNameOrNull() ?: unknownName
-    val detailText = streamRowDetailText(stream, name, useAddonFormatting)
+    val detailText = streamRowDetailText(stream, name, useAddonFormatting, hideNames)
     val sizeLabel = if (showSize) {
         facts?.size?.takeIf { it > 0 }?.let { formatStreamSizeLabel(it, gbTemplate, mbTemplate) }
     } else {
         null
     }
-    val kind = if (useAddonFormatting) null else streamKindLabel(stream.streamData)
+    val kind = if (useAddonText) null else streamKindLabel(stream.streamData, hideNames)
     val languageLine = facts?.let { streamRowLanguageLine(streamRowLanguages(it.languages), kind) }
-    val cached = !useAddonFormatting && stream.streamData?.cached == true
+    val cached = !useAddonText && stream.streamData?.cached == true
     var focused by remember { mutableStateOf(false) }
     val longPress = rememberMarqueeLongPress()
     val shape = RoundedCornerShape(tokens.rowRadius)
@@ -176,21 +181,23 @@ internal fun StreamSourceRow(
                         modifier = fade
                     )
                 }
-                Text(
-                    // One line, as the mockup's nowrap name: "Torrentio\n4k DV" reads "Torrentio 4k DV".
-                    text = name.oneLine(),
-                    style = styles.rowTitle,
-                    color = NuvioPrimitives.white,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = fade
-                )
+                if (!hideNames) {
+                    Text(
+                        // One line, as the mockup's nowrap name: "Torrentio\n4k DV" reads "Torrentio 4k DV".
+                        text = name.oneLine(),
+                        style = styles.rowTitle,
+                        color = NuvioPrimitives.white,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = fade
+                    )
+                }
                 if (detailText != null) {
                     Text(
                         text = detailText,
-                        style = if (useAddonFormatting) styles.addonText else styles.caption,
+                        style = if (useAddonText) styles.addonText else styles.caption,
                         color = if (focused) marquee.onImage2 else marquee.onImage3,
-                        maxLines = if (useAddonFormatting) ADDON_TEXT_MAX_LINES else DETAIL_MAX_LINES,
+                        maxLines = if (useAddonText) ADDON_TEXT_MAX_LINES else DETAIL_MAX_LINES,
                         overflow = TextOverflow.Ellipsis,
                         modifier = fade
                     )
@@ -207,15 +214,17 @@ internal fun StreamSourceRow(
                 verticalArrangement = Arrangement.spacedBy(tokens.sideGap)
             ) {
                 if (marker != null) SourceRowMarkerLabel(marker, accent)
-                Text(
-                    text = stream.streamData?.upstream ?: stream.addonName,
-                    style = styles.caption.copy(fontWeight = FontWeight.SemiBold),
-                    color = marquee.onImage2,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.widthIn(max = tokens.rowSideMaxWidth)
-                )
+                if (!hideNames) {
+                    Text(
+                        text = stream.streamData?.upstream ?: stream.addonName,
+                        style = styles.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = marquee.onImage2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.widthIn(max = tokens.rowSideMaxWidth)
+                    )
+                }
                 if (sizeLabel != null) {
                     Text(text = sizeLabel, style = styles.caption, color = marquee.onImage3, maxLines = 1)
                 }
@@ -417,11 +426,17 @@ private const val SIDE_SEPARATOR = "·"
  * Stremio hint, then the resolver's), which names the release the badges summarise, else the
  * addon's description, on one flowing line as the mockup's `.ds`. [useAddonFormatting]: the
  * addon's description as written, inner line breaks kept (outer blank lines trimmed). A
- * description that only repeats [name], or nothing at all, gives null.
+ * description that only repeats [name], or nothing at all, gives null. [hideNames] (Spec 97 X6): the
+ * file name only, never the description (addon text, often naming the addon or service).
  */
-internal fun streamRowDetailText(stream: Stream, name: String, useAddonFormatting: Boolean): String? {
+internal fun streamRowDetailText(
+    stream: Stream,
+    name: String,
+    useAddonFormatting: Boolean,
+    hideNames: Boolean = false
+): String? {
     val description = stream.getDisplayDescription()?.trim()?.takeIf { it.isNotEmpty() && it != name.trim() }
-    if (useAddonFormatting) return description
+    if (useAddonFormatting && !hideNames) return description
     val resolve = stream.clientResolve
     val fileName = listOf(
         stream.streamData?.filename,
@@ -429,7 +444,7 @@ internal fun streamRowDetailText(stream: Stream, name: String, useAddonFormattin
         resolve?.filename,
         resolve?.stream?.raw?.filename
     ).firstOrNull { !it.isNullOrBlank() }
-    return (fileName ?: description)?.oneLine()
+    return (if (hideNames) fileName else fileName ?: description)?.oneLine()
 }
 
 /** Line breaks and the blank space around them read as one space (the mockup's nowrap / flow text). */
@@ -446,10 +461,11 @@ internal fun streamRowLanguageLine(languages: String?, kind: String?): String? =
 /**
  * The kind of an AIOStreams stream (Spec 42 D6): the debrid service's short code (AIOStreams
  * v2.36.0 constants.ts shortName; "DEBRID" for a service not listed), WEB for http, P2P for
- * torrents, null for anything else or another addon's stream.
+ * torrents, null for anything else or another addon's stream. [hideNames] (Spec 97 X6): no debrid
+ * code (it names the service); WEB and P2P are kinds, not names, and stay.
  */
-internal fun streamKindLabel(data: AioStreamData?): String? = when (data?.type) {
-    "debrid" -> DEBRID_SHORT_NAMES[data.serviceId] ?: "DEBRID"
+internal fun streamKindLabel(data: AioStreamData?, hideNames: Boolean = false): String? = when (data?.type) {
+    "debrid" -> if (hideNames) null else DEBRID_SHORT_NAMES[data.serviceId] ?: "DEBRID"
     "http" -> "WEB"
     "p2p" -> "P2P"
     else -> null

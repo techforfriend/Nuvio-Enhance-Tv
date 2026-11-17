@@ -73,7 +73,10 @@ import com.nuvio.tv.ui.util.requestFocusAfterFrames
 /** A sheet the Sources panel draws over itself (Spec 65 P1); each opens from its circle in the row. */
 enum class SourcesPanelSheet { SOURCES, FILTERS, HIDDEN }
 
-/** The focus targets of the three sheet circles; a sheet returns focus to its own on closing. */
+/**
+ * The focus targets of the three sheet circles; a sheet returns focus to its own on closing. [sources] is the row's
+ * lead circle: the refresh circle while source names are hidden (Spec 97 D12).
+ */
 internal class SourcesCircleFocus {
     val sources = FocusRequester()
     val filters = FocusRequester()
@@ -124,19 +127,21 @@ internal sealed interface PinnedChip {
 
 /**
  * The row's pinned chips (stage 2), in pin order: each pinned saved filter, and each pinned addon
- * that is among [availableAddons] (one with no stream for this title is left out).
+ * that is among [availableAddons] (one with no stream for this title is left out). [hideNames]
+ * (Spec 97 X6): no addon chips, its label is the addon's name.
  */
 internal fun pinnedChips(
     saved: SavedStreamFilters,
     view: StreamListView,
-    availableAddons: List<String>
+    availableAddons: List<String>,
+    hideNames: Boolean = false
 ): List<PinnedChip> {
     val filterOn = saved.matching(view.filter)?.id
     return saved.pins.mapNotNull { pin ->
         when (pin) {
             is StreamPin.Filter -> saved.filters.firstOrNull { it.id == pin.id }
                 ?.let { PinnedChip.Filter(it, active = it.id == filterOn) }
-            is StreamPin.Addon -> pin.name.takeIf { it in availableAddons }?.let { name ->
+            is StreamPin.Addon -> pin.name.takeIf { !hideNames && it in availableAddons }?.let { name ->
                 PinnedChip.Addon(
                     name = name,
                     count = view.addonCounts[name],
@@ -160,7 +165,9 @@ private class PinFocusMemo {
  * the refresh open their sheet ([onOpenSheet]) and are focused through [focus]. Then [pins], which
  * scroll in the room the circles leave and act on OK ([onPinClick]), not on focus. Left/Right stay
  * inside the row. A focused hidden circle or pinned chip that leaves (nothing hidden any more; its
- * addon gave no stream after a refresh) hands focus to the sources circle.
+ * addon gave no stream after a refresh) hands focus to the sources circle. [hideNames] (Spec 97 X6,
+ * sandbox `s097-x6-hidden-names` stage 3): no sources circle (its sheet lists the addons by name);
+ * the refresh circle takes its focus role ([SourcesCircleFocus.sources]) and its [mark].
  */
 @Composable
 internal fun SourcesCircleRow(
@@ -172,7 +179,8 @@ internal fun SourcesCircleRow(
     onOpenSheet: (SourcesPanelSheet) -> Unit,
     modifier: Modifier = Modifier,
     pins: List<PinnedChip> = emptyList(),
-    onPinClick: (PinnedChip) -> Unit = {}
+    onPinClick: (PinnedChip) -> Unit = {},
+    hideNames: Boolean = false
 ) {
     val tokens = NuvioTheme.marquee.stream
     val showHidden = view.hiddenCount > 0
@@ -206,18 +214,23 @@ internal fun SourcesCircleRow(
         horizontalArrangement = Arrangement.spacedBy(tokens.chipGap),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        MarqueeGlassButton(
-            icon = Icons.Rounded.Refresh,
-            contentDescription = stringResource(R.string.cd_refresh),
-            onClick = onRefresh,
-            size = tokens.refreshSize
-        )
+        if (!hideNames) {
+            MarqueeGlassButton(
+                icon = Icons.Rounded.Refresh,
+                contentDescription = stringResource(R.string.cd_refresh),
+                onClick = onRefresh,
+                size = tokens.refreshSize
+            )
+        }
+        // The lead circle carries the sources mark: the sources circle, or refresh while names are hidden.
         SourcesCircle(
-            icon = Icons.Rounded.Extension,
-            contentDescription = stringResource(
-                if (mark == SourcesCircleMark.ASKING) R.string.cd_stream_sources_asking else R.string.cd_stream_sources
-            ),
-            onClick = { onOpenSheet(SourcesPanelSheet.SOURCES) },
+            icon = if (hideNames) Icons.Rounded.Refresh else Icons.Rounded.Extension,
+            contentDescription = when {
+                hideNames -> stringResource(R.string.cd_refresh)
+                mark == SourcesCircleMark.ASKING -> stringResource(R.string.cd_stream_sources_asking)
+                else -> stringResource(R.string.cd_stream_sources)
+            },
+            onClick = if (hideNames) onRefresh else { { onOpenSheet(SourcesPanelSheet.SOURCES) } },
             modifier = Modifier.focusRequester(focus.sources),
             badge = "!".takeIf { mark == SourcesCircleMark.FAILED },
             badgeColor = { tokens.circleBadgeError },

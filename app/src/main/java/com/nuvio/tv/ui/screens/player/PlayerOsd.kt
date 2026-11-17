@@ -82,6 +82,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -98,6 +99,8 @@ import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.ui.components.marquee.MarqueeTechBadge
 import com.nuvio.tv.core.player.AspectMode
+import com.nuvio.tv.core.player.allowedSwitchTarget
+import com.nuvio.tv.core.player.manualEngineSwitchTarget
 import com.nuvio.tv.core.player.PlaybackChapter
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.ui.components.marquee.SUFFIX_ALPHA
@@ -684,6 +687,8 @@ private fun OsdBottomBlock(
  * the source has chapters); the focused one shows its label (and Chapters' / Speed's / Aspect's
  * value), and a collapsed Speed / Aspect off its default carries the accent dot. OsdBottomBlock
  * requests the first, Speed or Chapters pill when it opens. Down closes it back to More; Up stays.
+ * Spec 97 D31 (stage 16): when Switch engine would go to mpv on a stream mpv may not play, the pill
+ * focuses dimmed, OK does nothing, and its reason line shows above the tray while it is focused.
  */
 @Composable
 private fun OsdTray(
@@ -703,71 +708,99 @@ private fun OsdTray(
     onSwitchEngine: () -> Unit,
     onCloseTray: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
-                when (event.nativeKeyEvent.keyCode) {
-                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        onCloseTray()
-                        true
-                    }
-                    KeyEvent.KEYCODE_DPAD_UP -> true
-                    else -> false
+    val osd = NuvioTheme.marquee.osd
+    val switchBarred = switchEngineDimmed(uiState.mpvBarredForStream, uiState.internalPlayerEngine)
+    var switchFocused by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val reasonStyle = NuvioTheme.textStyles.caption.let { caption ->
+        remember(caption, density) {
+            caption.copy(
+                shadow = with(density) {
+                    Shadow(NuvioPrimitives.black.copy(alpha = 0.6f), Offset(0f, 1.dp.toPx()), 3.dp.toPx())
                 }
-            },
-        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.marquee.osd.trayIconGap, Alignment.CenterHorizontally)
-    ) {
-        OsdTrayPill(
-            label = stringResource(R.string.player_pill_restart),
-            painter = rememberVectorPainter(Icons.Filled.Replay),
-            onClick = onStartOver,
-            modifier = Modifier.focusRequester(firstFocusRequester)
-        )
-        if (hasChaptersPill) {
-            OsdChaptersTrayPill(
-                chapters = uiState.chapters,
-                viewModel = viewModel,
-                onClick = onShowChapters,
-                modifier = Modifier.focusRequester(chaptersFocusRequester)
             )
         }
-        OsdTrayPill(
-            label = stringResource(R.string.player_tray_speed),
-            painter = rememberVectorPainter(Icons.Filled.Speed),
-            onClick = onShowSpeed,
-            value = stringResource(R.string.player_speed_value, uiState.playbackSpeed.toString()),
-            dot = accent.takeIf { speedValueMarked(uiState.playbackSpeed) },
-            modifier = Modifier.focusRequester(speedFocusRequester)
-        )
-        OsdTrayPill(
-            label = stringResource(R.string.player_tray_aspect),
-            painter = rememberVectorPainter(Icons.Filled.AspectRatio),
-            onClick = onToggleAspect,
-            value = stringResource(uiState.aspectMode.labelResId),
-            dot = accent.takeIf { aspectValueMarked(uiState.aspectMode) }
-        )
-        OsdTrayPill(
-            label = stringResource(R.string.player_tray_stats),
-            painter = rememberVectorPainter(Icons.Filled.Info),
-            onClick = onToggleStats
-        )
-        OsdTrayPill(
-            label = stringResource(R.string.player_tray_external_player),
-            painter = rememberVectorPainter(Icons.AutoMirrored.Filled.OpenInNew),
-            onClick = onOpenExternalPlayer
-        )
-        OsdTrayPill(
-            label = stringResource(R.string.player_tray_switch_engine),
-            painter = rememberVectorPainter(Icons.Filled.SwapHoriz),
-            onClick = onSwitchEngine,
-            // The engine in use (P11); AUTO is resolved at playback start.
-            value = when (uiState.internalPlayerEngine) {
-                InternalPlayerEngine.MVP_PLAYER -> stringResource(R.string.playback_engine_mvplayer)
-                else -> stringResource(R.string.playback_engine_exoplayer)
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (switchBarred && switchFocused) {
+            Text(
+                text = stringResource(R.string.player_tray_switch_engine_saved_site),
+                style = reasonStyle,
+                color = osd.trayReasonText,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(osd.trayReasonGap))
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onPreviewKeyEvent { event ->
+                    if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                    when (event.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            onCloseTray()
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_UP -> true
+                        else -> false
+                    }
+                },
+            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.marquee.osd.trayIconGap, Alignment.CenterHorizontally)
+        ) {
+            OsdTrayPill(
+                label = stringResource(R.string.player_pill_restart),
+                painter = rememberVectorPainter(Icons.Filled.Replay),
+                onClick = onStartOver,
+                modifier = Modifier.focusRequester(firstFocusRequester)
+            )
+            if (hasChaptersPill) {
+                OsdChaptersTrayPill(
+                    chapters = uiState.chapters,
+                    viewModel = viewModel,
+                    onClick = onShowChapters,
+                    modifier = Modifier.focusRequester(chaptersFocusRequester)
+                )
             }
-        )
+            OsdTrayPill(
+                label = stringResource(R.string.player_tray_speed),
+                painter = rememberVectorPainter(Icons.Filled.Speed),
+                onClick = onShowSpeed,
+                value = stringResource(R.string.player_speed_value, uiState.playbackSpeed.toString()),
+                dot = accent.takeIf { speedValueMarked(uiState.playbackSpeed) },
+                modifier = Modifier.focusRequester(speedFocusRequester)
+            )
+            OsdTrayPill(
+                label = stringResource(R.string.player_tray_aspect),
+                painter = rememberVectorPainter(Icons.Filled.AspectRatio),
+                onClick = onToggleAspect,
+                value = stringResource(uiState.aspectMode.labelResId),
+                dot = accent.takeIf { aspectValueMarked(uiState.aspectMode) }
+            )
+            OsdTrayPill(
+                label = stringResource(R.string.player_tray_stats),
+                painter = rememberVectorPainter(Icons.Filled.Info),
+                onClick = onToggleStats
+            )
+            OsdTrayPill(
+                label = stringResource(R.string.player_tray_external_player),
+                painter = rememberVectorPainter(Icons.AutoMirrored.Filled.OpenInNew),
+                onClick = onOpenExternalPlayer
+            )
+            OsdTrayPill(
+                label = stringResource(R.string.player_tray_switch_engine),
+                painter = rememberVectorPainter(Icons.Filled.SwapHoriz),
+                // Dimmed, OK reaches the controller's switch, which does nothing (D30).
+            onClick = onSwitchEngine,
+                // The engine in use (P11); AUTO is resolved at playback start.
+                value = when (uiState.internalPlayerEngine) {
+                    InternalPlayerEngine.MVP_PLAYER -> stringResource(R.string.playback_engine_mvplayer)
+                    else -> stringResource(R.string.playback_engine_exoplayer)
+                },
+                dimmed = switchBarred,
+                onFocusedChange = { switchFocused = it }
+            )
+        }
     }
 }
 
@@ -802,6 +835,14 @@ private fun OsdChaptersTrayPill(
     )
 }
 
+/**
+ * Spec 97 D31 (stage 16): Switch engine is dimmed when the controller's switch has no target: mpv
+ * barred for the stream (D30) and the switch would go to mpv. The UI has no mpv-view state, so AUTO
+ * (only shown in a start's prelude) counts as going to mpv.
+ */
+internal fun switchEngineDimmed(mpvBarredForStream: Boolean, engine: InternalPlayerEngine): Boolean =
+    allowedSwitchTarget(manualEngineSwitchTarget(engine, mpvViewAttached = false), onSavedSite = mpvBarredForStream) == null
+
 /** Speed off Normal: the collapsed Speed pill carries the accent dot (F3 Q6). */
 internal fun speedValueMarked(speed: Float): Boolean = speed != 1f
 
@@ -820,7 +861,9 @@ private fun OsdTrayPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     value: String? = null,
-    dot: (() -> Color)? = null
+    dot: (() -> Color)? = null,
+    dimmed: Boolean = false,
+    onFocusedChange: (Boolean) -> Unit = {}
 ) {
     val osd = NuvioTheme.marquee.osd
     val black = NuvioPrimitives.black
@@ -830,10 +873,13 @@ private fun OsdTrayPill(
         modifier = modifier
             .height(osd.pillHeight)
             .then(if (focused) Modifier else Modifier.width(osd.pillHeight))
-            .onFocusChanged { focused = it.isFocused },
+            .onFocusChanged {
+                focused = it.isFocused
+                onFocusedChange(it.isFocused)
+            },
         scale = ButtonDefaults.scale(focusedScale = 1f),
         shape = ButtonDefaults.shape(shape = CircleShape),
-        colors = osdGlassPillColors(),
+        colors = if (dimmed) osdGlassPillColors(focusedFill = osd.trayDimmedFill) else osdGlassPillColors(),
         contentPadding = if (focused) {
             PaddingValues(start = osd.trayPillPaddingStart, end = osd.pillPadding)
         } else {
@@ -1281,14 +1327,17 @@ internal fun OsdPill(
     }
 }
 
-/** Glass pill colours (OsdPill, OsdTrayPill, pause cast chips): `glassFill` + white content; focused / pressed = white, black content. */
+/**
+ * Glass pill colours (OsdPill, OsdTrayPill, pause cast chips): `glassFill` + white content; focused /
+ * pressed = [focusedFill] (white; `trayDimmedFill` for a pill that can't act), black content.
+ */
 @Composable
-internal fun osdGlassPillColors() = ButtonDefaults.colors(
+internal fun osdGlassPillColors(focusedFill: Color = NuvioPrimitives.white) = ButtonDefaults.colors(
     containerColor = NuvioTheme.marquee.glassFill,
     contentColor = NuvioPrimitives.white,
-    focusedContainerColor = NuvioPrimitives.white,
+    focusedContainerColor = focusedFill,
     focusedContentColor = NuvioPrimitives.black,
-    pressedContainerColor = NuvioPrimitives.white,
+    pressedContainerColor = focusedFill,
     pressedContentColor = NuvioPrimitives.black
 )
 

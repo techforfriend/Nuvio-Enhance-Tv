@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Questions and setup help
+    url: https://www.reddit.com/r/nuvioke/
+    about: Ask on r/nuvioke; ideas are welcome there too. Bug reports and proposals for code stay here.
   - name: Downloads
     url: https://github.com/techforfriend/Nuvio-Enhance-Tv/releases
     about: The latest Nuvio AK APKs.

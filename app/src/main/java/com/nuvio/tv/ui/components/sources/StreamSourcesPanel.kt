@@ -55,6 +55,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -79,6 +80,7 @@ import com.nuvio.tv.core.stream.StreamListSelection
 import com.nuvio.tv.core.stream.StreamListView
 import com.nuvio.tv.core.stream.limitKey
 import com.nuvio.tv.core.stream.limitVerdict
+import com.nuvio.tv.core.stream.missingUpstreamsCount
 import com.nuvio.tv.core.stream.missingUpstreamsText
 import com.nuvio.tv.core.stream.sourceChipAddonNames
 import com.nuvio.tv.domain.model.Stream
@@ -122,6 +124,8 @@ import kotlinx.coroutines.launch as coroutineLaunch
  * [SourceRowMenu], not in a view listing hidden streams; it gets the stream to prefer for the show,
  * or null to stop. The view's leading [StreamListView.preferredCount] rows match the preference:
  * the first says "Preferred" ([sourceRowMarker]), and the menu on any of them offers to stop.
+ * [hideSourceNames] (Spec 97 X6, sandbox `s097-x6-hidden-names` stages 3-6): no addon or service name
+ * anywhere in the panel; an addon view falls back to All, since nothing names it any more.
  */
 @Composable
 internal fun StreamSourcesPanel(
@@ -160,7 +164,8 @@ internal fun StreamSourcesPanel(
     returnFocusOnSheetClose: Boolean = true,
     /** Opens the saved filters' phone page from the filters sheet; null (the player's panels) = no phone button. */
     onEditFiltersOnPhone: (() -> Unit)? = null,
-    onPreferSource: ((Stream?) -> Unit)? = null
+    onPreferSource: ((Stream?) -> Unit)? = null,
+    hideSourceNames: Boolean = false
 ) {
     val streams = view.streams
     val selection = view.selection
@@ -201,6 +206,13 @@ internal fun StreamSourcesPanel(
         focusJob = scope.coroutineLaunch {
             circleFocus.sources.requestFocusAfterFrames(frames = 1)
         }
+    }
+    // Hidden names: no addon view (its name was its only label) and no sources sheet (it lists them).
+    LaunchedEffect(hideSourceNames, selection) {
+        if (hideSourceNames && selection is StreamListSelection.Addon) onListSelected(StreamListSelection.All)
+    }
+    LaunchedEffect(hideSourceNames, sheet) {
+        if (hideSourceNames && sheet == SourcesPanelSheet.SOURCES) onSheetChange(null)
     }
     // The hidden sheet closes with its circle (nothing is hidden any more).
     LaunchedEffect(sheet, view.hiddenCount) {
@@ -270,7 +282,9 @@ internal fun StreamSourcesPanel(
     val sheetRows = remember(orderedAddonNames, availableAddons, sourceChips, view) {
         sourcesSheetRows(orderedAddonNames, availableAddons, sourceChips, view)
     }
-    val pins = remember(saved, view, availableAddons) { pinnedChips(saved, view, availableAddons) }
+    val pins = remember(saved, view, availableAddons, hideSourceNames) {
+        pinnedChips(saved, view, availableAddons, hideSourceNames)
+    }
     Box(
         modifier = modifier
             .width(panel.panelWidth)
@@ -321,6 +335,7 @@ internal fun StreamSourcesPanel(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     pins = pins,
+                    hideNames = hideSourceNames,
                     onPinClick = { chip ->
                         userMovedFromTarget = true
                         when (chip) {
@@ -333,7 +348,7 @@ internal fun StreamSourcesPanel(
 
             if (showHiddenLine) {
                 Spacer(modifier = Modifier.height(panel.limitLineTop))
-                HiddenStreamsLine(bitrate = view.limitVerdict, resolution = view.resolutionVerdict)
+                HiddenStreamsLine(bitrate = view.limitVerdict, resolution = view.resolutionVerdict, hideNames = hideSourceNames)
             }
             Spacer(modifier = Modifier.height(panel.panelGap))
             StreamRule()
@@ -387,6 +402,7 @@ internal fun StreamSourcesPanel(
                             selection = selection,
                             showFileSizeBadges = showFileSizeBadges,
                             useAddonFormatting = useAddonFormatting,
+                            hideNames = hideSourceNames,
                             marker = marker,
                             markedIndex = markedIndex,
                             failureMarkFor = failureMarkFor,
@@ -412,11 +428,13 @@ internal fun StreamSourcesPanel(
                     }
                 }
             }
-            if (body == StreamPanelBody.LIST) MissingUpstreamsFoot(missingUpstreams)
+            if (body == StreamPanelBody.LIST) MissingUpstreamsFoot(missingUpstreams, hideSourceNames)
         }
-        if (sheet != null) {
+        // The effect above clears a SOURCES sheet while names are hidden; until then it is not drawn either.
+        val shownSheet = sheet.takeUnless { hideSourceNames && it == SourcesPanelSheet.SOURCES }
+        if (shownSheet != null) {
             SourcesSheet(
-                sheet = sheet,
+                sheet = shownSheet,
                 view = view,
                 rows = sheetRows,
                 saved = saved,
@@ -426,7 +444,8 @@ internal fun StreamSourcesPanel(
                 onSaveFilter = onSaveFilter,
                 onTogglePin = onTogglePin,
                 onClose = { onSheetChange(null) },
-                onEditOnPhone = onEditFiltersOnPhone
+                onEditOnPhone = onEditFiltersOnPhone,
+                hideNames = hideSourceNames
             )
         }
     }
@@ -435,6 +454,7 @@ internal fun StreamSourcesPanel(
         SourceRowMenu(
             target = menu,
             accent = accent,
+            hideNames = hideSourceNames,
             onPlay = { stream ->
                 rowMenu = null
                 onStreamSelected(stream)
@@ -500,10 +520,10 @@ private val HIDDEN_LINE_ICON_TOP = 1.dp
  * then what the network test measured and the limit it keeps when [bitrate] came from it.
  * [bitrate] is [StreamListView.limitVerdict] (the hidden sheet's own figure and service), [resolution]
  * [StreamListView.resolutionVerdict]; at least one is set. Up to three lines (the approved line wraps
- * to three). Not focusable.
+ * to three). Not focusable. [hideNames] (Spec 97 D18/D20): the measured line drops the service.
  */
 @Composable
-internal fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: ResolutionVerdict?) {
+internal fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: ResolutionVerdict?, hideNames: Boolean = false) {
     val tokens = NuvioTheme.marquee.stream
     val source = bitrate?.source
     val resolutionWhy = resolution?.let {
@@ -526,7 +546,11 @@ internal fun HiddenStreamsLine(bitrate: StreamLimitVerdict?, resolution: Resolut
     }
     val rest = if (bitrate != null && source != null) {
         val date = formatDayMonth(Instant.ofEpochMilli(source.testedAtMs).atZone(ZoneId.systemDefault()).toLocalDate())
-        stringResource(R.string.stream_limit_hidden_network, date, source.measuredMbps, source.serviceKey, bitrate.figureMbps)
+        if (hideNames) {
+            stringResource(R.string.stream_limit_hidden_network_unnamed, date, source.measuredMbps, bitrate.figureMbps)
+        } else {
+            stringResource(R.string.stream_limit_hidden_network, date, source.measuredMbps, source.serviceKey, bitrate.figureMbps)
+        }
     } else {
         null
     }
@@ -613,16 +637,23 @@ private const val FOOT_UPSTREAM_NAMES = 2
 /**
  * The missing-upstreams foot (Spec 42 D7, sandbox `s42b-stream-upstreams` stage 4): a rule, then
  * "ComeTorz and Knaben didn't answer · results without them" in the warning colour behind a
- * warning icon. Not focusable; nothing when no gateway reported a failed upstream.
+ * warning icon. Not focusable; nothing when no gateway reported a failed upstream. [hideNames]
+ * (Spec 97 X6, stage 4): a count instead, "2 sources didn't answer".
  */
 @Composable
-private fun MissingUpstreamsFoot(names: List<String>) {
+private fun MissingUpstreamsFoot(names: List<String>, hideNames: Boolean) {
     val templates = MissingUpstreamsTemplates(
         one = stringResource(R.string.stream_upstreams_missing_one),
         list = stringResource(R.string.stream_upstreams_missing_list),
         more = stringResource(R.string.stream_upstreams_missing_more)
     )
-    val line = remember(names, templates) { missingUpstreamsText(names, FOOT_UPSTREAM_NAMES, templates) } ?: return
+    val missing = remember(names) { missingUpstreamsCount(names) }
+    val line = if (hideNames) {
+        if (missing == 0) return
+        pluralStringResource(R.plurals.stream_upstreams_missing_count, missing, missing)
+    } else {
+        remember(names, templates) { missingUpstreamsText(names, FOOT_UPSTREAM_NAMES, templates) } ?: return
+    }
     val suffix = stringResource(R.string.stream_upstreams_missing_suffix)
     val panel = NuvioTheme.marquee.stream
     val dim = NuvioTheme.marquee.onImage3
@@ -864,6 +895,7 @@ private fun StreamsList(
     selection: StreamListSelection,
     showFileSizeBadges: Boolean = true,
     useAddonFormatting: Boolean,
+    hideNames: Boolean = false,
     marker: SourceRowMarker?,
     markedIndex: Int,
     failureMarkFor: (Stream) -> SourceFailureMark?,
@@ -1012,6 +1044,7 @@ private fun StreamsList(
                 stream = stream,
                 showSize = showFileSizeBadges,
                 useAddonFormatting = useAddonFormatting,
+                hideNames = hideNames,
                 marker = sourceRowMarker(index, marker, markedIndex, preferredCount),
                 onLongPress = onRowMenu?.let { open ->
                     {

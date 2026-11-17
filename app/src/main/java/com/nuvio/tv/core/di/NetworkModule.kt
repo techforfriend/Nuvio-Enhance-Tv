@@ -37,8 +37,9 @@ import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import com.nuvio.tv.core.network.AddonHostGuard
 import com.nuvio.tv.core.network.AddonHostGuardInterceptor
-import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.core.network.dns.AppDns
 import com.nuvio.tv.core.network.NetworkTransportReader
+import com.nuvio.tv.core.network.access.AccessHeaderInterceptor
 import com.nuvio.tv.core.network.tls.AddonTlsTrust
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -460,7 +461,7 @@ object NetworkModule {
         // Spec 68 X7: validated TLS; a self-signed self-hosted addon works once the user trusts
         // its certificate (per-host pin). Fixed commercial endpoints use @Validated (F20).
         return OkHttpClient.Builder()
-            .dns(IPv4FirstDns())
+            .dns(AppDns)
             .sslSocketFactory(addonTls.sslSocketFactory, addonTls.trustManager)
             .hostnameVerifier(addonTls.hostnameVerifier)
             .cache(Cache(File(context.cacheDir, ADDON_HTTP_CACHE_DIR), 50L * 1024 * 1024)) // 50 MB disk cache
@@ -475,6 +476,8 @@ object NetworkModule {
             .addInterceptor(untrustedResponseGuardInterceptor())
             .apply { if (BuildConfig.DEBUG) addInterceptor(cacheInstrumentInterceptor()) }
             .addNetworkInterceptor(noStoreOnErrorNetworkInterceptor())
+            // Spec 97 A3: a saved site's secret headers, per hop, on this validated client.
+            .addNetworkInterceptor(AccessHeaderInterceptor)
             .addInterceptor(redactingLoggingInterceptor())
             .build()
     }
@@ -493,12 +496,13 @@ object NetworkModule {
         // self-signed host trusted for an addon is trusted here too; any other self-signed host
         // is refused until X8.
         return OkHttpClient.Builder()
-            .dns(IPv4FirstDns())
+            .dns(AppDns)
             .sslSocketFactory(addonTls.sslSocketFactory, addonTls.trustManager)
             .hostnameVerifier(addonTls.hostnameVerifier)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor(identityHeadersInterceptor())
+            .addNetworkInterceptor(AccessHeaderInterceptor)
             .build()
     }
 
@@ -511,13 +515,14 @@ object NetworkModule {
     @Singleton
     @BackendAuth
     fun provideBackendAuthHttpClient(): OkHttpClient = OkHttpClient.Builder()
-        .dns(IPv4FirstDns())
+        .dns(AppDns)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         // W2.1 parity — bounds the whole call incl. the DNS phase.
         .callTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(identityHeadersInterceptor())
         .addInterceptor(redactingLoggingInterceptor())
+        .addNetworkInterceptor(AccessHeaderInterceptor)
         .build()
 
     /**
@@ -532,7 +537,7 @@ object NetworkModule {
     @Validated
     fun provideValidatedOkHttpClient(@ApplicationContext context: Context): OkHttpClient =
         OkHttpClient.Builder()
-            .dns(IPv4FirstDns())
+            .dns(AppDns)
             .cache(Cache(File(context.cacheDir, "http_cache_validated"), 20L * 1024 * 1024))
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -540,6 +545,7 @@ object NetworkModule {
             .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(identityHeadersInterceptor())
             .addNetworkInterceptor(noStoreOnErrorNetworkInterceptor())
+            .addNetworkInterceptor(AccessHeaderInterceptor)
             .build()
 
     /**
@@ -559,7 +565,7 @@ object NetworkModule {
         }
         return OkHttpClient.Builder()
             .dispatcher(imageDispatcher)
-            .dns(IPv4FirstDns())
+            .dns(AppDns)
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
             .callTimeout(12, TimeUnit.SECONDS)
@@ -574,6 +580,7 @@ object NetworkModule {
             }
             .followRedirects(true)
             .followSslRedirects(true)
+            .addNetworkInterceptor(AccessHeaderInterceptor)
             .build()
     }
 

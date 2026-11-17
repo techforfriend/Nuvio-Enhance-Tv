@@ -28,6 +28,7 @@ import com.nuvio.tv.domain.model.legacyKey
 import com.nuvio.tv.ui.components.marquee.FACT_SEPARATOR
 import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.posteroptions.PosterOptionsHost
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.screens.home.HeroBackdropState
 import com.nuvio.tv.ui.screens.home.LocalFastScrollActive
 import com.nuvio.tv.ui.screens.home.MarqueeBreadcrumb
@@ -149,9 +150,11 @@ fun CatalogSeeAllScreen(
         }
         MarqueeBreadcrumb(breadcrumb)
         if (hasItems) {
+            // Spec 96 D16: the grid's cards opt into the trailer preview (the host's In the card mode decides).
             CompositionLocalProvider(
                 LocalBringIntoViewSpec provides bandSpec,
-                LocalFastScrollActive provides band.isFastScrolling
+                LocalFastScrollActive provides band.isFastScrolling,
+                LocalTrailerPreviewEnabled provides true
             ) {
                 LazyColumn(
                     modifier = Modifier

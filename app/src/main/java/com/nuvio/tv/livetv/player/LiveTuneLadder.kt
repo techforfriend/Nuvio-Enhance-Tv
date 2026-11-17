@@ -5,11 +5,13 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import com.nuvio.tv.core.player.findCause
+import com.nuvio.tv.livetv.parse.XtreamUrls
 import java.net.UnknownHostException
 
 /**
  * Why a stream (or the channel) failed; the UI words it from [kind] and shows [httpCode] if set.
- * [detail] is a ready-made reason when the ladder never ran (e.g. the addon lookup's "Source removed").
+ * [detail] is a ready-made reason the screen shows as is (the addon lookup's "Source removed", an
+ * unsupported protocol, Spec 90 L4).
  * A [FailureKind.DRM] failure carries [drm] (Spec 74 D5) and the stream's [keySystem] (a `LiveDrm` id).
  */
 data class LiveFailure(
@@ -33,6 +35,9 @@ sealed interface LadderAction {
 
     /** Prepare the same stream again, no seek. */
     data object Reload : LadderAction
+
+    /** Prepare the same stream again as progressive: its HLS link sent MPEG-TS (Spec 90 L2). */
+    data object ReloadAsProgressive : LadderAction
 
     /** Behind the live window: `seekToDefaultPosition()` + `prepare()`. */
     data object SeekToDefault : LadderAction
@@ -58,6 +63,9 @@ data class LadderStep(val action: LadderAction, val abandoned: Int? = null, val 
  *    Exception (Spec 72 D1): a stream resolved with a cached token ([onResolved]) keeps its
  *    reload on a 401/403/404, since a stale token gives exactly that; the player's Reload
  *    resolves it again with a fresh token.
+ * 2a. An HLS-typed attempt whose primary playlist load got an MPEG-TS body, before it ever
+ *    reached READY -> [LadderAction.ReloadAsProgressive], once per stream (Spec 90 L2); it spends
+ *    no reload allowance, and the stream's watchdog starts again.
  * 3. Next stream.
  * 4. [LadderAction.Unavailable] when every stream failed or [BUDGET_MS] passed without a stream
  *    playing.
@@ -82,6 +90,13 @@ class LiveTuneLadder(private val streamCount: Int, tuneStartMs: Long) {
         private set
     private var reloadUsed = false
     private var blwFixes = 0
+    private var progressiveRetryUsed = false
+
+    /**
+     * The current stream plays as progressive from now on: its HLS link sent MPEG-TS. Every later
+     * (re)load of it builds progressive; the next stream starts typed again.
+     */
+    val asProgressive: Boolean get() = progressiveRetryUsed
 
     /** The current attempt plays a URL built on a cached resolver token; cleared by the next (re)load. */
     private var cachedResolve = false
@@ -123,8 +138,17 @@ class LiveTuneLadder(private val streamCount: Int, tuneStartMs: Long) {
         return fail(LiveFailure(FailureKind.STALL), nowMs, startupTimeout = false, sustained = afterPlay(nowMs))
     }
 
-    fun onError(failure: LiveFailure, behindLiveWindow: Boolean, nowMs: Long): LadderStep {
+    /** [servedTs]: the error's cause is `HlsBodyIsTs` (the primary playlist load got MPEG-TS). */
+    fun onError(failure: LiveFailure, behindLiveWindow: Boolean, nowMs: Long, servedTs: Boolean = false): LadderStep {
         if (phase == Phase.DONE) return LadderStep(LadderAction.None)
+        // Never after READY (a mid-play refresh failure keeps today's rungs) and inside the budget.
+        if (servedTs && phase == Phase.STARTING && playingSinceMs == null && !progressiveRetryUsed &&
+            nowMs < budgetStartMs + BUDGET_MS
+        ) {
+            progressiveRetryUsed = true
+            arm(nowMs)
+            return LadderStep(LadderAction.ReloadAsProgressive)
+        }
         val sustained = afterPlay(nowMs)
         if (behindLiveWindow && blwFixes < MAX_BLW_FIXES && nowMs < budgetStartMs + BUDGET_MS) {
             blwFixes++
@@ -185,6 +209,7 @@ class LiveTuneLadder(private val streamCount: Int, tuneStartMs: Long) {
         index = i
         reloadUsed = false
         blwFixes = 0
+        progressiveRetryUsed = false
         cachedResolve = false
         playingSinceMs = null
         arm(nowMs)
@@ -207,6 +232,22 @@ class LiveTuneLadder(private val streamCount: Int, tuneStartMs: Long) {
         const val BUDGET_MS = 30_000L
         const val MAX_BLW_FIXES = 2
         const val MIN_SUSTAINED_PLAY_MS = 30_000L
+
+        /**
+         * Spec 90 L5: an Xtream panel answers 401/403 for its connection limit (the last channel's
+         * socket not yet released on a fast zap) or a lapsed account, so on an Xtream live [url] it
+         * counts as a network-class failure: one reload (the player waits [PANEL_RETRY_DELAY_MS]
+         * first) and the short doubling cooldown instead of a 24 h block. The code is kept for the
+         * screen. Null when [failure] is anything else.
+         */
+        fun panelRefusal(failure: LiveFailure, url: String): LiveFailure? =
+            failure.takeIf { it.kind == FailureKind.BLOCKED && it.httpCode in PANEL_REFUSAL_CODES && XtreamUrls.isLive(url.trim()) }
+                ?.copy(kind = FailureKind.NETWORK)
+
+        /** The wait before reloading after a [panelRefusal], for the panel to release the old connection. */
+        const val PANEL_RETRY_DELAY_MS = 1_500L
+
+        private val PANEL_REFUSAL_CODES = setOf(401, 403)
 
         /** What a stale resolver token answers (Spec 72 D1). */
         private val STALE_TOKEN_CODES = setOf(401, 403, 404)

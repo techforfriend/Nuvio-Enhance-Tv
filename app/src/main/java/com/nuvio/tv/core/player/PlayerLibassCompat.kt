@@ -10,6 +10,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import android.os.Handler
+import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
@@ -23,6 +24,7 @@ import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.mkv.MatroskaExtractor as StockMatroskaExtractor
 import androidx.media3.extractor.text.SubtitleParser
+import com.nuvio.tv.R
 import com.nuvio.tv.core.player.dvmkv.MatroskaExtractor as DvMatroskaExtractor
 import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.kt.withAssSupport
@@ -33,6 +35,21 @@ import java.util.Collections
 import java.util.WeakHashMap
 
 private val assHandlersByPlayer = Collections.synchronizedMap(WeakHashMap<ExoPlayer, AssHandler>())
+
+private const val TAG = "PlayerLibassCompat"
+
+/**
+ * Spec 98 (issue #2): a Latin (Vietnamese included), Greek and Cyrillic subset of the bundled
+ * Open Sans, Regular and Bold, whose family name is "sans-serif". ass-kt 0.4.0 sets libass's default family to "sans-serif" with
+ * fontconfig as the only system provider (AssKt.c nativeAssRenderInit), and no installed font is
+ * named that, so when fontconfig finds no covering font libass draws .notdef boxes. libass tries
+ * the default family by name, glyph coverage checked, before fontconfig's fallback, so these
+ * fonts fill that gap; scripts they lack still reach fontconfig. Recipe and evidence: Spec 98 D5, D7.
+ */
+internal val LIBASS_FALLBACK_FONTS: List<Pair<String, Int>> = listOf(
+    "libass_fallback_regular.ttf" to R.raw.libass_fallback_regular,
+    "libass_fallback_bold.ttf" to R.raw.libass_fallback_bold
+)
 
 @OptIn(UnstableApi::class)
 internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
@@ -45,6 +62,12 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
     assRendererWrapper: (Renderer) -> Renderer = { it }
 ): ExoPlayer {
     val assHandler = AssHandler(renderType)
+    // Straight to the library, not AssHandler.addFont: that buffers fonts until the first track
+    // and drops the buffer on every media-item transition; library fonts live with the handler.
+    addLibassFallbackFonts(
+        readFont = { resId -> context.resources.openRawResource(resId).use { it.readBytes() } },
+        addFont = assHandler.ass::addFont
+    )
     val assSubtitleParserFactory = CompatAssSubtitleParserFactory(assHandler)
     // Spec 61 Q4: the MKV extractor leaves PGS/VobSub raw for the text renderer; ASS still
     // reaches libass through the parser.
@@ -74,6 +97,26 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
 }
 
 internal fun ExoPlayer.getAssHandlerCompat(): AssHandler? = assHandlersByPlayer[this]
+
+/**
+ * Hands each of [LIBASS_FALLBACK_FONTS] to [addFont] (the libass library, before any track or
+ * renderer exists). A font that cannot be read is skipped: libass then falls back as before.
+ */
+@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+internal fun addLibassFallbackFonts(
+    readFont: (resId: Int) -> ByteArray,
+    addFont: (name: String, data: ByteArray) -> Unit
+) {
+    for ((name, resId) in LIBASS_FALLBACK_FONTS) {
+        val bytes = try {
+            readFont(resId)
+        } catch (e: Exception) {
+            Log.w(TAG, "libass fallback font $name unreadable", e)
+            continue
+        }
+        addFont(name, bytes)
+    }
+}
 
 /**
  * Spec 36/S3 (B2-24, upstream 59019f8cc): the libass renderer is added by ass-media itself, so it

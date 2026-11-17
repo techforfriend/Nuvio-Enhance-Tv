@@ -24,10 +24,16 @@ internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
     if (!isUsingMpvEngine()) return
     if (currentStreamUrl.isBlank()) return
     if (mpvInitializationInProgress) return
+    // Spec 97 D30: never before this start's site lookup and engine choice (a settings write in its
+    // prelude can show the mpv surface while the stream is headed for ExoPlayer); initializePlayer's
+    // mpv branch starts it then, or this attach once the session engine says mpv.
+    if (!mpvAttachMayStart(streamOnSavedAccessSite, currentStreamEngineForRestart())) return
 
     runCatching {
         // Before setMedia, so a throw there fails over at this start's position.
-        val startPositionMs = _uiState.value.pendingSeekPosition ?: pendingResumeProgress?.position ?: 0L
+        val startPositionMs = _uiState.value.pendingSeekPosition
+            ?: pendingResumeProgress?.position?.let(::rewindSavedStart)
+            ?: 0L
         mpvStartPositionMs = startPositionMs
         performPendingMpvHardRestartIfNeeded(view)
         view.applyHardwareDecodeMode(mpvHardwareDecodeModeSetting)
@@ -193,6 +199,9 @@ internal fun PlayerRuntimeController.pauseForLifecycle() {
         e.printStackTrace()
     }
 
+    // Spec 93 P5: leaving the app mid-play is a pause too ("Rewind on resume"); a pause already stamped keeps
+    // its earlier time.
+    if (hasActivePlayIntent()) stampUserPause()
     // Mark as user-paused so autoplay logic doesn't resume playback.
     userPausedManually = true
     shouldEnforceAutoplayOnFirstReady = false
@@ -418,7 +427,7 @@ internal fun PlayerRuntimeController.applyPendingMpvSeekIfNeeded(
 
     val target = when {
         savedResume != null && durationMs > 0L -> {
-            savedResume.resolveResumePosition(durationMs).coerceAtLeast(0L)
+            rewindSavedStart(savedResume.resolveResumePosition(durationMs).coerceAtLeast(0L))
         }
         savedResume != null -> {
             val requiresDurationForPercentResume = savedResume.progressPercent != null &&
@@ -426,7 +435,7 @@ internal fun PlayerRuntimeController.applyPendingMpvSeekIfNeeded(
             if (requiresDurationForPercentResume) {
                 return
             }
-            savedResume.position.coerceAtLeast(0L)
+            rewindSavedStart(savedResume.position.coerceAtLeast(0L))
         }
         else -> queuedPosition.coerceAtLeast(0L)
     }

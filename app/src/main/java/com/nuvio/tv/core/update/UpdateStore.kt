@@ -33,10 +33,15 @@ data class UpdateRecord(
     val autoCheck: Boolean = true,
     val lastOkCheckMs: Long = 0L,
     val lastAttemptMs: Long = 0L,
-    /** The latest release's offer for this TV as of the last answer; newer or not. */
+    /**
+     * The newest release's offer for this TV as of the last answer; newer or not. A pre-release one
+     * may outlive Get test releases going off (a failed check keeps it): UpdateController never offers it then.
+     */
     val knownRelease: KnownRelease? = null,
     /** The release (versionCode) the top-bar pill last pulsed for (Spec 80 D5); null = none yet. */
-    val pulsedVersionCode: Int? = null
+    val pulsedVersionCode: Int? = null,
+    /** Spec 89: Get test releases (GitHub pre-releases join the check, the changelog and What's new). */
+    val testReleases: Boolean = false
 )
 
 /** The build the What's new card last answered for (Spec 80 S5). */
@@ -70,6 +75,10 @@ class UpdateStore internal constructor(private val dataStore: DataStore<Preferen
     /** Throws the DataStore write's IOException. */
     suspend fun setAutoCheck(enabled: Boolean): UpdateRecord =
         dataStore.edit { it[AUTO_CHECK] = enabled }.toRecord()
+
+    /** Throws the DataStore write's IOException. */
+    suspend fun setTestReleases(enabled: Boolean): UpdateRecord =
+        dataStore.edit { it[TEST_RELEASES] = enabled }.toRecord()
 
     /**
      * Records an answered check at [nowMs] and returns the record; [CheckOutcome.Unreached] writes
@@ -145,7 +154,8 @@ class UpdateStore internal constructor(private val dataStore: DataStore<Preferen
         lastOkCheckMs = this[LAST_OK_CHECK_MS] ?: 0L,
         lastAttemptMs = this[LAST_ATTEMPT_MS] ?: 0L,
         knownRelease = this[KNOWN_RELEASE]?.let(::decodeRelease),
-        pulsedVersionCode = this[PULSED_VERSION_CODE]
+        pulsedVersionCode = this[PULSED_VERSION_CODE],
+        testReleases = this[TEST_RELEASES] ?: false
     )
 
     internal companion object {
@@ -154,6 +164,7 @@ class UpdateStore internal constructor(private val dataStore: DataStore<Preferen
         val LAST_ATTEMPT_MS = longPreferencesKey("last_attempt_ms")
         val KNOWN_RELEASE = stringPreferencesKey("known_release")
         val PULSED_VERSION_CODE = intPreferencesKey("pulsed_version_code")
+        val TEST_RELEASES = booleanPreferencesKey("test_releases")
         val SEEN_VERSION_CODE = intPreferencesKey("seen_version_code")
         val SEEN_VERSION_NAME = stringPreferencesKey("seen_version_name")
         val TIP_LINKS = stringPreferencesKey("tip_links")

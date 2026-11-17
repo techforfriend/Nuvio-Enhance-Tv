@@ -8,6 +8,7 @@ import com.nuvio.tv.core.tmdb.TmdbEntityRail
 import com.nuvio.tv.core.tmdb.TmdbEntityRailType
 import com.nuvio.tv.domain.model.ContentType
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import com.nuvio.tv.domain.model.MetaPreview
 import com.nuvio.tv.domain.model.PosterShape
 import com.nuvio.tv.ui.screens.home.LayoutUiPrefs
@@ -115,7 +116,7 @@ class TmdbEntityRowsTest {
             showFullReleaseDate = false,
             modernLandscapePostersEnabled = true,
             homeImdbRatingsVisibility = HomeImdbRatingsVisibility.HIDE_ALL,
-            focusedPosterBackdropTrailerEnabled = true,
+            trailerAutoplayMode = TrailerAutoplayMode.CARD,
             focusedPosterBackdropTrailerMuted = false
         )
 
@@ -123,7 +124,7 @@ class TmdbEntityRowsTest {
             prefs.copy(
                 catalogAddonNameEnabled = false,
                 catalogTypeSuffixEnabled = false,
-                focusedPosterBackdropTrailerEnabled = false
+                trailerAutoplayMode = TrailerAutoplayMode.OFF
             ),
             entityLayoutPrefs(prefs)
         )

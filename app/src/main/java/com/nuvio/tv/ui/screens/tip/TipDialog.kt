@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -40,6 +42,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.tv.material3.Icon
@@ -47,8 +51,9 @@ import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import com.nuvio.tv.core.tip.TipLadder
 import com.nuvio.tv.core.tip.TipLinkRepository
+import com.nuvio.tv.core.tip.isKofiLink
 import com.nuvio.tv.core.tip.isSponsorsLink
-import com.nuvio.tv.core.tip.tipLadder
+import com.nuvio.tv.core.tip.tipCardLadder
 import com.nuvio.tv.core.tip.tvCountry
 import com.nuvio.tv.ui.components.PanelEyebrowText
 import com.nuvio.tv.ui.components.marquee.MarqueeGlassTextButton
@@ -70,10 +75,10 @@ class TipViewModel @Inject constructor(repository: TipLinkRepository) : ViewMode
 }
 
 /**
- * One entry point's tip card (T3: Welcome, What's new, About). [open] captures the link, so a
- * refresh landing while the card is up neither swaps its QR nor closes it; closing puts focus back
- * on [focus], the entry's Tip button or row (D6), else (a paused link removed the entry meanwhile)
- * on the caller's fallback. Show it with [TipEntryDialog].
+ * One entry point's QR card: the tip card (T3: Welcome, What's new, About), or About's subreddit
+ * card (Spec 124). [open] captures the link, so a refresh landing while the card is up neither swaps
+ * its QR nor closes it; closing puts focus back on [focus], the entry's button or row (D6), else (a
+ * paused tip link removed the entry meanwhile) on the caller's fallback. Show it with [TipEntryDialog].
  */
 @Stable
 internal class TipEntryState {
@@ -115,11 +120,16 @@ internal fun TipButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 
 /**
  * The card of [state] while open, in its own window above the caller's; then focus back on the
- * entry, or on [fallback] (the caller's first button or row) when the entry is gone.
+ * entry, or on [fallback] (the caller's first button or row) when the entry is gone. [card] draws
+ * it: the tip card, or another QR card with the same open / close / refocus (Spec 124's subreddit).
  */
 @Composable
-internal fun TipEntryDialog(state: TipEntryState, fallback: FocusRequester?) {
-    state.openLink?.let { link -> TipDialog(link, onDismiss = state::close) }
+internal fun TipEntryDialog(
+    state: TipEntryState,
+    fallback: FocusRequester?,
+    card: @Composable (link: String, onDismiss: () -> Unit) -> Unit = { link, onDismiss -> TipDialog(link, onDismiss) }
+) {
+    state.openLink?.let { link -> card(link, state::close) }
     LaunchedEffect(state.refocus) {
         // Cleared after the request: clearing the key first would restart (cancel) this effect.
         if (state.refocus) {
@@ -134,7 +144,7 @@ internal fun TipEntryDialog(state: TipEntryState, fallback: FocusRequester?) {
  * whatever opened it, in its own dialog window: Done and Back close it, so the card that opened it
  * (Welcome, What's new, About) is back with its Tip button focused (D6). I sent a tip swaps in the
  * thank-you (D7/D8), whose Done and Back close it too. [link] is the QR's, already validated
- * (TipLinkRepository); [country] picks the ladder (D2).
+ * (TipLinkRepository); [country] picks the ladder (D2), which a Ko-fi card has none of (Spec 125 D2).
  */
 @Composable
 internal fun TipDialog(
@@ -153,15 +163,24 @@ internal fun TipDialog(
     ) {
         ProfileWordmark()
         if (thanks) TipThanks(doneFocus = thanksDone, onDone = onDismiss)
-        else TipCardContent(link, tipLadder(country), doneFocus = cardDone, onSent = { thanks = true }, onDone = onDismiss)
+        else TipCardContent(
+            link,
+            ladder = tipCardLadder(link, country),
+            doneFocus = cardDone,
+            onSent = { thanks = true },
+            onDone = onDismiss
+        )
     }
 }
 
-/** `.l11ql.s81l` + `.l11qc.s81c`: the pitch and ladder on the left, the QR card on the right; Done focused. */
+/**
+ * `.l11ql.s81l` + `.l11qc.s81c`: the pitch and [ladder] on the left (none for Ko-fi, Spec 125 D2:
+ * its page sets amount and payment), the QR card on the right; Done focused.
+ */
 @Composable
 private fun TipCardContent(
     link: String,
-    ladder: TipLadder,
+    ladder: TipLadder?,
     doneFocus: FocusRequester,
     onSent: () -> Unit,
     onDone: () -> Unit
@@ -169,45 +188,13 @@ private fun TipCardContent(
     val tokens = NuvioTheme.marquee.tip
     val settings = NuvioTheme.marquee.settings
     Box(modifier = Modifier.fillMaxSize()) {
-        TipIntro(
-            ladder = ladder,
-            modifier = Modifier
-                .padding(start = NuvioTheme.layout.tvSafeHorizontal, top = tokens.introTop)
-                .width(tokens.introWidth)
-        )
-        val shape = RoundedCornerShape(settings.signInCardRadius)
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = NuvioTheme.layout.tvSafeHorizontal, top = tokens.cardTop, bottom = tokens.cardBottom)
-                .width(settings.signInCardWidth)
-                .fillMaxHeight()
-                .clip(shape)
-                .background(settings.signInCardFill, shape)
-                .border(NuvioTheme.spacing.hairline, settings.signInCardEdge, shape)
-                .padding(
-                    start = settings.signInCardPaddingHorizontal,
-                    end = settings.signInCardPaddingHorizontal,
-                    top = settings.signInCardPaddingTop,
-                    bottom = settings.signInCardPaddingBottom
-                ),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(tokens.cardGap)
-        ) {
-            PanelEyebrowText(text = stringResource(R.string.tip_scan_eyebrow))
-            Text(
-                text = stringResource(R.string.tip_scan_line),
-                style = NuvioTheme.textStyles.meta,
-                color = NuvioTheme.marquee.onImage2,
-                textAlign = TextAlign.Center
-            )
-            TipQrTile(link)
-            Text(
-                text = link.removePrefix("https://"),
-                style = NuvioTheme.textStyles.welcomeRowLabel,
-                color = NuvioPrimitives.white,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+        TipIntro(ladder)
+        TipQrCard(gap = tokens.cardGap) {
+            TipQrCardTop(
+                eyebrow = stringResource(R.string.tip_scan_eyebrow),
+                line = stringResource(R.string.tip_scan_line),
+                link = link,
+                qrDescription = stringResource(R.string.cd_tip_qr)
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -241,10 +228,16 @@ private fun TipCardContent(
                 )
             }
             // The terms at the card's foot, like the sign-in card's (`.l11terms{margin-top:auto}`);
-            // GitHub Sponsors' own line on that backup link (D11).
+            // GitHub Sponsors' own line on that backup link (D11), Ko-fi's on a Ko-fi page (Spec 125 D2).
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
                 Text(
-                    text = stringResource(if (isSponsorsLink(link)) R.string.tip_terms_sponsors else R.string.tip_terms),
+                    text = stringResource(
+                        when {
+                            isSponsorsLink(link) -> R.string.tip_terms_sponsors
+                            isKofiLink(link) -> R.string.tip_terms_kofi
+                            else -> R.string.tip_terms
+                        }
+                    ),
                     style = NuvioTheme.textStyles.profileLine,
                     color = NuvioTheme.marquee.onImage3,
                     textAlign = TextAlign.Center,
@@ -255,13 +248,66 @@ private fun TipCardContent(
     }
 }
 
+/**
+ * `.l11qc.s81c`: the opaque QR card on the right of a [MarqueeVeilDialog] (the sign-in card's fill,
+ * edge, radius and padding), centred parts [gap] apart.
+ */
+@Composable
+internal fun BoxScope.TipQrCard(gap: Dp, content: @Composable ColumnScope.() -> Unit) {
+    val tokens = NuvioTheme.marquee.tip
+    val settings = NuvioTheme.marquee.settings
+    val shape = RoundedCornerShape(settings.signInCardRadius)
+    Column(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(end = NuvioTheme.layout.tvSafeHorizontal, top = tokens.cardTop, bottom = tokens.cardBottom)
+            .width(settings.signInCardWidth)
+            .fillMaxHeight()
+            .clip(shape)
+            .background(settings.signInCardFill, shape)
+            .border(NuvioTheme.spacing.hairline, settings.signInCardEdge, shape)
+            .padding(
+                start = settings.signInCardPaddingHorizontal,
+                end = settings.signInCardPaddingHorizontal,
+                top = settings.signInCardPaddingTop,
+                bottom = settings.signInCardPaddingBottom
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(gap),
+        content = content
+    )
+}
+
+/**
+ * The card's eyebrow, its line, the QR of [link] ([qrMargin] above and below its tile) and the link
+ * written out (without `https://`).
+ */
+@Composable
+internal fun TipQrCardTop(eyebrow: String, line: String, link: String, qrDescription: String, qrMargin: Dp = 0.dp) {
+    PanelEyebrowText(text = eyebrow)
+    Text(
+        text = line,
+        style = NuvioTheme.textStyles.meta,
+        color = NuvioTheme.marquee.onImage2,
+        textAlign = TextAlign.Center
+    )
+    TipQrTile(link, qrDescription, Modifier.padding(vertical = qrMargin))
+    Text(
+        text = link.removePrefix("https://"),
+        style = NuvioTheme.textStyles.welcomeRowLabel,
+        color = NuvioPrimitives.white,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
+}
+
 /** The white tile and the QR of [link], encoded off the main thread; empty while it encodes. */
 @Composable
-private fun TipQrTile(link: String) {
+private fun TipQrTile(link: String, contentDescription: String, modifier: Modifier = Modifier) {
     val tokens = NuvioTheme.marquee.tip
     val tile = RoundedCornerShape(tokens.qrRadius)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(tokens.qrTile)
             .clip(tile)
             .background(NuvioPrimitives.white, tile)
@@ -271,7 +317,7 @@ private fun TipQrTile(link: String) {
         rememberQrCode(link)?.let { qr ->
             Image(
                 bitmap = qr,
-                contentDescription = stringResource(R.string.cd_tip_qr),
+                contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )
@@ -279,22 +325,52 @@ private fun TipQrTile(link: String) {
     }
 }
 
-/** `.l11ql.s81l`: eyebrow, title, pitch, the suggested ladder (not focusable) and the pay line. */
+/**
+ * `.l11ql.s81l` on the left of a QR card's dialog: [eyebrow], [title], [pitch], then [more]; at the
+ * intro's place and width.
+ */
 @Composable
-private fun TipIntro(ladder: TipLadder, modifier: Modifier) {
+internal fun TipIntroColumn(
+    eyebrow: String,
+    title: String,
+    pitch: String,
+    more: @Composable ColumnScope.() -> Unit = {}
+) {
     val tokens = NuvioTheme.marquee.tip
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(tokens.introGap)) {
-        PanelEyebrowText(text = stringResource(R.string.tip_eyebrow))
+    Column(
+        modifier = Modifier
+            .padding(start = NuvioTheme.layout.tvSafeHorizontal, top = tokens.introTop)
+            .width(tokens.introWidth),
+        verticalArrangement = Arrangement.spacedBy(tokens.introGap)
+    ) {
+        PanelEyebrowText(text = eyebrow)
         Text(
-            text = stringResource(R.string.tip_title),
+            text = title,
             style = NuvioTheme.textStyles.signInTitle.copy(fontSize = tokens.titleSize, lineHeight = tokens.titleLineHeight),
             color = NuvioPrimitives.white
         )
         Text(
-            text = stringResource(R.string.tip_pitch),
+            text = pitch,
             style = NuvioTheme.textStyles.signInIntro,
             color = NuvioTheme.marquee.onImage2
         )
+        more()
+    }
+}
+
+/**
+ * `.l11ql.s81l`: eyebrow, title, pitch, then the suggested ladder (not focusable) and the pay line,
+ * unless [ladder] is null (a Ko-fi card, sandbox spec-125-ko-fi-tip-card v2).
+ */
+@Composable
+private fun TipIntro(ladder: TipLadder?) {
+    val tokens = NuvioTheme.marquee.tip
+    TipIntroColumn(
+        eyebrow = stringResource(R.string.tip_eyebrow),
+        title = stringResource(R.string.tip_title),
+        pitch = stringResource(R.string.tip_pitch)
+    ) {
+        if (ladder == null) return@TipIntroColumn
         Column(verticalArrangement = Arrangement.spacedBy(tokens.ladderGap)) {
             Text(
                 text = stringResource(R.string.tip_suggested),

@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -240,7 +241,8 @@ private fun DeviceWelcomeCard(
  * The Welcome card's frame (Spec 33 D8), shared with Spec 80's What's new card (D8): the opaque
  * card over the veil, the wordmark top-left; eyebrow, [title] and [subtitle] (none when empty) on
  * top, [body] scrolling inside the card if a large UI scale overflows it, [actions] in a row that
- * stays put. [initialFocus] goes on the button the card opens with.
+ * stays put. [initialFocus] goes on the button the card opens with. [styledEyebrow], when set,
+ * is drawn instead of [eyebrow] as given (the caller uppercases it; Spec 89's amber TEST RELEASE).
  */
 @Composable
 internal fun WelcomeCardFrame(
@@ -250,6 +252,7 @@ internal fun WelcomeCardFrame(
     onDismissRequest: () -> Unit,
     initialFocus: FocusRequester,
     body: @Composable ColumnScope.() -> Unit,
+    styledEyebrow: AnnotatedString? = null,
     actions: @Composable RowScope.() -> Unit
 ) {
     val marquee = NuvioTheme.marquee
@@ -275,7 +278,7 @@ internal fun WelcomeCardFrame(
                 ),
             verticalArrangement = Arrangement.spacedBy(tokens.cardGap)
         ) {
-            PanelEyebrowText(text = eyebrow)
+            if (styledEyebrow != null) PanelEyebrowText(text = styledEyebrow) else PanelEyebrowText(text = eyebrow)
             Text(
                 text = title,
                 style = NuvioTheme.textStyles.welcomeDevice,

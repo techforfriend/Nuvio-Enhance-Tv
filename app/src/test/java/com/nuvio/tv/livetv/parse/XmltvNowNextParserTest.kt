@@ -196,6 +196,9 @@ class XmltvNowNextParserTest {
         val list = day.parse(body.byteInputStream(), now, lookAheadMs = 48 * 60 * 60_000L).programmes.getValue("c")
         // P96 (first after the window) would read as P59's next across the dropped tail.
         assertEquals((0 until 60).map { "P$it" }, list.map { it.title })
+        // Spec 92 W2: a parse's own cap (a window started early) replaces the constructor's.
+        val wider = day.parse(body.byteInputStream(), now, lookAheadMs = 48 * 60 * 60_000L, maxPerChannel = 96)
+        assertEquals((0 until 96).map { "P$it" } + "P96", wider.programmes.getValue("c").map { it.title })
 
         fun titles(order: List<Int>): List<String> {
             val xml = buildString {

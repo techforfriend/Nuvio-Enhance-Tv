@@ -93,4 +93,19 @@ class PlayerBackNavigationTest {
             route(episodeChangedInPlace = false, autoPlayEnabled = false, playbackCompleted = true, hasContentId = false)
         )
     }
+
+    @Test
+    fun `a player launched before this process started was restored after a kill and does not start`() {
+        // Shield window 12b: launched ~22:40, process restarted ~23:40 (elapsedRealtime ms).
+        assertTrue(playerRestoredAfterProcessDeath(launchStartedAtMs = 1_000_000L, processStartElapsedMs = 4_600_000L))
+    }
+
+    @Test
+    fun `a player launched in this process, or with no launch time, plays as before`() {
+        assertFalse(playerRestoredAfterProcessDeath(launchStartedAtMs = 4_600_500L, processStartElapsedMs = 4_600_000L))
+        assertFalse(playerRestoredAfterProcessDeath(launchStartedAtMs = 4_600_000L, processStartElapsedMs = 4_600_000L))
+        assertFalse(playerRestoredAfterProcessDeath(launchStartedAtMs = null, processStartElapsedMs = 4_600_000L))
+        // 0 is no launch time (a route fixture), never a launch before the process.
+        assertFalse(playerRestoredAfterProcessDeath(launchStartedAtMs = 0L, processStartElapsedMs = 4_600_000L))
+    }
 }

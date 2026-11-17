@@ -62,6 +62,8 @@ internal fun contextFailureStrings(context: android.content.Context) = object : 
  * title = the cause in plain words, body = what to do, Details = the server/player line, the
  * probe or measured-speed line when there is one, Host (+ via addon), File + size (D4).
  * Untrusted text (a page title, an engine message) only ever lands inside a plain string.
+ * `hideNames` (Spec 97 X6 H3, D11): the service reads as the fallback ("The server"), Details and
+ * earlier sources drop the addon; Host stays.
  */
 internal object PlaybackFailureCopy {
 
@@ -73,9 +75,15 @@ internal object PlaybackFailureCopy {
      * [failure]'s words; [tried] = the sources the failover already left in this chain, oldest
      * first (Spec 75 S5: non-empty means every source was tried and [failure] is the last).
      */
-    fun of(failure: PlaybackFailure, s: FailureStrings, tried: List<TriedSource> = emptyList()): FailureCopy {
+    fun of(
+        failure: PlaybackFailure,
+        s: FailureStrings,
+        tried: List<TriedSource> = emptyList(),
+        hideNames: Boolean = false
+    ): FailureCopy {
         val f = failure.facts
         val service = resolveStreamProvider(f.streamName, f.streamDescription, f.addon, host = null)
+            ?.takeUnless { hideNames }
             ?: s.get(R.string.failure_service_fallback)
         val pickAnother = s.get(R.string.failure_body_pick_another)
         val (title, body) = when (failure.cause) {
@@ -139,11 +147,11 @@ internal object PlaybackFailureCopy {
             FailureCause.WRONG_FILE, FailureCause.UNKNOWN ->
                 s.get(R.string.failure_title_unknown) to s.get(R.string.failure_body_unknown)
         }
-        if (tried.isEmpty()) return FailureCopy(title, body, details(failure, s), eyebrow = s.get(R.string.failure_eyebrow))
+        if (tried.isEmpty()) return FailureCopy(title, body, details(failure, s, hideNames), eyebrow = s.get(R.string.failure_eyebrow))
         return FailureCopy(
             title = title,
             body = body,
-            details = details(failure, s) + tried.map { triedLine(it, s) },
+            details = details(failure, s, hideNames) + tried.map { triedLine(it, s, hideNames) },
             eyebrow = s.get(R.string.failure_eyebrow_tried, tried.size + 1),
             also = s.plural(R.plurals.failure_tried_before, tried.size, countsByReason(tried, s), tried.size)
         )
@@ -167,9 +175,9 @@ internal object PlaybackFailureCopy {
             .joinToString(", ") { (res, sources) -> s.plural(res, sources.size, sources.size) }
 
     /** One earlier source in Details: its mark in bold, then addon and file, as the other lines. */
-    private fun triedLine(source: TriedSource, s: FailureStrings): List<DetailSpan> = listOfNotNull(
+    private fun triedLine(source: TriedSource, s: FailureStrings, hideNames: Boolean): List<DetailSpan> = listOfNotNull(
         bold(SourceFailureMarks.reason(source.mark, s)),
-        source.addon?.takeIf { it.isNotBlank() }?.let { muted("\u00b7 $it") },
+        source.addon?.takeIf { it.isNotBlank() && !hideNames }?.let { muted("\u00b7 $it") },
         source.fileName?.takeIf { it.isNotBlank() }?.let { muted("\u00b7 $it") }
     )
 
@@ -201,7 +209,7 @@ internal object PlaybackFailureCopy {
     }
 
     /** D4: the server/player line always, then the probe, measured speed, host and file when known. */
-    fun details(failure: PlaybackFailure, s: FailureStrings): List<List<DetailSpan>> {
+    fun details(failure: PlaybackFailure, s: FailureStrings, hideNames: Boolean = false): List<List<DetailSpan>> {
         val f = failure.facts
         return listOfNotNull(
             playerLine(failure, s),
@@ -211,7 +219,7 @@ internal object PlaybackFailureCopy {
                 listOfNotNull(
                     plain(s.get(R.string.failure_detail_host)),
                     bold(host),
-                    f.addon?.takeIf { it.isNotBlank() }?.let { muted(s.get(R.string.failure_detail_via, it)) }
+                    f.addon?.takeIf { it.isNotBlank() && !hideNames }?.let { muted(s.get(R.string.failure_detail_via, it)) }
                 )
             },
             fileLine(f, s)
@@ -260,7 +268,9 @@ internal object PlaybackFailureCopy {
     }
 
     private fun measuredLine(f: FailureFacts, s: FailureStrings): List<DetailSpan>? {
-        val measured = f.measuredMbps ?: return null
+        // Spec 92 O1: 0.0 = no bytes moved (an all-503 chain, a silent server): no line. The same > 0.0 cut as
+        // slowOrNoData, so a TOO_SLOW body always has its line; a trickle under 0.1 shows "0.0" in both.
+        val measured = f.measuredMbps?.takeIf { it > 0.0 } ?: return null
         val spans = mutableListOf(
             plain(s.get(R.string.failure_detail_measured)),
             // Rounded down as in the body, so the two never disagree (17.96 is "17" and "17.9").

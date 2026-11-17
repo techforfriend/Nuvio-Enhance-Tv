@@ -244,10 +244,14 @@ private fun primarySuffix(nextToWatch: NextToWatch?): String? {
 @Composable
 private fun DetailMetaLine(meta: Meta, showImdbRating: Boolean, showFullReleaseDate: Boolean) {
     val parts = detailMetaParts(meta, showFullReleaseDate)
+    val context = LocalContext.current
+    // The genres give way first on a long line (Spec 118 D4).
+    val genres = remember(meta.genres, context) { metaGenres(meta.genres, context) }
     MarqueeMetaRow(
         parts = parts,
         imdb = formatRatingScore(meta.imdbRating?.takeIf { showImdbRating }),
-        tmdb = formatRatingScore(meta.tmdbRating?.takeIf { showImdbRating })
+        tmdb = formatRatingScore(meta.tmdbRating?.takeIf { showImdbRating }),
+        shrinkPart = genres
     )
 }
 

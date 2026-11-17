@@ -2,6 +2,8 @@ package com.nuvio.tv.core.player
 
 import android.app.Activity
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Display
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +51,18 @@ object FrameRateUtils {
         val appliedMode: Display.Mode
     )
 
-    private var originalModeId: Int? = null
+    /**
+     * Spec 93 P1 (Plezy FrameRateManager HDR_EXIT_SETTLE_MS, #2172): the exit restore waits this
+     * long after the player released its surface, so the sink does the HDR exit and the refresh
+     * change as two steps; folded into one renegotiation it took 8-30 s on some AVR chains.
+     */
+    private const val HDR_EXIT_SETTLE_MS = 400L
+
+    // Main thread only: recorded and restored inside withContext(Main), Compose effects and the
+    // main-looper handler below.
+    private val originalMode = OriginalDisplayMode()
+    private val restoreHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var pendingRestoreRunnable: Runnable? = null
 
     data class FrameRateDetection(
         val raw: Float,
@@ -98,8 +111,11 @@ object FrameRateUtils {
     }
 
     private fun recordOriginalMode(display: Display) {
-        if (originalModeId == null) {
-            originalModeId = display.mode.modeId
+        if (originalMode.record(DisplayModeValues.of(display.mode))) {
+            // A new player switches inside the previous one's exit window: no hand-back to the UI
+            // mode in between, and the UI mode stays the original this session restores to.
+            cancelPendingRestore()
+            Log.d(TAG, "Pending exit restore cancelled by a new display-mode switch")
         }
     }
 
@@ -397,29 +413,120 @@ object FrameRateUtils {
     }
 
     fun clearOriginalDisplayMode() {
-        originalModeId = null
+        cancelPendingRestore()
+        originalMode.clear()
     }
 
+    private fun cancelPendingRestore() {
+        pendingRestoreRunnable?.let { restoreHandler.removeCallbacks(it) }
+        pendingRestoreRunnable = null
+    }
+
+    /** Restores the mode the session started in now (the player is still showing; no HDR exit). */
     fun restoreOriginalDisplayMode(activity: Activity): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
-        val targetModeId = originalModeId ?: return false
+        val target = originalMode.take() ?: return false
+        return applyDisplayMode(activity, target)
+    }
 
+    /**
+     * Spec 93 P1: restores the session's original mode [HDR_EXIT_SETTLE_MS] after the player was
+     * released, on a main-looper handler that outlives the player screen.
+     */
+    fun restoreOriginalDisplayModeAfterExit(activity: Activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (originalMode.deferForExit() == null) return
+        cancelPendingRestore()
+        val runnable = Runnable {
+            pendingRestoreRunnable = null
+            val target = originalMode.takePending() ?: return@Runnable
+            if (activity.isFinishing || activity.isDestroyed) return@Runnable
+            applyDisplayMode(activity, target)
+        }
+        pendingRestoreRunnable = runnable
+        restoreHandler.postDelayed(runnable, HDR_EXIT_SETTLE_MS)
+    }
+
+    private fun applyDisplayMode(activity: Activity, target: DisplayModeValues): Boolean {
         return try {
             val window = activity.window ?: return false
             val display = window.decorView.display ?: return false
-            if (display.mode.modeId == targetModeId) {
-                originalModeId = null
-                true
-            } else {
-                val layoutParams = window.attributes
-                layoutParams.preferredDisplayModeId = targetModeId
-                window.attributes = layoutParams
-                originalModeId = null
-                true
-            }
+            // F1A-3: mode ids can be renumbered (standby, HDR) while the values stay, so the
+            // original is found again by size and refresh, never by the id it had. Always written,
+            // even when the panel already shows that mode: no tolerance-based "already there"
+            // (59.94 and 60 Hz are within it), and the window must stop asking for the film's mode.
+            // 0 (the original is no longer offered) hands the choice back to the system default.
+            val modeId = restoreModeId(display.supportedModes.toList(), display.mode, target)
+            if (modeId == 0) Log.w(TAG, "Original display mode $target is no longer offered; using the system default")
+            val layoutParams = window.attributes
+            layoutParams.preferredDisplayModeId = modeId
+            window.attributes = layoutParams
+            Log.d(TAG, "Restoring display mode $target (modeId=$modeId)")
+            modeId != 0
         } catch (e: Exception) {
             Log.e(TAG, "Failed to restore display mode", e)
             false
+        }
+    }
+
+    /**
+     * The mode id the restore writes: the active mode when its values are exactly [target]'s (no
+     * switch between twin modes), else [pickModeByValues], else 0 (the system default).
+     */
+    internal fun restoreModeId(modes: List<Display.Mode>, active: Display.Mode, target: DisplayModeValues): Int {
+        if (DisplayModeValues.of(active) == target) return active.modeId
+        return pickModeByValues(modes, target)?.modeId ?: 0
+    }
+
+    /** The supported mode of [target]'s size whose refresh is nearest [target]'s, within the match tolerance. */
+    internal fun pickModeByValues(modes: List<Display.Mode>, target: DisplayModeValues): Display.Mode? =
+        pickBestForTarget(
+            modes.filter { it.physicalWidth == target.width && it.physicalHeight == target.height },
+            target.refreshRate
+        )
+
+    /** A display mode by its values; its id is not stable across standby or an HDR switch. */
+    internal data class DisplayModeValues(val width: Int, val height: Int, val refreshRate: Float) {
+        companion object {
+            fun of(mode: Display.Mode) = DisplayModeValues(mode.physicalWidth, mode.physicalHeight, mode.refreshRate)
+        }
+    }
+
+    /** The mode a playback session started in, and an exit restore waiting for the HDR exit. */
+    internal class OriginalDisplayMode {
+        private var recorded: DisplayModeValues? = null
+        private var pending: DisplayModeValues? = null
+
+        /**
+         * Before an AFR switch. The session keeps its first original; a pending exit restore
+         * becomes the original again. Returns true when it cancelled a pending restore.
+         */
+        fun record(current: DisplayModeValues): Boolean {
+            val adopted = pending
+            if (adopted == null) {
+                if (recorded == null) recorded = current
+                return false
+            }
+            pending = null
+            recorded = adopted
+            return true
+        }
+
+        fun take(): DisplayModeValues? = recorded.also { recorded = null }
+
+        /** Moves the original to a pending exit restore; null when there is nothing to restore. */
+        fun deferForExit(): DisplayModeValues? {
+            val target = recorded ?: return null
+            recorded = null
+            pending = target
+            return target
+        }
+
+        fun takePending(): DisplayModeValues? = pending.also { pending = null }
+
+        fun clear() {
+            recorded = null
+            pending = null
         }
     }
 

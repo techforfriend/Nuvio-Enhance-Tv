@@ -83,7 +83,9 @@ internal const val ABOUT_UPDATE_ROW_KEY = "about_update"
  * the version into an Updates section under the credits: Check for updates (OK checks now; the
  * line under it says when the last check answered, or that it could not reach GitHub), which
  * turns into Update available while a newer release is known (OK opens [UpdateSidePanel]), and
- * Check automatically. [initialFocusRequester] goes on the first row; [openUpdatePanel]
+ * Check automatically, then Get test releases (Spec 89, sandbox spec-89-test-releases v2, stages
+ * t-off / t-on: off by default; an offered pre-release carries the Test tag after NEW).
+ * [initialFocusRequester] goes on the first row; [openUpdatePanel]
  * (Settings' deep entry [SettingsEntry.UPDATE], once that row has focus) opens the panel, and
  * [onUpdatePanelOpened] clears it. Home (ON_STOP, SettingsScreen) closes the panel, which stops
  * a download; the panel's changelog row opens the update's page (Spec 80 B1) and the panel shows
@@ -91,7 +93,8 @@ internal const val ABOUT_UPDATE_ROW_KEY = "about_update"
  * check, D13); OK swaps the pane to the changelog list ([ChangelogList]), Back returns to the row.
  * Spec 81 T3 (sandbox spec-81-donate v3, stage a-about): a Support section ends the pane, one Tip
  * the developer row that opens the tip card, while a tip link is set (D4; a locked profile never
- * reaches Settings).
+ * reaches Settings). Spec 124 (sandbox spec-124-community-row v1): a Community section ends it in
+ * every build, one r/nuvioke row whose QR dialog ([CommunityDialog]) opens the subreddit on a phone.
  */
 @Composable
 fun AboutSettingsContent(
@@ -104,6 +107,7 @@ fun AboutSettingsContent(
 ) {
     val tipLink = tipViewModel.link.collectAsStateWithLifecycle().value
     val tip = remember { TipEntryState() }
+    val community = remember { TipEntryState() }
     val update = viewModel.state.collectAsStateWithLifecycle().value
     val panelRelease = viewModel.panelRelease.collectAsStateWithLifecycle().value
     val changelogOpen = changelog.listOpen.collectAsStateWithLifecycle().value
@@ -155,6 +159,7 @@ fun AboutSettingsContent(
                 onCheck = viewModel::checkNow,
                 onOpenPanel = viewModel::openPanel,
                 onAutoCheckChange = viewModel::setAutoCheck,
+                onTestReleasesChange = viewModel::setTestReleases,
                 changelogRow = changelogRow,
                 onOpenChangelog = changelog::openList
             )
@@ -178,9 +183,19 @@ fun AboutSettingsContent(
                 AboutTipRow(onOpen = { tip.open(tipLink) }, modifier = Modifier.focusRequester(tip.focus))
             }
         }
+        Spacer(modifier = Modifier.height(4.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.marquee.settings.rowGap)) {
+            SettingsSectionLabel(text = stringResource(R.string.community_section))
+            AboutCommunityRow(
+                onOpen = { community.open(COMMUNITY_URL) },
+                modifier = Modifier.focusRequester(community.focus)
+            )
+        }
     }
-    // The Changelog row, just above Support, is in every build's pane.
-    TipEntryDialog(tip, fallback = changelogRow.requester)
+    // The Community row, just below Support, is in every build's pane.
+    TipEntryDialog(tip, fallback = community.focus)
+    // Same open / close / refocus as the tip card; the row is in every build, so no fallback is needed.
+    TipEntryDialog(community, fallback = null, card = { link, onDismiss -> CommunityDialog(link, onDismiss) })
 
     if (panelRelease != null) {
         UpdateSidePanel(
@@ -304,7 +319,7 @@ private fun installedVersion(): String =
     stringResource(R.string.about_version_build, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
 
 /**
- * `.l11sec` Updates, then the first row and Check automatically. The first row is ONE row whose
+ * `.l11sec` Updates, then the first row, Check automatically and Get test releases. The first row is ONE row whose
  * content follows [state] (Check for updates / Update available), so focus stays on it when a
  * check finds a release.
  */
@@ -315,6 +330,7 @@ private fun AboutUpdates(
     onCheck: () -> Unit,
     onOpenPanel: () -> Unit,
     onAutoCheckChange: (Boolean) -> Unit,
+    onTestReleasesChange: (Boolean) -> Unit,
     changelogRow: SettingsReturnRow,
     onOpenChangelog: () -> Unit
 ) {
@@ -339,8 +355,13 @@ private fun AboutUpdates(
                     color = if (status.isFailure) NuvioPrimitives.errorOnImage else NuvioTheme.marquee.onImage3
                 )
             },
-            labelBadge = if (state.noticeShown) {
-                { UpdateNewBadge() }
+            labelBadge = if (state.noticeShown || available?.prerelease == true) {
+                {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (state.noticeShown) UpdateNewBadge()
+                        if (available?.prerelease == true) TestReleaseChip()
+                    }
+                }
             } else {
                 null
             }
@@ -361,6 +382,12 @@ private fun AboutUpdates(
             subtitle = stringResource(R.string.update_auto_subtitle, updateFeedAddress()),
             checked = state.autoCheck,
             onCheckedChange = onAutoCheckChange
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.update_test_title),
+            subtitle = stringResource(R.string.update_test_subtitle),
+            checked = state.testReleases,
+            onCheckedChange = onTestReleasesChange
         )
         AboutChangelogRow(onOpen = onOpenChangelog, modifier = Modifier.optionalFocusRequester(changelogRow.requester))
     }

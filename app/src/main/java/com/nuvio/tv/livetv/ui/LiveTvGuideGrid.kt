@@ -113,7 +113,7 @@ object LiveTvGuideGrid {
 
     /**
      * Every one of [channels]' rows laid out for [bounds], reading each channel's programmes where the
-     * day schedule does (`guides[ref.epgSourceId].programmes[ref.epgChannelId]`).
+     * day schedule does (`EpgSnapshot.programmesOf`, moved by the channel's guide shift).
      */
     fun rows(
         channels: List<Channel>,
@@ -124,7 +124,7 @@ object LiveTvGuideGrid {
         val rows = HashMap<String, GuideRow>()
         for (ch in channels) {
             val ref = refs[ch.key] ?: continue
-            val programmes = guides[ref.epgSourceId]?.programmes?.get(ref.epgChannelId) ?: continue
+            val programmes = guides[ref.epgSourceId]?.programmesOf(ref.epgChannelId, ch.guideShiftMs) ?: continue
             layout(programmes, bounds).takeIf { it.isNotEmpty() }?.let { rows[ch.key] = GuideRow(ref.epgSourceId, it) }
         }
         return GuideRows(bounds, rows)

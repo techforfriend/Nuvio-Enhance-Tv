@@ -232,16 +232,18 @@ internal fun MarqueeHeroBlock(
 @Composable
 private fun HeroMetaRow(preview: HeroPreview, showImdbRatings: Boolean, modifier: Modifier) {
     val context = LocalContext.current
-    val parts = remember(preview, context) {
+    val genres = remember(preview, context) {
+        preview.genres.list.take(2)
+            .filter { it.isNotBlank() }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(", ") { localizedGenreLabel(context, it) }
+    }
+    val parts = remember(preview, genres) {
         buildList {
             preview.episodeLabel?.takeIf { it.isNotBlank() }?.let(::add)
             preview.yearText?.takeIf { it.isNotBlank() }?.let(::add)
             preview.ageRating?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
-            preview.genres.list.take(2)
-                .filter { it.isNotBlank() }
-                .takeIf { it.isNotEmpty() }
-                ?.joinToString(", ") { localizedGenreLabel(context, it) }
-                ?.let(::add)
+            genres?.let(::add)
             preview.runtimeText?.takeIf { it.isNotBlank() }?.let(::add)
         }
     }
@@ -250,6 +252,7 @@ private fun HeroMetaRow(preview: HeroPreview, showImdbRatings: Boolean, modifier
         imdb = preview.imdbText?.takeIf { showImdbRatings && it.isNotBlank() },
         tmdb = preview.tmdbText?.takeIf { showImdbRatings },
         truncateFirst = !preview.episodeLabel.isNullOrBlank(),
+        shrinkPart = genres,
         modifier = modifier
     )
 }

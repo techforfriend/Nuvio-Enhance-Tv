@@ -126,20 +126,31 @@ class SourceFetcher internal constructor(
         }
 
         /**
-         * `#EXTM3U` (or a header-less `#EXTINF`) = playlist; XML with a `<tv` root = guide; a JSON
-         * object = Stremio manifest candidate (whether it declares `tv` is the adapter's check).
-         * Null for anything else (HTML error pages, raw video, images).
+         * XML with a `<tv` root = guide; a JSON object = Stremio manifest candidate (whether it
+         * declares `tv` is the adapter's check); else a playlist when any line of the head starts
+         * with an M3U directive ([M3U_DIRECTIVES], Spec 90 L6: comment or blank lines may come
+         * first) or its first non-comment line is a bare http(s) URL (a header-less URL list; the
+         * parser tolerates the missing header). Null for anything else (HTML error pages, raw video, images).
          */
         fun detectKind(head: String): SourceKind? {
             val text = head.removePrefix("\uFEFF").trimStart()
             return when {
-                text.startsWith("#EXTM3U", ignoreCase = true) -> SourceKind.M3U
-                text.startsWith("#EXTINF", ignoreCase = true) -> SourceKind.M3U
                 text.startsWith("<") && TV_ROOT.containsMatchIn(text) -> SourceKind.XMLTV
                 text.startsWith("{") -> SourceKind.STREMIO
+                looksLikeM3u(text) -> SourceKind.M3U
                 else -> null
             }
         }
+
+        private fun looksLikeM3u(text: String): Boolean {
+            val lines = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.any { line -> M3U_DIRECTIVES.any { line.startsWith(it, ignoreCase = true) } }) return true
+            val first = lines.firstOrNull { !it.startsWith("#") } ?: return false
+            return (first.startsWith("http://", ignoreCase = true) || first.startsWith("https://", ignoreCase = true)) &&
+                first.none(Char::isWhitespace)
+        }
+
+        private val M3U_DIRECTIVES = listOf("#EXTM3U", "#EXTINF", "#KODIPROP", "#EXTVLCOPT")
 
         private fun startsWithGzipMagic(input: BufferedInputStream): Boolean {
             input.mark(2)

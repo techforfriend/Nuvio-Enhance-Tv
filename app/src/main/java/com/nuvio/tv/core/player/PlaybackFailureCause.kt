@@ -1,8 +1,10 @@
 package com.nuvio.tv.core.player
 
+import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlaybackException
 import com.nuvio.tv.core.stream.FailureCause
 
@@ -75,19 +77,57 @@ internal object PlaybackFailureCauses {
     /**
      * The startup watchdog's fire: no tracks / no video track / data still arriving (Spec 86 R9) is a
      * source that sent nothing usable in time, TOO_SLOW when a speed was measured under what the
-     * file needs, else NO_DATA.
+     * file needs, else NO_DATA; the server's [httpCode] ([startupHttpAnswer]) names it first.
      */
     fun ofStartupWatchdog(
         reason: PlayerStartupWatchdogPolicy.FireReason,
         measuredMbps: Double?,
-        neededMbps: Double?
+        neededMbps: Double?,
+        httpCode: Int? = null
     ): FailureCause = when (reason) {
         PlayerStartupWatchdogPolicy.FireReason.VideoTrackUnsupported -> FailureCause.VIDEO_UNSUPPORTED
         PlayerStartupWatchdogPolicy.FireReason.DecoderUnresponsive -> FailureCause.DECODER_STUCK
         PlayerStartupWatchdogPolicy.FireReason.TracksNotRead,
         PlayerStartupWatchdogPolicy.FireReason.NoVideoTrack,
-        PlayerStartupWatchdogPolicy.FireReason.DataStillArriving -> slowOrNoData(measuredMbps, neededMbps)
+        PlayerStartupWatchdogPolicy.FireReason.DataStillArriving ->
+            httpCode?.let(::ofHttp) ?: slowOrNoData(measuredMbps, neededMbps)
     }
+
+    /**
+     * Spec 113 D1 (F2b): what a load [error] keeps for the startup watchdog's box: its HTTP code and
+     * status, for a load of the source in this start. Null for a non-HTTP error, after the first
+     * frame, for a sidecar subtitle ([uri] marked, [hasSubtitleUriMarker]; it loads as
+     * TRACK_TYPE_UNKNOWN like the video) or an HLS/DASH text rendition ([trackType] TEXT), and for an
+     * error raised before this start armed ([errorAtMs] < [armedAtMs], both elapsedRealtime: a
+     * replaced source's late error).
+     */
+    fun startupLoadHttpError(
+        error: Throwable,
+        uri: String,
+        trackType: Int,
+        errorAtMs: Long,
+        armedAtMs: Long,
+        renderedFirstFrame: Boolean
+    ): FailureFacts? {
+        if (renderedFirstFrame || errorAtMs < armedAtMs) return null
+        if (trackType == C.TRACK_TYPE_TEXT || hasSubtitleUriMarker(uri)) return null
+        val http = error.findCause<HttpDataSource.InvalidResponseCodeException>() ?: return null
+        return FailureFacts(httpCode = http.responseCode, httpStatus = http.responseMessage?.takeIf { it.isNotBlank() })
+    }
+
+    /**
+     * Spec 113 D1 (F2b): the HTTP error the loader kept retrying in this start ([kept]: a 429/503
+     * rides PlayerLoadErrorHandlingPolicy's 120 s ladder, so the player error that would name it
+     * never comes inside the watchdog's window) names a source-facing fire, when nothing arrived
+     * over the window ([networkBytes] 0; null = not measured, mpv). Else null: the fire keeps its
+     * own cause and Details line.
+     */
+    fun startupHttpAnswer(
+        reason: PlayerStartupWatchdogPolicy.FireReason,
+        networkBytes: Long?,
+        kept: FailureFacts?
+    ): FailureFacts? =
+        kept?.takeIf { it.httpCode != null && networkBytes == 0L && PlayerStartupWatchdogPolicy.failsOver(reason) }
 
     /** TOO_SLOW needs both speeds and a positive measurement below the need; anything else is NO_DATA. */
     fun slowOrNoData(measuredMbps: Double?, neededMbps: Double?): FailureCause =

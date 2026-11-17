@@ -7,6 +7,8 @@ import coil3.SingletonImageLoader
 import coil3.imageLoader
 
 import com.nuvio.tv.core.diagnostics.LastExitReason
+import com.nuvio.tv.core.network.access.AccessHeaderStore
+import com.nuvio.tv.core.network.dns.PrivateDnsSettings
 import com.nuvio.tv.core.runtime.LegacyFeatureDataCleanup
 import com.nuvio.tv.core.sync.StartupSyncService
 import dagger.hilt.android.HiltAndroidApp
@@ -17,6 +19,12 @@ import javax.inject.Inject
 
 @HiltAndroidApp
 class NuvioApplication : Application(), SingletonImageLoader.Factory {
+
+    // Spec 97 A4/N4: first, so their construction (which makes them every client's access-header
+    // and Private DNS source) comes before the injections below can start a request (Dagger
+    // injects fields in order).
+    @Inject lateinit var accessHeaderStore: AccessHeaderStore
+    @Inject lateinit var privateDnsSettings: PrivateDnsSettings
 
     // No direct reads; injected so its init (auth-state collector driving the startup pull)
     // starts at process start rather than at first Activity injection.
@@ -56,6 +64,12 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         // plugin_code / cs3_plugin_preferences).
         com.nuvio.tv.core.cloudstream.CloudStreamStorage.initialize(this)
         com.nuvio.tv.core.cloudstream.CloudStreamRepository.initialize()
+        // Spec 97 A2/N4: warm reads take the first decrypt and the first setting read off the
+        // request path.
+        val store = accessHeaderStore
+        val dnsSettings = privateDnsSettings
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { dnsSettings.providerBlocking() }
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { store.snapshot() }
         // C-1: hydrate the AFR fps cache from disk (background load) so cold
         // rewatches take the preflight hit path (switch before prepare).
         com.nuvio.tv.core.player.AfrFpsCache.initFrameRateCachePersistence(this)

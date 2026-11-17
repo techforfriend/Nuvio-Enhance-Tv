@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
- * The update the latest release offers this TV (Spec 52 P6): one APK for one ABI, named
+ * The update the newest release offers this TV (Spec 52 P6; a pre-release only with Get test
+ * releases on, Spec 89 D5): one APK for one ABI, named
  * `NuvioAK-<versionName>-<versionCode>-<abi>.apk` by the release step (Spec 49 R6), with the
  * digest GitHub computed on upload. Stored as JSON (UpdateStore), so fields only ever get added.
  */
@@ -26,7 +27,9 @@ data class KnownRelease(
     /** Spec 80 D2: the release's video ([releaseVideo]'s rules) and its poster, for the changelog page the panel opens. */
     val videoUrl: String? = null,
     val videoSizeBytes: Long = 0L,
-    val posterUrl: String? = null
+    val posterUrl: String? = null,
+    /** Spec 89: a GitHub pre-release (a test release), offered only while Get test releases is on. */
+    val prerelease: Boolean = false
 )
 
 /** `NuvioAK-<versionName>-<versionCode>-<abi>.apk` for the two ABIs a release ships. */
@@ -67,13 +70,25 @@ private fun assetOffer(asset: GitHubAssetDto, release: GitHubReleaseDto): KnownR
         publishedAt = release.publishedAt,
         videoUrl = video?.url,
         videoSizeBytes = video?.sizeBytes ?: 0L,
-        posterUrl = video?.posterUrl
+        posterUrl = video?.posterUrl,
+        prerelease = release.prerelease
     )
 }
 
+/**
+ * Spec 89 D5: the newest offer for this TV among [releases] (the list endpoint, newest first,
+ * pre-releases included): the highest versionCode of each non-draft release's [releaseOffer]; on a
+ * tie the published release wins over a pre-release.
+ */
+fun newestOffer(releases: List<GitHubReleaseDto>, supportedAbis: List<String>): KnownRelease? =
+    releases.asSequence()
+        .filterNot { it.draft }
+        .mapNotNull { releaseOffer(it, supportedAbis) }
+        .maxWithOrNull(compareBy<KnownRelease> { it.versionCode }.thenBy { !it.prerelease })
+
 /** What one check learned. Only [Unreached] leaves no attempt behind (P7: no answer, retry next start). */
 sealed interface CheckOutcome {
-    /** 200: the latest release's offer for this TV, null when it has none. */
+    /** 200: the newest release's offer for this TV (Spec 89 D5: the list's, with test releases on), null when it has none. */
     data class Answered(val offer: KnownRelease?) : CheckOutcome
 
     /** 404: no release yet (or no such repo); any known release is dropped. */
@@ -86,9 +101,16 @@ sealed interface CheckOutcome {
     data object Unreached : CheckOutcome
 }
 
-/** The outcome of an HTTP answer with [code] and the decoded [body]. */
-fun checkOutcome(code: Int, body: GitHubReleaseDto?, supportedAbis: List<String>): CheckOutcome = when {
-    code == 200 && body != null -> CheckOutcome.Answered(releaseOffer(body, supportedAbis))
+/** The outcome of an HTTP answer with [code] and the decoded [body] (the latest release). */
+fun checkOutcome(code: Int, body: GitHubReleaseDto?, supportedAbis: List<String>): CheckOutcome =
+    outcomeOf(code, body) { releaseOffer(it, supportedAbis) }
+
+/** [checkOutcome] for the list endpoint (Spec 89 D5, Get test releases on); an empty list offers nothing. */
+fun listCheckOutcome(code: Int, body: List<GitHubReleaseDto>?, supportedAbis: List<String>): CheckOutcome =
+    outcomeOf(code, body) { newestOffer(it, supportedAbis) }
+
+private inline fun <T : Any> outcomeOf(code: Int, body: T?, offer: (T) -> KnownRelease?): CheckOutcome = when {
+    code == 200 && body != null -> CheckOutcome.Answered(offer(body))
     code == 404 -> CheckOutcome.NoRelease
     else -> CheckOutcome.Failed
 }

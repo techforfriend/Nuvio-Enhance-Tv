@@ -488,6 +488,9 @@ class PlayerRuntimeController(
     internal var nextEpisodeVideo: Video? = null
     internal var previousEpisodeVideo: Video? = null
     internal var userPausedManually = false
+    /** Spec 93 P5: elapsedRealtime and position of the last Play/Pause pause, for [ResumeRewind.afterPause]. */
+    internal var userPauseStartedAtMs: Long? = null
+    internal var userPausePositionMs: Long = 0L
 
     internal var isInBackground: Boolean = false
     internal var pendingBackgroundCrashRecovery: Boolean = false
@@ -533,6 +536,15 @@ class PlayerRuntimeController(
     // resume once it hands the position to mpv, so the mpv->Exo failover carries it from here.
     internal var mpvStartPositionMs: Long = 0L
     internal var runtimeInternalPlayerEngineOverride: InternalPlayerEngine? = null
+    // Spec 97 D30: the current start's stream is on a saved access site, so it plays on ExoPlayer
+    // only (no format hop, no manual or failure-box switch to mpv). Null until this stream's
+    // initializePlayer has looked it up (reset in its prelude and on a stream change). The OSD's
+    // Switch engine pill reads it through PlayerUiState.mpvBarredForStream.
+    internal var streamOnSavedAccessSite: Boolean? = null
+        set(value) {
+            field = value
+            _uiState.update { it.copy(mpvBarredForStream = mpvBarred(value)) }
+        }
     internal var sessionPlayerEngine: InternalPlayerEngine? = null
     internal var currentInternalPlayerEngine: InternalPlayerEngine = InternalPlayerEngine.EXOPLAYER
     internal var streamAutoPlayNextEpisodeEnabledSetting: Boolean = false
@@ -718,6 +730,12 @@ class PlayerRuntimeController(
     internal var failedOverSources: List<TriedSource> = emptyList()
     // The failure the store last recorded, so the exit never records a failover's failure twice.
     internal var lastRecordedFailure: PlaybackFailure? = null
+    // Spec 113 D1 (F2b): the last HTTP error (code + status) the source's loads got in this start
+    // (PlaybackFailureCauses.startupLoadHttpError), reset when the startup watchdog arms at
+    // [startupWatchdogArmedAtMs] (elapsedRealtime); the watchdog's box names it
+    // (PlaybackFailureCauses.startupHttpAnswer).
+    internal var startupLoadHttpError: FailureFacts? = null
+    internal var startupWatchdogArmedAtMs: Long = 0L
     internal var hasRetriedAfterMimeOverrideClear: Boolean = false
     internal var isMapDv7ToHevcActiveForCurrentPlayback: Boolean = false
     internal var isManualDv81Mode2ActiveForCurrentPlayback: Boolean = false

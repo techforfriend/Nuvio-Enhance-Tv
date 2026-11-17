@@ -259,12 +259,16 @@ class DevicePlayerSettingsStoreTest {
         call("setStreamLimitMode") { setStreamLimitMode(StreamLimitMode.MANUAL) }
         call("setStreamLimitManualMbps") { setStreamLimitManualMbps(150) }
         call("setResolutionLimitMode") { setResolutionLimitMode(ResolutionLimitMode.UP_TO_720P) }
+        assertFalse("Spec 97 X6: names show by default", settings.hideSourceNames.first())
+        call("setHideSourceNames") { setHideSourceNames(true) }
+        assertTrue(settings.hideSourceNames.first())
 
         // Profile side.
         call("setSkipSilence") { setSkipSilence(true) }
         call("setPreferredAudioLanguage") { setPreferredAudioLanguage("fr") }
         call("setSecondaryPreferredAudioLanguage") { setSecondaryPreferredAudioLanguage("de") }
         call("setPauseOverlayEnabled") { setPauseOverlayEnabled(true) }
+        call("setResumeRewindSeconds") { setResumeRewindSeconds(10) }
         call("setOsdClockEnabled") { setOsdClockEnabled(false) }
         call("setSkipIntroEnabled") { setSkipIntroEnabled(false) }
         call("setParentalGuideEnabled") { setParentalGuideEnabled(false) }

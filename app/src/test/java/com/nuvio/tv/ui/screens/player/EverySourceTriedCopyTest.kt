@@ -32,6 +32,14 @@ class EverySourceTriedCopyTest {
     )
 
     @Test
+    fun `hidden names leave every earlier source's addon out`() {
+        val c = PlaybackFailureCopy.of(expired, s, listOf(tried(FailureCause.WEB_PAGE)), hideNames = true)
+        val lines = c.details.map { line -> line.joinToString(" ") { it.text } }
+        assertTrue(lines.toString(), lines.none { "AIOStreams" in it })
+        assertTrue(lines.toString(), lines.any { "a.mkv" in it })
+    }
+
+    @Test
     fun `a single failure keeps the plain eyebrow, body and no count line`() {
         val c = PlaybackFailureCopy.of(expired, s)
         assertEquals("Playback error", c.eyebrow)

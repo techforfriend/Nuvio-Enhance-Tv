@@ -41,4 +41,11 @@ class MissingUpstreamsTest {
     fun `repeated names count once`() {
         assertEquals("Knaben didn't answer", text("Knaben", "Knaben"))
     }
+
+    // Spec 97 X6: the foot's count while source names are hidden.
+    @Test
+    fun `the count is of distinct upstreams`() {
+        assertEquals(0, missingUpstreamsCount(emptyList()))
+        assertEquals(2, missingUpstreamsCount(listOf("A", "A", "B")))
+    }
 }

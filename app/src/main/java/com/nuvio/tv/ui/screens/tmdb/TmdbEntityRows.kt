@@ -8,6 +8,7 @@ import com.nuvio.tv.core.tmdb.TmdbEntityRail
 import com.nuvio.tv.core.tmdb.TmdbEntityRailType
 import com.nuvio.tv.domain.model.CatalogRow
 import com.nuvio.tv.domain.model.ContentType
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import com.nuvio.tv.ui.screens.home.LayoutUiPrefs
 import com.nuvio.tv.ui.util.isoDisplayNames
 import java.util.Locale
@@ -61,7 +62,7 @@ internal fun entityHeaderSubline(header: TmdbEntityHeader, locale: Locale = Loca
 internal fun entityLayoutPrefs(prefs: LayoutUiPrefs): LayoutUiPrefs = prefs.copy(
     catalogAddonNameEnabled = false,
     catalogTypeSuffixEnabled = false,
-    focusedPosterBackdropTrailerEnabled = false
+    trailerAutoplayMode = TrailerAutoplayMode.OFF
 )
 
 /** The page's two modes: the header frame over a row peek (stage 7), or Home's rows (stages 8-9). */

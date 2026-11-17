@@ -14,6 +14,9 @@ import androidx.media3.exoplayer.upstream.Allocation
 import androidx.media3.exoplayer.upstream.DefaultAllocatorNative
 import java.io.InterruptedIOException
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.CompletableFuture
@@ -240,6 +243,13 @@ internal class ParallelRangeDataSource(
         ) {
             @Volatile var resolvedUri: Uri? = null
             @Volatile var totalLength: Long = -1L
+            // Spec 91 K3: single-flight re-resolve of an expired resolvedUri, and the stale URI whose
+            // re-resolve failed (waiters fail fast on it instead of each asking the resolver again).
+            val reResolveLock = Any()
+            @Volatile var failedReResolveFor: Uri? = null
+            // Spec 91 D1/D2: the latest network-class chunk failure, or null; noteProgress weighs
+            // it against bytes on connections older than the failing download.
+            @Volatile var networkFailure: NetworkFailure? = null
             val futures = ConcurrentHashMap<Long, CompletableFuture<DownloadedChunk>>()
             val lastTouch = ConcurrentHashMap<Long, Long>()
             val abandoned = AtomicBoolean(false)
@@ -392,6 +402,73 @@ internal class ParallelRangeDataSource(
 
         private val sessionLock = Any()
         private var currentChunkSession: ChunkSession? = null
+
+        /**
+         * Spec 91 K1: the stream whose chunk session failed in a way one connection survives; its
+         * opens take the plain single connection until the player shuts down. One stream plays at a
+         * time, so one mark: marking another stream, or [releaseRetainedSession] (player exit,
+         * MID_PLAY_LINK_REFRESH, speed test), re-arms parallel.
+         */
+        private class SingleConnectionMark(val requestUri: Uri, val totalLength: Long)
+
+        @Volatile private var singleConnectionMark: SingleConnectionMark? = null
+
+        @VisibleForTesting
+        internal fun singleConnectionMarkedForTest(uri: Uri): Boolean = singleConnectionMark?.requestUri == uri
+
+        @VisibleForTesting
+        internal fun networkFailureStampedForTest(): Boolean =
+            synchronized(sessionLock) { currentChunkSession?.networkFailure != null }
+
+        private const val MAX_CAUSE_DEPTH = 12
+        /**
+         * Spec 91 D2: a network-class chunk failure, [atNs], whose download (all its attempts) began
+         * at [downloadStartNs]; both System.nanoTime().
+         */
+        private class NetworkFailure(val downloadStartNs: Long, val atNs: Long)
+
+        /**
+         * Spec 91 D1/D2 (Arshad: "count it only when another connection open since before the
+         * failure keeps receiving data"): bytes at [nowNs] on a connection whose open() returned at
+         * [connectedAtNs] show the network stayed up through a failure only if that connection was
+         * open before the failing download began (it lived through every attempt of it) and the
+         * bytes arrive 200 ms to 5 s after the failure. A network drop stalls or breaks every open
+         * connection: bytes buffered when it struck drain within milliseconds, before the window
+         * opens, and a connection opened during or after the failing download never counts, which
+         * covers a late connect timeout at outage recovery.
+         */
+        internal fun isNetworkEvidence(connectedAtNs: Long, downloadStartNs: Long, failedAtNs: Long, nowNs: Long): Boolean =
+            connectedAtNs - downloadStartNs < 0L &&
+                (nowNs - failedAtNs) in NETWORK_EVIDENCE_FROM_NS..NETWORK_EVIDENCE_UNTIL_NS
+
+        // Spec 91 D2: the window after a network failure in which [isNetworkEvidence] counts new bytes. The
+        // 200 ms floor lets bytes buffered before the failure drain.
+        internal const val NETWORK_EVIDENCE_FROM_NS = 200_000_000L
+        internal const val NETWORK_EVIDENCE_UNTIL_NS = 5_000_000_000L
+
+        /**
+         * Spec 91 K1: the failure class of a chunk-session failure that one plain connection can
+         * survive, or null. Rate limiting that outlasted the backoff (the host caps connections), a
+         * range response that broke its contract, a chunk buffer that could not be allocated. Not:
+         * dead-link codes (K3), 416 (fatal in the loader policy, and a file mismatch), other HTTP
+         * codes, cancellation. Network causes count only with evidence that other connections kept
+         * delivering (Spec 91 D1: noteNetworkFailure, noteProgress).
+         */
+        internal fun singleConnectionFailureClass(error: Throwable): String? =
+            generateSequence(error) { it.cause }.take(MAX_CAUSE_DEPTH).firstNotNullOfOrNull { cause ->
+                when {
+                    cause is HttpDataSource.InvalidResponseCodeException &&
+                        (cause.responseCode == 429 || cause.responseCode == 503) -> "rate-limit"
+                    cause is ChunkContractException -> "contract"
+                    cause is ChunkAllocationException -> "allocation"
+                    else -> null
+                }
+            }
+
+        /** Spec 91 K3: the dead-link response in [error]'s cause chain, if any. */
+        private fun Throwable.deadLinkResponse(): HttpDataSource.InvalidResponseCodeException? =
+            findCause<HttpDataSource.InvalidResponseCodeException>()
+                ?.takeIf { it.responseCode in DEAD_LINK_HTTP_RESPONSE_CODES }
         // nt13: a session created speculatively at stream-resolve time, holding a
         // chunk-0 download that is already in flight before the player exists.
         // Kept in its own slot on purpose: on a transition the OUTGOING stream is
@@ -585,6 +662,7 @@ internal class ParallelRangeDataSource(
         internal fun releaseRetainedSession() {
             synchronized(sessionLock) {
                 poolOpen = false
+                singleConnectionMark = null
                 currentChunkSession?.let { teardownSessionLocked(it, poolCap = 0) }
                 currentChunkSession = null
                 // nt13: a pre-start that was never adopted must not outlive the player.
@@ -610,6 +688,8 @@ internal class ParallelRangeDataSource(
             prefetchWindow: Int
         ): ChunkSession? {
             synchronized(sessionLock) {
+                // Spec 91 K1: a marked stream opens plain and would never adopt the pre-start.
+                if (singleConnectionMark?.requestUri == requestUri) return null
                 val live = currentChunkSession
                 if (live != null && !live.abandoned.get() && live.requestUri == requestUri &&
                     live.chunkSize == chunkSz && live.requestHeaders == requestHeaders
@@ -815,6 +895,13 @@ internal class ParallelRangeDataSource(
 
     private class DownloadedChunk(val buffer: PooledBuffer, val size: Int)
 
+    /** Spec 91 K1: a chunk response that broke its range contract (short body, no read progress). */
+    private class ChunkContractException(message: String) : IOException(message)
+
+    /** Spec 91 K1: the chunk buffer allocation failed (out of memory). */
+    private class ChunkAllocationException(cause: Throwable) :
+        IOException("Native chunk buffer allocation failed (out of memory)", cause)
+
     /**
      * nt7 (progressive reads): live view of a chunk download in flight.
      * [watermark] is volatile and written AFTER the bytes below it have
@@ -944,6 +1031,10 @@ internal class ParallelRangeDataSource(
 
         resetLocalReadState()
         bytesServedThisOpen = 0L
+
+        singleConnectionMark?.takeIf { it.requestUri == dataSpec.uri }?.let { mark ->
+            return openSingleConnection(dataSpec, mark)
+        }
 
         // nt7: attach to the shared download session for this URI. Downloads
         // (done AND in-flight) belong to the session and survive the
@@ -1287,6 +1378,7 @@ internal class ParallelRangeDataSource(
                 // remove so a future already evicted/replaced by another
                 // thread is never double-released.
                 retireFuture(activeSession, chunkIndex, future, maxPoolSize)
+                noteChunkFailure(activeSession, e)
                 throw PlaybackNetworkFailure.chunkFailure("Failed to download chunk $chunkIndex", e, openedDataSpec)
             }
             currentChunkIndex = chunkIndex
@@ -1343,6 +1435,101 @@ internal class ParallelRangeDataSource(
         session?.noteRead(chunkIndex)
 
         return readSize
+    }
+
+    /**
+     * Spec 91 K1: mark the stream after a chunk failure one plain connection survives (the loader's
+     * retry open, which follows the throw, then takes the plain path). Network failures are weighed
+     * by the download workers instead (D1/D2: [noteNetworkFailure], [noteProgress]).
+     */
+    private fun noteChunkFailure(activeSession: ChunkSession, error: Throwable) {
+        singleConnectionFailureClass(error)?.let { markSingleConnection(activeSession, it) }
+    }
+
+    /**
+     * Spec 91 D1: stamp a network-class chunk failure for [noteProgress] to weigh. Connect-phase
+     * failures (unknown host, connect refused or unreachable, no route) do not stamp: they are
+     * what a network drop looks like to a new connection while older sockets may survive it.
+     */
+    private fun noteNetworkFailure(activeSession: ChunkSession, error: Throwable, downloadStartNs: Long) {
+        if (!PlaybackNetworkFailure.hasNetworkCause(error) || error.deadLinkResponse() != null) return
+        val connectPhase = generateSequence(error) { it.cause }.take(MAX_CAUSE_DEPTH).any {
+            it is UnknownHostException || it is ConnectException || it is NoRouteToHostException
+        }
+        if (!connectPhase) activeSession.networkFailure = NetworkFailure(downloadStartNs, System.nanoTime())
+    }
+
+    /**
+     * Spec 91 D1/D2: bytes arrived on a connection opened at [connectedAtNs]; [isNetworkEvidence]
+     * decides whether they prove the latest network failure was that connection's alone. A D1 mark
+     * needs bytes at least 200 ms after the failure, after the reader has usually thrown and the
+     * loader retried (first retry at once): the fallback lands on the next failure or seek.
+     */
+    private fun noteProgress(activeSession: ChunkSession, connectedAtNs: Long) {
+        val failure = activeSession.networkFailure ?: return
+        if (isNetworkEvidence(connectedAtNs, failure.downloadStartNs, failure.atNs, System.nanoTime())) {
+            markSingleConnection(activeSession, "network")
+        }
+    }
+
+    /**
+     * Spec 91 K1: mark the stream so its next open (the loader's retry after a surfaced failure, or
+     * a seek) takes one plain connection, which tears the chunk sessions down. Once per stream.
+     * MP4 session mode is one connection already.
+     */
+    private fun markSingleConnection(activeSession: ChunkSession, failureClass: String) {
+        if (parallelConnections <= 1) return
+        val total = activeSession.totalLength
+        if (total <= 0L) return
+        val requestUri = activeSession.requestUri
+        if (singleConnectionMark?.requestUri == requestUri) return
+        synchronized(sessionLock) {
+            // Under the lock: a session torn down (releaseRetainedSession clears the mark) never re-marks.
+            if (activeSession.abandoned.get() || singleConnectionMark?.requestUri == requestUri) return
+            singleConnectionMark = SingleConnectionMark(requestUri, total)
+        }
+        Log.w(TAG, "CHUNK_FALLBACK class=$failureClass host=${requestUri.host}: single connection from the next open")
+    }
+
+    /**
+     * Spec 91 K1: the marked stream's open (local read state already reset by [open]), one plain
+     * connection on the request URI (redirects re-resolved, as the plain path does on every open).
+     * A 206 must start at the position and carry the marked file's total; a 200 at a later position
+     * is accepted, since OkHttpDataSource has already skipped to it inside open().
+     */
+    private fun openSingleConnection(dataSpec: DataSpec, mark: SingleConnectionMark): Long {
+        // The stream's chunk sessions stop here. Cap 0: the plain path never takes their buffers back.
+        synchronized(sessionLock) {
+            currentChunkSession?.takeIf { it.requestUri == mark.requestUri }?.let {
+                teardownSessionLocked(it, poolCap = 0)
+                currentChunkSession = null
+            }
+            pendingChunkSession?.takeIf { it.requestUri == mark.requestUri }?.let {
+                teardownSessionLocked(it, poolCap = 0)
+                pendingChunkSession = null
+            }
+        }
+        drainIdleBuffers(chunkSize)
+        session = null
+        resolvedUri = null
+        val source = upstreamFactory.createDataSource()
+        transferListeners.forEach { source.addTransferListener(it) }
+        val openLength = try {
+            val length = source.open(dataSpec)
+            val total = validatedProbeTotal(dataSpec.position, dataSpec.length, source.responseCode, source.responseHeaders)
+            if (total != C.LENGTH_UNSET.toLong() && total != mark.totalLength) {
+                throw InvalidRangeResponseException("total")
+            }
+            length
+        } catch (e: Exception) {
+            try { source.close() } catch (_: Exception) {}
+            throw e
+        }
+        fallbackSource = source
+        totalFileLength = mark.totalLength
+        bytesRemaining = openLength
+        Log.d(TAG, "Single-connection open (chunk fallback) at $position")
+        return openLength
     }
 
     /**
@@ -1517,6 +1704,7 @@ internal class ParallelRangeDataSource(
             activeSession.touch(chunkIndex)
             Log.d(TAG, "Scheduling chunk $chunkIndex")
             sharedExecutor.execute {
+                val downloadStartNs = System.nanoTime()
                 try {
                     if (!future.isCancelled && !activeSession.abandoned.get()) {
                         val result = downloadChunk(activeSession, chunkIndex, future)
@@ -1530,6 +1718,9 @@ internal class ParallelRangeDataSource(
                         future.completeExceptionally(IOException("Session abandoned"))
                     }
                 } catch (e: Exception) {
+                    if (!activeSession.abandoned.get() && !future.isCancelled) {
+                        noteNetworkFailure(activeSession, e, downloadStartNs)
+                    }
                     future.completeExceptionally(e)
                 } catch (e: OutOfMemoryError) {
                     // Sweep crash-hardening leg 1 (19 Jul 2026 incident): chunk-buffer
@@ -1541,16 +1732,78 @@ internal class ParallelRangeDataSource(
                     // pressure, then fail the CHUNK (wrapped as IOException so every
                     // downstream Exception handler keeps working), never the process.
                     drainIdleBuffers(activeSession.chunkSize)
-                    future.completeExceptionally(
-                        IOException("Native chunk buffer allocation failed (out of memory)", e)
-                    )
+                    future.completeExceptionally(ChunkAllocationException(e))
                 }
             }
             future
         }
     }
 
+    /**
+     * Spec 91 K3: a dead-link code ([DEAD_LINK_HTTP_RESPONSE_CODES]) from the post-redirect CDN URL usually means
+     * it expired (a long pause on a debrid link). Re-resolve it through the request URI once, then
+     * make one final attempt; a dead link on the request URI itself, or a failed re-resolve,
+     * surfaces as before (fail fast, then MID_PLAY_LINK_REFRESH).
+     */
     private fun downloadChunk(activeSession: ChunkSession, chunkIndex: Long, future: CompletableFuture<*>): DownloadedChunk {
+        try {
+            return downloadChunkWithRetries(activeSession, chunkIndex, future)
+        } catch (e: Exception) {
+            if (activeSession.abandoned.get() || future.isCancelled) throw e
+            val staleUri = e.deadLinkResponse()?.dataSpec?.uri ?: throw e
+            if (staleUri == activeSession.requestUri) throw e
+            if (!reResolveSession(activeSession, staleUri, future)) throw e
+            Log.i(TAG, "RE_RESOLVE chunk=$chunkIndex host=${activeSession.resolvedUri?.host}; final attempt")
+            // The normal retries (backoff, stall restart); a dead link again surfaces, no second re-resolve.
+            return downloadChunkWithRetries(activeSession, chunkIndex, future)
+        }
+    }
+
+    /**
+     * Spec 91 K3: point [activeSession] at a fresh post-redirect URL for its request URI, once per
+     * stale URL across all workers. Accepts only what the open-time probe accepts: a 206 for
+     * `bytes=0-0` whose total matches the session (a 200 would make every later chunk skip to its
+     * offset inside OkHttpDataSource.open). True when the session now holds a URL other than
+     * [staleUri].
+     */
+    private fun reResolveSession(activeSession: ChunkSession, staleUri: Uri, future: CompletableFuture<*>): Boolean {
+        synchronized(activeSession.reResolveLock) {
+            if (activeSession.abandoned.get() || future.isCancelled) return false
+            val current = activeSession.resolvedUri ?: return false
+            if (current != staleUri) return true
+            if (activeSession.failedReResolveFor == staleUri) return false
+            val probe = upstreamFactory.createDataSource()
+            activeSession.activeSources.add(probe)
+            try {
+                // A teardown between the check above and the add would have missed this probe.
+                if (activeSession.abandoned.get() || future.isCancelled) return false
+                probe.open(DataSpec.Builder().setUri(activeSession.requestUri).setPosition(0L).setLength(1L).build())
+                val total = validatedProbeTotal(0L, 1L, probe.responseCode, probe.responseHeaders)
+                val knownTotal = activeSession.totalLength
+                val fresh = probe.uri
+                val valid = total != C.LENGTH_UNSET.toLong() &&
+                    (knownTotal <= 0L || total == knownTotal) &&
+                    fresh != null && fresh != staleUri
+                if (!valid) {
+                    Log.w(TAG, "RE_RESOLVE rejected: code=${probe.responseCode} totalMatch=${total == knownTotal}")
+                    activeSession.failedReResolveFor = staleUri
+                    return false
+                }
+                if (activeSession.abandoned.get() || future.isCancelled) return false
+                activeSession.resolvedUri = fresh
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "RE_RESOLVE failed: ${e.javaClass.simpleName}")
+                activeSession.failedReResolveFor = staleUri
+                return false
+            } finally {
+                activeSession.activeSources.remove(probe)
+                try { probe.close() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun downloadChunkWithRetries(activeSession: ChunkSession, chunkIndex: Long, future: CompletableFuture<*>): DownloadedChunk {
         var lastException: Exception? = null
         for (attempt in 0..1) {
             if (future.isCancelled || activeSession.abandoned.get()) throw IOException("Cancelled")
@@ -1579,6 +1832,8 @@ internal class ParallelRangeDataSource(
                 if (rlError != null) {
                     return downloadChunkWithRateLimitBackoff(activeSession, chunkIndex, future, rlError)
                 }
+                // Spec 91 K3: an expired CDN URL does not heal; downloadChunk re-resolves it.
+                if (e.deadLinkResponse()?.dataSpec?.uri.let { it != null && it != activeSession.requestUri }) throw e
                 if (attempt == 0) {
                     if (e.isTransientInterruption()) {
                         Log.d(TAG, "Chunk $chunkIndex interrupted during prefetch (attempt 1), retrying")
@@ -1618,11 +1873,12 @@ internal class ParallelRangeDataSource(
             if (future.isCancelled || activeSession.abandoned.get()) throw IOException("Cancelled")
             Log.d(TAG, "Starting chunk download: idx=$chunkIndex, range=$start-$end")
             ds.open(spec)
+            val connectedAtNs = System.nanoTime()
             // pre-nt3 short-chunk rejection: with a known session length the
             // requested range is exact — a chunk that comes back short must
             // fail (and retry) rather than be cached as if complete.
             val expectedBytes = if (sessionLength > 0L) end - start else -1L
-            val chunk = readIntoChunk(activeSession, chunkIndex, ds, future, expectedBytes, allowStallRestart)
+            val chunk = readIntoChunk(activeSession, chunkIndex, ds, future, expectedBytes, connectedAtNs, allowStallRestart)
             Log.d(TAG, "Successfully downloaded chunk $chunkIndex, size=${chunk.size} bytes")
             return chunk
         } finally {
@@ -1809,6 +2065,7 @@ internal class ParallelRangeDataSource(
         ds: DataSource,
         future: CompletableFuture<*>,
         expectedBytes: Long,
+        connectedAtNs: Long,
         allowStallRestart: Boolean = true
     ): DownloadedChunk {
         val buffer = acquireBuffer()
@@ -1867,7 +2124,7 @@ internal class ParallelRangeDataSource(
                 // than busy-spinning until cancellation.
                 if (read == 0) {
                     if (++consecutiveZeroReads >= MAX_CONSECUTIVE_ZERO_READS) {
-                        throw IOException(
+                        throw ChunkContractException(
                             "No read progress after $MAX_CONSECUTIVE_ZERO_READS attempts " +
                                 "(read $totalRead of $expectedBytes bytes)"
                         )
@@ -1878,6 +2135,7 @@ internal class ParallelRangeDataSource(
                 totalRead += read
                 // Volatile store orders every buffer write above it.
                 inFlight.watermark = totalRead
+                if (read > 0) noteProgress(activeSession, connectedAtNs)
                 // 3a: rate-based body-stall sample, emitted every window
                 // whether or not it trips, so the decision is always
                 // visible. Only chunks taking longer than the window emit.
@@ -1911,7 +2169,7 @@ internal class ParallelRangeDataSource(
             // non-final chunk otherwise dead-ends both read paths at the
             // phantom chunk boundary.
             if (expectedBytes > 0L && totalRead < expectedBytes && !activeSession.abandoned.get()) {
-                throw IOException("Short chunk: read $totalRead of $expectedBytes bytes")
+                throw ChunkContractException("Short chunk: read $totalRead of $expectedBytes bytes")
             }
         } catch (e: Exception) {
             releaseInFlightBuffer(activeSession, chunkIndex, inFlight, buffer)
@@ -2125,6 +2383,7 @@ internal class ParallelRangeDataSource(
                 // P-F1: mirror of the byte[] path — cancel before dropping,
                 // ownership-gated release if the download won the race.
                 retireFuture(activeSession, chunkIndex, future, maxPoolSize)
+                noteChunkFailure(activeSession, e)
                 throw PlaybackNetworkFailure.chunkFailure("Failed to download chunk $chunkIndex", e, openedDataSpec)
             }
             currentChunkIndex = chunkIndex

@@ -545,4 +545,105 @@ class UpdateControllerTest {
         assertEquals("## Fixes\n- B", page.notes)
         assertEquals(ReleaseVideo("https://github.com/x/v.mp4", 3000L, "https://github.com/x/p.jpg"), page.video)
     }
+
+    // --- Spec 89: Get test releases ---
+
+    private fun listJson(vararg releases: Pair<Int, Boolean>) = releases.joinToString(",", "[", "]") { (code, pre) ->
+        releaseJson(code).replaceFirst("\"draft\":false", "\"draft\":false,\"prerelease\":$pre")
+    }
+
+    @Test
+    fun `test releases on, the toggle checks the release list and offers the newest pre-release`() = runBlocking<Unit> {
+        answer(200, listJson(1393 to true, 1392 to false))
+        val controller = controller()
+        assertTrue(controller.setTestReleases(true))
+
+        val state = controller.settled { it.available != null }
+        assertEquals(1393, state.available?.versionCode)
+        assertTrue(state.available!!.prerelease)
+        assertTrue(state.testReleases)
+        assertTrue(store.read().testReleases)
+        assertTrue(controller.testReleasesOn())
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases?per_page=$CHANGELOG_SIZE", server.takeRequest().path)
+    }
+
+    @Test
+    fun `test releases off, a known pre-release is hidden even when the toggle's latest-release check fails`() = runBlocking<Unit> {
+        answer(200, listJson(1393 to true))
+        val controller = controller()
+        controller.setTestReleases(true)
+        controller.settled { it.available?.versionCode == 1393 }
+        assertEquals(1393, withTimeout(5_000) { controller.pulseRelease.first { it != null } })
+
+        // The toggle's latest-release check fails, so the stored pre-release stays: it is hidden anyway, also after a restart.
+        answer(403)
+        assertTrue(controller.setTestReleases(false))
+        controller.settled { it.lastCheckFailed && !it.testReleases && it.available == null }
+        withTimeout(5_000) { controller.pulseRelease.first { it == null } }
+        assertFalse(controller.testReleasesOn())
+        assertEquals(1393, store.read().knownRelease?.versionCode)
+        assertNull(controller().state.first { it.lastOkCheckMs > 0L }.available)
+        server.takeRequest()
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases/latest", server.takeRequest().path)
+
+        // The next answered check replaces it with the published release.
+        answer(200, releaseJson(1392))
+        controller.awaitCheck()
+        assertEquals(1392, controller.settled { it.available != null }.available?.versionCode)
+    }
+
+    @Test
+    fun `a check in flight when the toggle flips is followed by one under the new setting`() = runBlocking<Unit> {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(releaseJson(1392)).setHeadersDelay(1_000, TimeUnit.MILLISECONDS))
+        answer(200, listJson(1393 to true))
+        val controller = controller()
+        val first = async { controller.awaitCheck() }
+        withTimeout(5_000) { while (server.requestCount == 0) delay(10) }
+        controller.setTestReleases(true)
+        first.await()
+
+        assertEquals(1393, controller.settled { it.available?.versionCode == 1393 }.available?.versionCode)
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases/latest", server.takeRequest().path)
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases?per_page=$CHANGELOG_SIZE", server.takeRequest().path)
+    }
+
+    @Test
+    fun `a build without the check never turns test releases on`() = runBlocking<Unit> {
+        val controller = controller(supported = false)
+        withTimeout(5_000) {
+            assertFalse(controller.setTestReleases(true))
+            assertFalse(controller.testReleasesOn())
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `a download joining a check that read test releases on offers nothing once the setting is off`() = runBlocking<Unit> {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(listJson(1393 to true)).setHeadersDelay(1_000, TimeUnit.MILLISECONDS))
+        answer(200, releaseJson(1391))
+        val controller = controller()
+        controller.setTestReleases(true)
+        withTimeout(5_000) { while (server.requestCount == 0) delay(10) }
+        val download = controller.downloadAndInstall()!!
+        controller.setTestReleases(false)
+        download.join()
+
+        controller.settled { it.download == DownloadState.Idle && it.available == null && server.requestCount == 2 }
+        assertTrue(installed.isEmpty())
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases?per_page=$CHANGELOG_SIZE", server.takeRequest().path)
+        assertEquals("/repos/Arshad-Kamal/Nuvio-KE/releases/latest", server.takeRequest().path)
+    }
+
+    @Test
+    fun `a test releases write that fails keeps the setting and checks nothing`() = runBlocking<Unit> {
+        val failing = object : TestPreferencesDataStore() {
+            override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+                throw IOException("disk full")
+        }
+        val controller = controller(over = UpdateStore(failing))
+        assertFalse(controller.setTestReleases(true))
+        assertFalse(controller.testReleasesOn())
+        delay(200)
+        assertEquals(0, server.requestCount)
+    }
 }

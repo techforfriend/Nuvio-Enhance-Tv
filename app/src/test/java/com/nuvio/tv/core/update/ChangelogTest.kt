@@ -169,16 +169,13 @@ class ChangelogTest {
     // --- the load, over the real Retrofit + wire-Json path ---
 
     private val server = MockWebServer().apply { start() }
-    private val repository = ChangelogRepository(
-        Retrofit.Builder()
-            .baseUrl(server.url("/"))
-            .client(OkHttpClient.Builder().retryOnConnectionFailure(false).callTimeout(5, TimeUnit.SECONDS).build())
-            .addConverterFactory(NetworkModule.provideWireConverterFactory(NetworkModule.provideWireJson()))
-            .build()
-            .create(GitHubReleaseApi::class.java),
-        "Arshad-Kamal",
-        "Nuvio-KE"
-    )
+    private val api: GitHubReleaseApi = Retrofit.Builder()
+        .baseUrl(server.url("/"))
+        .client(OkHttpClient.Builder().retryOnConnectionFailure(false).callTimeout(5, TimeUnit.SECONDS).build())
+        .addConverterFactory(NetworkModule.provideWireConverterFactory(NetworkModule.provideWireJson()))
+        .build()
+        .create(GitHubReleaseApi::class.java)
+    private val repository = ChangelogRepository(api, "Arshad-Kamal", "Nuvio-KE")
 
     @After
     fun tearDown() = server.shutdown()
@@ -232,5 +229,19 @@ class ChangelogTest {
         assertThrows(CancellationException::class.java) {
             runBlocking { ChangelogRepository(cancelling, "o", "r").load() }
         }
+    }
+
+    @Test
+    fun `pre-releases join the list, flagged, only while test releases are on`() = runBlocking {
+        val body = """[
+          {"name":"Nuvio KE 1.2.0","prerelease":true,"assets":[]},
+          {"name":"draft","draft":true,"assets":[]},
+          {"name":"Nuvio KE 1.1.1","assets":[]}
+        ]"""
+        answer(200, body)
+        val on = ChangelogRepository(api, "o", "r") { true }.load() as ChangelogLoad.Loaded
+        assertEquals(listOf("Nuvio KE 1.2.0" to true, "Nuvio KE 1.1.1" to false), on.releases.map { it.title to it.prerelease })
+        answer(200, body)
+        assertEquals(listOf("Nuvio KE 1.1.1"), (repository.load() as ChangelogLoad.Loaded).releases.map { it.title })
     }
 }

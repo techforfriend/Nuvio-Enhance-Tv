@@ -14,6 +14,7 @@ import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -53,8 +54,28 @@ internal object LiveMediaSources {
     data class LiveRequest(val url: String, val headers: Map<String, String>)
 
     fun normalize(stream: LiveStream): LiveRequest =
-        PlayerMediaSourceFactory.normalizePlaybackRequest(stream.url, stream.headers)
-            .let { LiveRequest(it.url, it.headers) }
+        if (isRtsp(stream.url)) {
+            // RTSP sends no HTTP headers; Media3's RTSP client reads `user:pass@` from the URL itself.
+            LiveRequest(stream.url.trim(), emptyMap())
+        } else {
+            PlayerMediaSourceFactory.normalizePlaybackRequest(stream.url, stream.headers)
+                .let { LiveRequest(it.url, it.headers) }
+        }
+
+    /**
+     * The scheme of a URL no live source can open (rtmp, udp, rtp, srt, mmsh, ...), lowercased;
+     * null for http(s), rtsp and a URL without an RFC 3986 `scheme://` prefix (the load reports
+     * that one as before, and no URL text reaches the screen) (Spec 90 L4). The player fails such
+     * a stream at once as PARSE.
+     */
+    fun unsupportedScheme(url: String): String? = scheme(url)?.takeIf { it !in PLAYABLE_SCHEMES }
+
+    private fun isRtsp(url: String): Boolean = scheme(url) == "rtsp"
+
+    private fun scheme(url: String): String? = SCHEME.find(url.trim())?.groupValues?.get(1)?.lowercase()
+
+    private val SCHEME = Regex("^([A-Za-z][A-Za-z0-9+.-]*)://")
+    private val PLAYABLE_SCHEMES = setOf("http", "https", "rtsp")
 
     /**
      * The shared playback client with the live timeouts (call timeout stays 0: streams never end)
@@ -69,16 +90,18 @@ internal object LiveMediaSources {
             .build()
 
     /**
-     * The stream's mime type from its URL, else (extension-less URLs, D7) from one GET: an HLS or
-     * DASH Content-Type, else the first [SNIFF_BYTES] (`#EXTM3U`, MPD), else the redirect target's
-     * extension. Null means progressive (TsExtractor and friends sniff the bytes themselves); a
+     * The stream's mime type from its URL, else (extension-less URLs, D7) from one GET: progressive
+     * when the body starts as MPEG-TS (Spec 90 L2), else an HLS or DASH Content-Type, else the
+     * first [SNIFF_BYTES] (`#EXTM3U`, MPD), else the redirect target's extension. Null means progressive (TsExtractor and friends sniff the bytes themselves); a
      * failed sniff is null too, and the player's own load then reports the real error. An
      * extension-less Xtream live URL the URL itself does not type is MPEG-TS without the sniff
      * (Spec 78 D3): no extra connection for a panel to count against the account.
      */
-    suspend fun resolveMimeType(request: LiveRequest, client: OkHttpClient): String? =
-        PlayerMediaSourceFactory.inferMimeType(request.url, null)
+    suspend fun resolveMimeType(request: LiveRequest, client: OkHttpClient): String? {
+        if (isRtsp(request.url)) return null
+        return PlayerMediaSourceFactory.inferMimeType(request.url, null)
             ?: if (XtreamUrls.isBareLive(request.url)) null else sniffMimeType(request, client)
+    }
 
     private suspend fun sniffMimeType(request: LiveRequest, client: OkHttpClient): String? {
         val httpRequest = try {
@@ -111,9 +134,12 @@ internal object LiveMediaSources {
 
     private fun mimeFromResponse(response: Response): String? {
         if (!response.isSuccessful) return null
-        adaptive(PlayerMediaSourceFactory.normalizeMimeType(response.header("Content-Type")))?.let { return it }
         // peekBody waits for SNIFF_BYTES or the end of the body, so a short first read cannot hide them.
-        val head = response.peekBody(SNIFF_BYTES).string()
+        val bytes = response.peekBody(SNIFF_BYTES).bytes()
+        // An MPEG-TS body is progressive whatever its Content-Type claims (Spec 90 L2).
+        if (HlsRepair.isTs(bytes)) return null
+        adaptive(PlayerMediaSourceFactory.normalizeMimeType(response.header("Content-Type")))?.let { return it }
+        val head = String(bytes, Charsets.UTF_8)
         PlayerMediaSourceFactory.sniffManifestMimeType(head)?.let { return it }
         return adaptive(PlayerMediaSourceFactory.inferMimeType(response.request.url.toString(), null))
     }
@@ -224,8 +250,11 @@ internal object LiveMediaSources {
     }
 
     /**
-     * HLS and DASH by [mimeType]; anything else progressive. [mediaId] is the channel key. [drm]
-     * (a licensed stream, Spec 74 S2b) gives every factory its session manager.
+     * HLS and DASH by [mimeType], an `rtsp://` URL as RTSP (Spec 90 L4: no headers, DRM or live
+     * policy; RTP over TCP from the start, since UDP from an internet server rarely crosses the home
+     * NAT and Media3's UDP-then-TCP fallback waits 8 s of the ladder's 10 s watchdog); anything else
+     * progressive. [mediaId] is
+     * the channel key. [drm] (a licensed stream, Spec 74 S2b) gives every factory its session manager.
      */
     fun create(
         request: LiveRequest,
@@ -240,10 +269,12 @@ internal object LiveMediaSources {
             .setMediaId(mediaId)
             .apply { mimeType?.let(::setMimeType) }
             .build()
+        if (isRtsp(request.url)) return RtspMediaSource.Factory().setForceUseRtpTcp(true).createMediaSource(mediaItem)
         return when (mimeType) {
             MimeTypes.APPLICATION_M3U8 -> HlsMediaSource.Factory(dataSourceFactory)
                 .apply { drm?.let { manager -> setDrmSessionManagerProvider { manager } } }
                 .setAllowChunklessPreparation(true)
+                .setPlaylistParserFactory(LenientHlsPlaylistParserFactory())
                 .setLoadErrorHandlingPolicy(LiveLoadErrorHandlingPolicy(progressive = false))
                 .createMediaSource(mediaItem)
             MimeTypes.APPLICATION_MPD -> DashMediaSource.Factory(dataSourceFactory)

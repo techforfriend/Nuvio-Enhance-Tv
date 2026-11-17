@@ -224,7 +224,8 @@ class SearchViewModel @Inject constructor(
 
     /**
      * Keyboard completions come from the live-search run itself (no request of their own): the
-     * item names in the first addon's search rows, ordered by [rankSuggestions]. Rows are read in
+     * item names in the first addon's search rows (first pages already ranked by
+     * [rankByTitleMatch]), ordered by [rankSuggestions]. Rows are read in
      * manifest order ([catalogOrder]), not response-arrival order ([catalogsMap]), so the order is
      * the same on every identical search.
      */
@@ -577,7 +578,7 @@ class SearchViewModel @Inject constructor(
                         type = catalog.apiType,
                         catalogId = catalog.id
                     )
-                    catalogsMap[key] = result.data
+                    catalogsMap[key] = result.data.copy(items = rankByTitleMatch(result.data.items, query))
                     answeredCatalogKeys += key
                     scheduleCatalogRowsUpdate()
                     if (addon.id == suggestionAddonId) publishSuggestions(query, suggestionAddonId)

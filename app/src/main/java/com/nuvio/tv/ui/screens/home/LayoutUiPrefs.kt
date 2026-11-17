@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.home
 
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 
@@ -17,7 +18,7 @@ data class LayoutUiPrefs(
     val showFullReleaseDate: Boolean,
     val modernLandscapePostersEnabled: Boolean,
     val homeImdbRatingsVisibility: HomeImdbRatingsVisibility,
-    val focusedPosterBackdropTrailerEnabled: Boolean,
+    val trailerAutoplayMode: TrailerAutoplayMode,
     val focusedPosterBackdropTrailerMuted: Boolean
 )
 
@@ -31,7 +32,7 @@ private data class CatalogDisplayPrefs(
 
 private data class HomeMediaPrefs(
     val landscapePosters: Boolean,
-    val trailerEnabled: Boolean,
+    val trailerMode: TrailerAutoplayMode,
     val trailerMuted: Boolean
 )
 
@@ -45,10 +46,10 @@ internal fun LayoutPreferenceDataStore.layoutUiPrefsFlow(): Flow<LayoutUiPrefs> 
     }
     val media = combine(
         modernLandscapePostersEnabled,
-        focusedPosterBackdropTrailerEnabled,
+        trailerAutoplayMode,
         focusedPosterBackdropTrailerMuted
-    ) { landscapePosters, trailerEnabled, trailerMuted ->
-        HomeMediaPrefs(landscapePosters, trailerEnabled, trailerMuted)
+    ) { landscapePosters, trailerMode, trailerMuted ->
+        HomeMediaPrefs(landscapePosters, trailerMode, trailerMuted)
     }
     return combine(
         catalogDisplay,
@@ -63,7 +64,7 @@ internal fun LayoutPreferenceDataStore.layoutUiPrefsFlow(): Flow<LayoutUiPrefs> 
             showFullReleaseDate = fullReleaseDate,
             modernLandscapePostersEnabled = mediaPrefs.landscapePosters,
             homeImdbRatingsVisibility = imdbRatingsVisibility,
-            focusedPosterBackdropTrailerEnabled = mediaPrefs.trailerEnabled,
+            trailerAutoplayMode = mediaPrefs.trailerMode,
             focusedPosterBackdropTrailerMuted = mediaPrefs.trailerMuted
         )
     }
@@ -80,6 +81,6 @@ internal fun HomeUiState.withLayoutPrefs(prefs: LayoutUiPrefs): HomeUiState = co
     showFullReleaseDate = prefs.showFullReleaseDate,
     modernLandscapePostersEnabled = prefs.modernLandscapePostersEnabled,
     homeImdbRatingsVisibility = prefs.homeImdbRatingsVisibility,
-    focusedPosterBackdropTrailerEnabled = prefs.focusedPosterBackdropTrailerEnabled,
+    trailerAutoplayMode = prefs.trailerAutoplayMode,
     focusedPosterBackdropTrailerMuted = prefs.focusedPosterBackdropTrailerMuted
 )

@@ -2,9 +2,11 @@ package com.nuvio.tv.core.di
 
 import android.content.Context
 import com.nuvio.tv.core.network.AddonHostGuard
+import com.nuvio.tv.core.network.dns.AppDns
 import com.nuvio.tv.core.network.tls.AddonCertPins
 import com.nuvio.tv.core.network.tls.AddonTlsTrust
 import com.nuvio.tv.core.network.tls.platformTrustManager
+import com.nuvio.tv.core.player.PlayerPlaybackNetworking
 import com.nuvio.tv.data.remote.api.AddonApi
 import io.mockk.every
 import io.mockk.mockk
@@ -17,6 +19,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertSame
@@ -176,6 +179,22 @@ class OkHttpClientArchitectureTest {
         }
         // The trust-all era's cache (http_cache) is not reused.
         assertEquals(ADDON_HTTP_CACHE_DIR, api.cache!!.directory.name)
+    }
+
+    @Test
+    fun `app clients resolve through AppDns and playback keeps system DNS`() {
+        // Spec 97 N3 / D1: a client back on IPv4FirstDns() would send its names to the network's
+        // DNS while Private DNS is on; playback picking up AppDns would break D1.
+        val context = mockk<Context> { every { cacheDir } returns tmp.root }
+        listOf(
+            NetworkModule.provideApiOkHttpClient(context, addonTls, AddonHostGuard()),
+            NetworkModule.provideDownloadOkHttpClient(addonTls),
+            NetworkModule.provideValidatedOkHttpClient(context),
+            NetworkModule.provideImageOkHttpClient(),
+            NetworkModule.provideBackendAuthHttpClient()
+        ).forEach { assertSame(AppDns, it.dns) }
+        assertNotSame(AppDns, PlayerPlaybackNetworking.playbackHttpClient.dns)
+        assertNotSame(AppDns, PlayerPlaybackNetworking.trustAllPlaybackHttpClient.dns)
     }
 
     @Test

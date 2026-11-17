@@ -12,6 +12,7 @@ import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.data.local.StreamBadgeSettingsDataStore
 import com.nuvio.tv.data.local.TestPreferencesDataStore
 import com.nuvio.tv.data.local.TrailerSettingsDataStore
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -97,6 +98,17 @@ class LayoutSettingsLoadStateTest {
         val vm = viewModel(badgeSettings = emptyFlow())
         advanceUntilIdle()
         assertFalse(vm.uiState.value.loaded)
+    }
+
+    @Test
+    fun `the trailer mode and preview delay events reach the store and come back`() = runTest(mainDispatcherRule.dispatcher) {
+        val vm = viewModel()
+        advanceUntilIdle()
+        vm.onEvent(LayoutSettingsEvent.SetTrailerAutoplayMode(TrailerAutoplayMode.CARD))
+        vm.onEvent(LayoutSettingsEvent.SetTrailerCardPreviewDelaySeconds(7))
+        advanceUntilIdle()
+        assertEquals(TrailerAutoplayMode.CARD, vm.uiState.value.trailerAutoplayMode)
+        assertEquals(7, vm.uiState.value.trailerCardPreviewDelaySeconds)
     }
 
     @Test

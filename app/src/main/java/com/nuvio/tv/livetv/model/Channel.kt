@@ -62,7 +62,12 @@ data class Channel(
     /** ISO 639-3 codes of the channel's feed (`eng`, `ben`). */
     @Transient val languages: List<String> = emptyList(),
     /** Adult channel: never listed (D4). */
-    @Transient val nsfw: Boolean = false
+    @Transient val nsfw: Boolean = false,
+    /**
+     * Its guide's times move by this much (Spec 94 T2, `tvg-shift`); filled in memory by
+     * `LiveTvModel.lineup` (`GuideShift`), 0 for none.
+     */
+    @Transient val guideShiftMs: Long = 0L
 ) {
     /** Its source stopped listing it (D16 "Source lost"): listed in Favorites/Recents only, never tuned. */
     val lost: Boolean get() = lostAtMs != null

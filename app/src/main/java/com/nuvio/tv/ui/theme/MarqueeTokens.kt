@@ -307,7 +307,9 @@ data class NuvioMarqueeLiveTvTokens(
  * than the row's gap. Thank-you: a
  * [thanksHeart] heart in [heartGradient], [thanksTitleSize] / [thanksTitleLineHeight] title,
  * [thanksLineWidth] line, the signature in [signature], gaps [thanksHeartGap], [thanksLineTop],
- * [thanksSignatureTop], [thanksDoneTop]; sparks in [sparkColors].
+ * [thanksSignatureTop], [thanksDoneTop]; sparks in [sparkColors]. Spec 124's subreddit card (sandbox
+ * spec-124-community-row v1, `.s124c`) reuses the card: parts [communityCardGap] apart, the QR tile
+ * [communityQrMargin] more above and below, Done [communityDoneTop] more below the link.
  */
 @Immutable
 data class NuvioMarqueeTipTokens(
@@ -345,7 +347,10 @@ data class NuvioMarqueeTipTokens(
     val thanksLineTop: Dp,
     val thanksSignatureTop: Dp,
     val thanksDoneTop: Dp,
-    val sparkColors: List<Color>
+    val sparkColors: List<Color>,
+    val communityCardGap: Dp,
+    val communityQrMargin: Dp,
+    val communityDoneTop: Dp
 )
 
 /**
@@ -1398,6 +1403,11 @@ data class NuvioMarqueeOsdTokens(
     val trayIconSize: Dp,
     val trayIconGap: Dp,
     val trayPillPaddingStart: Dp,
+    /** Spec 97 D31 (stage 16): a pill that can't act is focused on [trayDimmedFill]; its reason
+     *  line ([trayReasonText], caption) sits [trayReasonGap] above the tray. */
+    val trayDimmedFill: Color,
+    val trayReasonText: Color,
+    val trayReasonGap: Dp,
     /** Seek bar: [seekTouchHeight] focus box around a [seekHeight] track ([seekFocusedHeight]
      *  focused); track [seekTrack], buffered [seekBuffered], played white with an ambient-accent
      *  glow at [seekGlowAlpha]. Gaps: tray to bar box, bar box to times, times to the row. */
@@ -2059,6 +2069,9 @@ object NuvioMarquee {
             trayIconSize = 20.dp,
             trayIconGap = 8.dp,
             trayPillPaddingStart = 11.dp,
+            trayDimmedFill = NuvioPrimitives.white.copy(alpha = 0.55f),
+            trayReasonText = NuvioPrimitives.white.copy(alpha = 0.80f),
+            trayReasonGap = 10.dp,
             seekTouchHeight = 20.dp,
             seekHeight = 4.dp,
             seekFocusedHeight = 8.dp,
@@ -2963,7 +2976,10 @@ object NuvioMarquee {
             sparkColors = listOf(
                 NuvioPrimitives.errorOnImage, NuvioPrimitives.warning, NuvioPrimitives.white,
                 Color(0xFFFF6E63), Color(0xFFFFD7CF)
-            )
+            ),
+            communityCardGap = 10.dp,
+            communityQrMargin = 4.dp,
+            communityDoneTop = 10.dp
         )
     )
 }

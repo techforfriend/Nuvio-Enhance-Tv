@@ -92,7 +92,8 @@ internal val DEVICE_PLAYER_KEYS: Set<String> = setOf(
     "device_setup_record",
     "stream_limit_mode",
     "stream_limit_manual_mbps",
-    "resolution_limit_mode"
+    "resolution_limit_mode",
+    "hide_source_names"
 )
 
 /** A migration_* key in player settings is a per-device flag: the seed copies it, sync skips it. */

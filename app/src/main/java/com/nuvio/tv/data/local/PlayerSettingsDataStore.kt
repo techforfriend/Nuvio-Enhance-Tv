@@ -349,6 +349,8 @@ data class PlayerSettings(
     val loadingOverlayEnabled: Boolean = true,
     val showPlayerLoadingStatus: Boolean = true,
     val pauseOverlayEnabled: Boolean = false,
+    /** Spec 93 P5: seconds "Rewind on resume" goes back, one of [RESUME_REWIND_VALUES]; 0 = Off. */
+    val resumeRewindSeconds: Int = DEFAULT_RESUME_REWIND_SECONDS,
     val osdClockEnabled: Boolean = true,
     val skipIntroEnabled: Boolean = true,
     val parentalGuideEnabled: Boolean = true,
@@ -457,6 +459,10 @@ data class PlayerSettings(
         const val MAX_STILL_WATCHING_EPISODE_THRESHOLD = 6
 
         const val STREAM_AUTOPLAY_TIMEOUT_UNLIMITED = Int.MAX_VALUE
+
+        /** Spec 93 D1: Off / 3 / 5 / 10 / 15 / 30 s, default 5 s. */
+        val RESUME_REWIND_VALUES: List<Int> = listOf(0, 3, 5, 10, 15, 30)
+        const val DEFAULT_RESUME_REWIND_SECONDS = 5
 
         val STREAM_AUTOPLAY_TIMEOUT_VALUES: List<Int> =
             listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, STREAM_AUTOPLAY_TIMEOUT_UNLIMITED)
@@ -667,6 +673,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val loadingOverlayEnabledKey = booleanPreferencesKey("loading_overlay_enabled")
     private val showPlayerLoadingStatusKey = booleanPreferencesKey("show_player_loading_status")
     private val pauseOverlayEnabledKey = booleanPreferencesKey("pause_overlay_enabled")
+    private val resumeRewindSecondsKey = intPreferencesKey("resume_rewind_seconds")
     private val osdClockEnabledKey = booleanPreferencesKey("osd_clock_enabled")
     private val skipIntroEnabledKey = booleanPreferencesKey("skip_intro_enabled")
     private val parentalGuideEnabledKey = booleanPreferencesKey("parental_guide_enabled")
@@ -771,6 +778,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val deviceSetupRecordKey = stringPreferencesKey("device_setup_record")
     private val streamLimitModeKey = stringPreferencesKey("stream_limit_mode")
     private val resolutionLimitModeKey = stringPreferencesKey("resolution_limit_mode")
+    private val hideSourceNamesKey = booleanPreferencesKey("hide_source_names")
     private val streamLimitManualMbpsKey = intPreferencesKey("stream_limit_manual_mbps")
 
     init {
@@ -910,6 +918,9 @@ class PlayerSettingsDataStore @Inject constructor(
                 loadingOverlayEnabled = prefs[loadingOverlayEnabledKey] ?: true,
                 showPlayerLoadingStatus = prefs[showPlayerLoadingStatusKey] ?: true,
                 pauseOverlayEnabled = prefs[pauseOverlayEnabledKey] ?: false,
+                resumeRewindSeconds = prefs[resumeRewindSecondsKey]
+                    ?.takeIf { it in PlayerSettings.RESUME_REWIND_VALUES }
+                    ?: PlayerSettings.DEFAULT_RESUME_REWIND_SECONDS,
                 osdClockEnabled = prefs[osdClockEnabledKey] ?: true,
                 skipIntroEnabled = prefs[skipIntroEnabledKey] ?: true,
                 parentalGuideEnabled = prefs[parentalGuideEnabledKey] ?: true,
@@ -1244,6 +1255,13 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setPauseOverlayEnabled(enabled: Boolean) {
         store().edit { prefs ->
             prefs[pauseOverlayEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setResumeRewindSeconds(seconds: Int) {
+        if (seconds !in PlayerSettings.RESUME_REWIND_VALUES) return
+        store().edit { prefs ->
+            prefs[resumeRewindSecondsKey] = seconds
         }
     }
 
@@ -1743,6 +1761,16 @@ class PlayerSettingsDataStore @Inject constructor(
             )
         )
     }.distinctUntilChanged()
+
+    /**
+     * Spec 97 X6 (D8): stream lists and the player show no addon or service names. Device-wide
+     * (this TV only, never synced), Off by default.
+     */
+    val hideSourceNames: Flow<Boolean> = device.data.map { it[hideSourceNamesKey] ?: false }.distinctUntilChanged()
+
+    suspend fun setHideSourceNames(hidden: Boolean) {
+        device.edit { prefs -> prefs[hideSourceNamesKey] = hidden }
+    }
 
     suspend fun setResolutionLimitMode(mode: ResolutionLimitMode) {
         device.edit { prefs -> prefs[resolutionLimitModeKey] = mode.name }

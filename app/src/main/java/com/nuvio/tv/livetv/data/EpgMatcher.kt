@@ -22,8 +22,8 @@ data class EpgSource(val id: String, val country: String?, val snapshot: EpgSnap
  * 4. normalised channel name (title, then [Channel.altNames]) equals a normalised XMLTV
  *    display-name or id stem, accepted only when the channel's country equals the EPG source's
  *    country (without the gate NTV.bd got India's NTV and US Discovery got Indian schedules).
- * Steps 2-4 run twice: first accepting only XMLTV ids with programmes in the retained window
- * (today and tomorrow since Spec 67 G1c, so earlier today counts; free-epg.de is half stale, so
+ * Steps 2-4 run twice: first accepting only XMLTV ids with programmes today or tomorrow ([EpgSnapshot.isLive]:
+ * since Spec 67 G1c, so earlier today counts, Spec 92 W2's look-back hours do not; free-epg.de is half stale, so
  * its id hit must not shadow a live epg.pw name hit), then accepting any hit. Several XMLTV ids
  * can carry one name (free-epg.de lists a channel 3-5 times): within a pass the first in file
  * order wins.
@@ -87,7 +87,7 @@ object EpgMatcher {
 
         fun pick(ids: List<String>?, live: Boolean): String? = when {
             ids.isNullOrEmpty() -> null
-            live -> ids.firstOrNull { source.snapshot.programmes[it].orEmpty().isNotEmpty() }
+            live -> ids.firstOrNull { source.snapshot.isLive(it) }
             else -> ids.first()
         }
     }

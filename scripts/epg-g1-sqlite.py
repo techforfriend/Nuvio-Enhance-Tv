@@ -8,7 +8,7 @@ transaction, index on channel+start), and reports file size, insert time and two
 24 h day. Desktop SQLite; the Shield's framework SQLite is older and slower. Only the programme rows are
 stored (no channel table); the JSON cache figure in report.md also holds the matched <channel> entries.
 
-Usage: scripts/epg-g1-sqlite.py /tmp/epg-g1   (appends a table to report.md there)
+Usage: scripts/epg-g1-sqlite.py ~/scratch/epg-g1   (appends a table to report.md there)
 """
 import os
 import sqlite3

@@ -53,6 +53,7 @@ import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.marquee.MarqueeTab
 import com.nuvio.tv.ui.components.marquee.titleTypeEyebrow
 import com.nuvio.tv.ui.components.posteroptions.PosterOptionsHost
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.screens.detail.formatDayMonth
 import com.nuvio.tv.ui.screens.detail.formatMonth
 import com.nuvio.tv.ui.screens.home.MarqueeHomeSkeleton
@@ -292,8 +293,13 @@ fun LibraryScreen(
             )
             else -> heroLayer()
         }
-        // A focused card's bottom goes to the band anchor (shelves move as on Home).
-        CompositionLocalProvider(LocalBringIntoViewSpec provides bandSpec) {
+        // A focused card's bottom goes to the band anchor (shelves move as on Home). Spec 96 PD2: the shelves and
+        // grid opt into the trailer preview (the host's In the card mode decides; MarqueeRowItem leaves out Hidden
+        // and History cards).
+        CompositionLocalProvider(
+            LocalBringIntoViewSpec provides bandSpec,
+            LocalTrailerPreviewEnabled provides true
+        ) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()

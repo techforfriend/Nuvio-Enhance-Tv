@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.tv.material3.Text
+import com.nuvio.tv.ui.util.findActivity
 import com.nuvio.tv.LocalContentFocusRequester
 import com.nuvio.tv.LocalHideTopBar
 import com.nuvio.tv.R
@@ -104,9 +105,14 @@ fun LiveTvScreen(
         viewModel.selectFilter(LiveTvFilter.Browse(country = country.ifEmpty { null }))
         onCountryOpened()
     }
-    LifecycleStartEffect(viewModel) {
+    val activity = LocalContext.current.findActivity()
+    LifecycleStartEffect(viewModel, activity) {
         viewModel.resumePreview()
-        onStopOrDispose { viewModel.stopPreview() }
+        onStopOrDispose {
+            viewModel.stopPreview()
+            // Spec 94 D3: leaving Live TV puts back the display it changed.
+            activity?.let(LiveDisplayRate::restore)
+        }
     }
     Box(
         modifier = Modifier
@@ -171,6 +177,8 @@ private fun LiveTvContent(viewModel: LiveTvViewModel, ui: LiveTvUiState, onOpenS
         hideTopBar(fullScreen)
         onDispose { hideTopBar(false) }
     }
+    // Spec 94 T4: full screen matches the display to a 25/50 fps channel.
+    LiveDisplayRate.Follow(viewModel.player, context.findActivity(), fullScreen)
 
     val playingKey = tune.channel?.key.takeIf { tune !is LiveTuneState.Unavailable }
     val unavailableKey = (tune as? LiveTuneState.Unavailable)?.channel?.key

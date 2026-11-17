@@ -15,6 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -243,8 +246,21 @@ private fun WhatsNewCardView(
             stringResource(if (card.previousName != null) R.string.whats_new_released_after else R.string.update_panel_released, it)
         }
     ).joinToString(" \u00b7 ")
+    val eyebrow = stringResource(R.string.whats_new_eyebrow)
+    // Spec 89 (sandbox spec-89-test-releases v2, stage t-whatsnew): a test build's card reads WHAT'S NEW · TEST RELEASE, the second part amber.
+    val testEyebrow = stringResource(R.string.whats_new_test_eyebrow)
+    val styledEyebrow = if (card.release.prerelease) {
+        buildAnnotatedString {
+            append(eyebrow.uppercase())
+            append(" \u00b7 ")
+            withStyle(SpanStyle(color = NuvioPrimitives.warning)) { append(testEyebrow.uppercase()) }
+        }
+    } else {
+        null
+    }
     WelcomeCardFrame(
-        eyebrow = stringResource(R.string.whats_new_eyebrow),
+        eyebrow = eyebrow,
+        styledEyebrow = styledEyebrow,
         title = changelogTitle(card.release),
         subtitle = subtitle,
         onDismissRequest = onDismiss,

@@ -66,7 +66,7 @@ class SavedFiltersConfigServer internal constructor(
 
     private fun page(): Response =
         newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", pageHtml()).apply {
-            addHeader("Content-Security-Policy", PAGE_CSP)
+            addHeader("Content-Security-Policy", INLINE_PAGE_CSP)
         }
 
     private fun save(session: IHTTPSession): Response {
@@ -112,10 +112,6 @@ class SavedFiltersConfigServer internal constructor(
         private const val BAD_REQUEST = "bad request"
         private val ROWS = ListSerializer(SavedFilterRow.serializer())
 
-        /** The page is inline only and talks to this server alone. */
-        private const val PAGE_CSP =
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
-                "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
         fun startOnAvailablePort(
             pageHtml: () -> String,

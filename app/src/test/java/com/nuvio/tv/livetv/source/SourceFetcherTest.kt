@@ -55,6 +55,22 @@ class SourceFetcherTest {
     }
 
     @Test
+    fun `a playlist without its directive on the first line is still a playlist (Spec 90 L6)`() {
+        assertEquals(SourceKind.M3U, SourceFetcher.detectKind("# My list\n\n#EXTM3U\n#EXTINF:-1,A\nhttp://x/a"))
+        assertEquals(SourceKind.M3U, SourceFetcher.detectKind("#PLAYLIST:Mine\n#KODIPROP:inputstream=adaptive\nhttp://x/a.mpd"))
+        assertEquals(SourceKind.M3U, SourceFetcher.detectKind("#EXTVLCOPT:http-user-agent=x\nhttp://x/a"))
+        assertEquals(SourceKind.M3U, SourceFetcher.detectKind("\n# channels\nhttps://x/a.m3u8\nhttps://x/b.m3u8"))
+        assertEquals(SourceKind.M3U, SourceFetcher.detectKind("#extinf:-1,lower\nhttp://x/a"))
+        // Comments alone, or a first real line that is not a URL, stay unknown.
+        assertNull(SourceFetcher.detectKind("# nothing here\n"))
+        assertNull(SourceFetcher.detectKind("# list\nrtmp://x/live"))
+        assertNull(SourceFetcher.detectKind("Not found"))
+        assertNull(SourceFetcher.detectKind("http://x/a is not available in your region"))
+        // XML and JSON keep priority over a URL inside them.
+        assertEquals(SourceKind.XMLTV, SourceFetcher.detectKind("<tv>\nhttp://x/icon.png"))
+    }
+
+    @Test
     fun `fetches a playlist with its kind`() = runTest {
         server.enqueue(MockResponse().setBody("#EXTM3U\n#EXTINF:-1,A\nhttp://x/a.m3u8\n"))
         val (kind, text) = fetcher.fetch(url()) { kind, body -> kind to body.reader().readText() }

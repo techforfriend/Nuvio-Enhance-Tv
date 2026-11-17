@@ -54,6 +54,8 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         override fun event(eventId: Int, data: MPVNode) {
             when (eventId) {
                 MPV.mpvEvent.MPV_EVENT_PLAYBACK_RESTART -> playbackRestarted.set(true)
+                // Spec 93 P3: size the cache on the main thread; this thread must not block.
+                MPV.mpvEvent.MPV_EVENT_FILE_LOADED -> post(demuxerCacheSizer)
                 MPV.mpvEvent.MPV_EVENT_END_FILE -> runCatching {
                     mpvLoadFailureOf(
                         reason = data.get("reason")?.asString(),
@@ -64,6 +66,27 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
                 }.getOrNull()?.let { loadFailure.set(it) }
             }
         }
+    }
+
+    private val demuxerCacheSizer = Runnable { sizeDemuxerCacheForBitrate() }
+
+    /**
+     * Spec 93 P3 (P2-7): forward read-ahead from the file's average bitrate, set once the file is
+     * loaded (mpv applies demux option changes on its demux thread, `update_opts`).
+     */
+    private fun sizeDemuxerCacheForBitrate() {
+        if (!initialized || stopped) return
+        // No size or duration (live, chunked): the default, not a previous file's size.
+        val bytes = runCatching {
+            mpvForwardCacheBytes(
+                fileSizeBytes = mpv.getPropertyLong("file-size"),
+                durationSec = mpv.getPropertyDouble("duration"),
+                lowRamTier = MemoryBudget.isLowRamTier
+            )
+        }.getOrNull() ?: MPV_FORWARD_CACHE_DEFAULT_BYTES
+        runCatching { mpv.setPropertyString("demuxer-max-bytes", bytes.toString()) }
+            .onSuccess { Log.d(TAG, "demuxer-max-bytes=${bytes / MIB} MiB") }
+            .onFailure { Log.w(TAG, "Failed to size the demuxer cache: ${it.message}") }
     }
 
     fun ensureInitialized() {
@@ -670,6 +693,7 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
     fun releasePlayer() {
         if (!initialized) return
         removeCallbacks(aspectReapplyRunnable)
+        removeCallbacks(demuxerCacheSizer)
         // Before destroy: the MPV instance (and its observer list) outlives the core, and the
         // teardown's own END_FILE belongs to no load.
         runCatching { mpv.removeObserver(endFileObserver) }
@@ -704,8 +728,10 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         mpv.setOptionString("tls-verify", "yes")
         mpv.setOptionString("tls-ca-file", "${context.filesDir.path}/cacert.pem")
         mpv.setOptionString("input-default-bindings", "yes")
-        mpv.setOptionString("demuxer-max-bytes", "${64 * 1024 * 1024}")
-        mpv.setOptionString("demuxer-max-back-bytes", "${64 * 1024 * 1024}")
+        // Spec 93 P3: until the file's bitrate is known; the back cache funds the larger forward
+        // one, so the total stays at the 128 MiB the Shield has run since mpv shipped.
+        mpv.setOptionString("demuxer-max-bytes", "${MPV_FORWARD_CACHE_DEFAULT_BYTES}")
+        mpv.setOptionString("demuxer-max-back-bytes", "${MPV_BACK_CACHE_BYTES}")
         mpv.setOptionString("keep-open", "yes")
         mpv.setOptionString("softvol", "yes")
         mpv.setOptionString("volume-max", MPV_MAX_VOLUME_PERCENT.toInt().toString())
@@ -801,6 +827,30 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         private const val MPV_SUB_MARGIN_Y_MIN = 0
         private const val MPV_SUB_MARGIN_Y_MAX = 60
     }
+}
+
+private const val MIB = 1024L * 1024L
+private const val MPV_FORWARD_CACHE_DEFAULT_BYTES = 64 * MIB
+private const val MPV_BACK_CACHE_BYTES = 32 * MIB
+private const val MPV_FORWARD_CACHE_MIN_BYTES = 32 * MIB
+// Spec 93 P3 bound: mpv's demux cache is native memory. On the 2 GB Shield (Spec 56: MemTotal
+// 1,987,624 kB, 250 MB safe native, 4K playback ~470 MB RSS, lmkd kills at +176 MB in flight)
+// forward + back stays at the 128 MiB it has always run with; above that tier 192 + 32.
+private const val MPV_FORWARD_CACHE_MAX_BYTES_LOW_RAM = 96 * MIB
+private const val MPV_FORWARD_CACHE_MAX_BYTES = 192 * MIB
+private const val MPV_FORWARD_CACHE_SECONDS = 60
+
+/**
+ * Spec 93 P3: mpv's forward cache (`demuxer-max-bytes`) for a file's average bitrate: 60 s of it,
+ * at least 32 MiB, at most the RAM tier's cap. Null when mpv knows no size or duration (a live
+ * or chunked stream): the caller then sets the default.
+ */
+internal fun mpvForwardCacheBytes(fileSizeBytes: Long?, durationSec: Double?, lowRamTier: Boolean): Long? {
+    val size = fileSizeBytes?.takeIf { it > 0L } ?: return null
+    val duration = durationSec?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+    val cap = if (lowRamTier) MPV_FORWARD_CACHE_MAX_BYTES_LOW_RAM else MPV_FORWARD_CACHE_MAX_BYTES
+    val wanted = (size / duration * MPV_FORWARD_CACHE_SECONDS).toLong()
+    return wanted.coerceIn(MPV_FORWARD_CACHE_MIN_BYTES, cap)
 }
 
 /**

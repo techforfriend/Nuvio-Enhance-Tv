@@ -19,6 +19,8 @@ import com.nuvio.tv.domain.model.ContinueWatchingSortMode
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.model.DetailImdbRatingsVisibility
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
+import com.nuvio.tv.domain.model.TrailerPreviewDelay
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -43,7 +45,8 @@ data class LayoutSettingsUiState(
     val modernLandscapePostersEnabled: Boolean = false,
     val discoverLocation: DiscoverLocation = DiscoverLocation.IN_SEARCH,
     val catalogTypeSuffixEnabled: Boolean = true,
-    val focusedPosterBackdropTrailerEnabled: Boolean = false,
+    val trailerAutoplayMode: TrailerAutoplayMode = TrailerAutoplayMode.OFF,
+    val trailerCardPreviewDelaySeconds: Int = TrailerPreviewDelay.DEFAULT_S,
     val focusedPosterBackdropTrailerMuted: Boolean = true,
     val blurUnwatchedEpisodes: Boolean = false,
     val homeImdbRatingsVisibility: HomeImdbRatingsVisibility = HomeImdbRatingsVisibility.SHOW_ALL,
@@ -68,7 +71,8 @@ sealed class LayoutSettingsEvent {
     data class SetModernLandscapePostersEnabled(val enabled: Boolean) : LayoutSettingsEvent()
     data class SetDiscoverLocation(val location: DiscoverLocation) : LayoutSettingsEvent()
     data class SetCatalogTypeSuffixEnabled(val enabled: Boolean) : LayoutSettingsEvent()
-    data class SetFocusedPosterBackdropTrailerEnabled(val enabled: Boolean) : LayoutSettingsEvent()
+    data class SetTrailerAutoplayMode(val mode: TrailerAutoplayMode) : LayoutSettingsEvent()
+    data class SetTrailerCardPreviewDelaySeconds(val seconds: Int) : LayoutSettingsEvent()
     data class SetFocusedPosterBackdropTrailerMuted(val muted: Boolean) : LayoutSettingsEvent()
     data class SetBlurUnwatchedEpisodes(val enabled: Boolean) : LayoutSettingsEvent()
     data class SetHomeImdbRatingsVisibility(val visibility: HomeImdbRatingsVisibility) : LayoutSettingsEvent()
@@ -131,7 +135,8 @@ class LayoutSettingsViewModel @Inject constructor(
         layoutPreferenceDataStore.modernLandscapePostersEnabled.bindTo { copy(modernLandscapePostersEnabled = it) }
         layoutPreferenceDataStore.discoverLocation.bindTo { copy(discoverLocation = it) }
         layoutPreferenceDataStore.catalogTypeSuffixEnabled.bindTo { copy(catalogTypeSuffixEnabled = it) }
-        layoutPreferenceDataStore.focusedPosterBackdropTrailerEnabled.bindTo { copy(focusedPosterBackdropTrailerEnabled = it) }
+        layoutPreferenceDataStore.trailerAutoplayMode.bindTo { copy(trailerAutoplayMode = it) }
+        layoutPreferenceDataStore.trailerCardPreviewDelaySeconds.bindTo { copy(trailerCardPreviewDelaySeconds = it) }
         layoutPreferenceDataStore.focusedPosterBackdropTrailerMuted.bindTo { copy(focusedPosterBackdropTrailerMuted = it) }
         layoutPreferenceDataStore.blurUnwatchedEpisodes.bindTo { copy(blurUnwatchedEpisodes = it) }
         layoutPreferenceDataStore.homeImdbRatingsVisibility.bindTo { copy(homeImdbRatingsVisibility = it) }
@@ -190,7 +195,8 @@ class LayoutSettingsViewModel @Inject constructor(
             is LayoutSettingsEvent.SetModernLandscapePostersEnabled -> setModernLandscapePostersEnabled(event.enabled)
             is LayoutSettingsEvent.SetDiscoverLocation -> setDiscoverLocation(event.location)
             is LayoutSettingsEvent.SetCatalogTypeSuffixEnabled -> setCatalogTypeSuffixEnabled(event.enabled)
-            is LayoutSettingsEvent.SetFocusedPosterBackdropTrailerEnabled -> setFocusedPosterBackdropTrailerEnabled(event.enabled)
+            is LayoutSettingsEvent.SetTrailerAutoplayMode -> setTrailerAutoplayMode(event.mode)
+            is LayoutSettingsEvent.SetTrailerCardPreviewDelaySeconds -> setTrailerCardPreviewDelaySeconds(event.seconds)
             is LayoutSettingsEvent.SetFocusedPosterBackdropTrailerMuted -> setFocusedPosterBackdropTrailerMuted(event.muted)
             is LayoutSettingsEvent.SetBlurUnwatchedEpisodes -> setBlurUnwatchedEpisodes(event.enabled)
             is LayoutSettingsEvent.SetHomeImdbRatingsVisibility -> setHomeImdbRatingsVisibility(event.visibility)
@@ -302,10 +308,17 @@ class LayoutSettingsViewModel @Inject constructor(
         }
     }
 
-    private fun setFocusedPosterBackdropTrailerEnabled(enabled: Boolean) {
-        if (_uiState.value.focusedPosterBackdropTrailerEnabled == enabled) return
+    private fun setTrailerAutoplayMode(mode: TrailerAutoplayMode) {
+        if (_uiState.value.trailerAutoplayMode == mode) return
         viewModelScope.launch {
-            layoutPreferenceDataStore.setFocusedPosterBackdropTrailerEnabled(enabled)
+            layoutPreferenceDataStore.setTrailerAutoplayMode(mode)
+        }
+    }
+
+    private fun setTrailerCardPreviewDelaySeconds(seconds: Int) {
+        if (_uiState.value.trailerCardPreviewDelaySeconds == seconds) return
+        viewModelScope.launch {
+            layoutPreferenceDataStore.setTrailerCardPreviewDelaySeconds(seconds)
         }
     }
 

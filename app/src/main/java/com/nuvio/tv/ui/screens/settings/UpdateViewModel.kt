@@ -52,6 +52,12 @@ class UpdateViewModel @Inject constructor(
         viewModelScope.launch { controller.setAutoCheck(enabled) }
     }
 
+    /** Spec 89: Get test releases; the controller checks once the setting is stored. */
+    fun setTestReleases(enabled: Boolean) {
+        // A failed write keeps the stored value, which the switch keeps showing.
+        viewModelScope.launch { controller.setTestReleases(enabled) }
+    }
+
     /** Update available, or the pill's deep entry: opens on the known release, if one is newer. */
     fun openPanel() {
         controller.state.value.available?.let { _panelRelease.value = it }

@@ -35,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
@@ -117,7 +118,7 @@ internal fun AboutChangelogRow(onOpen: () -> Unit, modifier: Modifier = Modifier
 
 /**
  * Spec 80 A2 / A5 in About's pane: the header, then skeleton rows while [state] loads, the
- * failure line with Try again, or one row per release (NEW, Video, Installed). [focusOn] is the
+ * failure line with Try again, or one row per release (NEW, Test, Installed, Video). [focusOn] is the
  * release whose row takes focus once loaded (the one whose page was open), else the first row;
  * [initialFocusRequester] (the rail's way into the pane) rides on that same first focus. Back,
  * while focus is in the list, calls [onBack].
@@ -214,7 +215,11 @@ private fun ChangelogSkeletonRow() {
     )
 }
 
-/** `.l8r` release row: title with NEW / Video / Installed, the date and What's new's first line under it. */
+/**
+ * `.l8r` release row: title with NEW / Test / Installed / Video, the date and What's new's first line
+ * under it. Test (Spec 89, sandbox spec-89-test-releases v2, stage t-list): a pre-release, listed only
+ * while Get test releases is on.
+ */
 @Composable
 private fun ChangelogListRow(release: ChangelogRelease, onClick: () -> Unit, modifier: Modifier) {
     val date = releaseDate(release.publishedAt)?.let(::formatShortDate)
@@ -227,10 +232,11 @@ private fun ChangelogListRow(release: ChangelogRelease, onClick: () -> Unit, mod
         onClick = onClick,
         minHeight = NuvioTheme.marquee.settings.rowMinHeight,
         modifier = modifier,
-        labelBadge = if (newer || installed || release.video != null) {
+        labelBadge = if (newer || installed || release.video != null || release.prerelease) {
             {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (newer) UpdateNewBadge()
+                    if (release.prerelease) TestReleaseChip()
                     if (installed) ChangelogChip(stringResource(R.string.changelog_installed), installed = true)
                     if (release.video != null) ChangelogChip(stringResource(R.string.changelog_video_tag), installed = false)
                 }
@@ -248,16 +254,25 @@ private fun ChangelogListRow(release: ChangelogRelease, onClick: () -> Unit, mod
 @Composable
 private fun ChangelogChip(text: String, installed: Boolean) {
     val marquee = NuvioTheme.marquee
+    if (installed) ChangelogChip(text, marquee.readyText, marquee.readyText.copy(alpha = 0.16f))
+    else ChangelogChip(text, marquee.onImage2, NuvioPrimitives.white.copy(alpha = 0.1f))
+}
+
+/** `.s89chip` (Spec 89): Test in amber on amber 16 %, a pre-release's tag here and on About's update row. */
+@Composable
+internal fun TestReleaseChip() {
+    ChangelogChip(stringResource(R.string.update_test_tag), NuvioPrimitives.warning, NuvioPrimitives.warning.copy(alpha = 0.16f))
+}
+
+@Composable
+private fun ChangelogChip(text: String, color: Color, fill: Color) {
     Text(
         text = text,
         style = NuvioTheme.textStyles.techBadge.copy(lineHeight = 14.sp, letterSpacing = 0.3.sp),
-        color = if (installed) marquee.readyText else marquee.onImage2,
+        color = color,
         modifier = Modifier
             .padding(start = 8.dp)
-            .background(
-                if (installed) marquee.readyText.copy(alpha = 0.16f) else NuvioPrimitives.white.copy(alpha = 0.1f),
-                RoundedCornerShape(10.dp)
-            )
+            .background(fill, RoundedCornerShape(10.dp))
             .padding(horizontal = 8.dp, vertical = 2.dp)
     )
 }

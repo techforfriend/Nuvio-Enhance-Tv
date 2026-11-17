@@ -5,9 +5,14 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.core.network.access.AccessHeaderInterceptor
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
@@ -38,6 +43,35 @@ internal object PlayerPlaybackNetworking {
     private var lastWarmAtMs: Long = 0L
 
     private const val WARM_DEDUP_WINDOW_MS = 60_000L
+
+    /**
+     * In-memory cookie jar for the playback clients (every one built from [cookieClientBuilder]), so cookies a
+     * stream host sets are sent back on later requests to that host, on whichever path plays it (Spec 91 K2).
+     * Process-wide: a host's cookies carry over to the next player instance. Keyed by exact host.
+     */
+    internal val playerCookieJar: CookieJar = object : CookieJar {
+        private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val hostCookies = store[url.host] ?: return emptyList()
+            synchronized(hostCookies) {
+                // matches(): Secure cookies only over https, Path honoured (the store is keyed by host).
+                return hostCookies.filter { cookie ->
+                    cookie.expiresAt > System.currentTimeMillis() && cookie.matches(url)
+                }
+            }
+        }
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            val hostCookies = store.getOrPut(url.host) { mutableListOf() }
+            synchronized(hostCookies) {
+                cookies.forEach { newCookie ->
+                    hostCookies.removeAll { it.name == newCookie.name }
+                    hostCookies.add(newCookie)
+                }
+            }
+        }
+    }
     private val trustAllManager = object : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
 
@@ -53,6 +87,12 @@ internal object PlayerPlaybackNetworking {
             init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
         }
     }
+
+    /**
+     * The one builder for clients that fetch stream bytes (data source, chunk session, prewarm): [playbackHttpClient]
+     * with [playerCookieJar], so no path misses a host's redirect cookie (Spec 92 W1: the prewarm did, and 403'd).
+     */
+    internal fun cookieClientBuilder(): OkHttpClient.Builder = playbackHttpClient.newBuilder().cookieJar(playerCookieJar)
 
     /**
      * Fallback OkHttpClient equipped with trust-all SSL configuration for self-signed
@@ -81,7 +121,9 @@ internal object PlayerPlaybackNetworking {
     /**
      * Primary OkHttpClient using standard system SSL certificates and full SNI support.
      * Includes an automatic fallback to [trustAllPlaybackHttpClient] if an [SSLException]
-     * occurs on self-signed local media servers.
+     * occurs on self-signed local media servers. Spec 97 A3: carries a saved site's secret
+     * headers (network interceptor, inherited by every newBuilder() derivative); the trust-all
+     * retry re-runs the application-level request, which never carries them.
      */
     internal val playbackHttpClient: OkHttpClient by lazy {
         val dispatcher = okhttp3.Dispatcher().apply {
@@ -104,6 +146,7 @@ internal object PlayerPlaybackNetworking {
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
+            .addNetworkInterceptor(AccessHeaderInterceptor)
             .addInterceptor { chain ->
                 val request = chain.request()
                 try {
@@ -363,8 +406,8 @@ internal object PlayerPlaybackNetworking {
      * now a fixed singleton val, so every applyNetworkOptimizations client
      * shares it by construction; POOL_ID stays as the standing verification.
      */
-    private val prewarmHttpClient: OkHttpClient by lazy {
-        playbackHttpClient.newBuilder()
+    internal val prewarmHttpClient: OkHttpClient by lazy {
+        cookieClientBuilder()
             .let { NuvioExoPlayerPerformanceHelper.applyNetworkOptimizations(it) }
             .build()
             .also { logPoolIdentity("prewarm", it) }
@@ -390,7 +433,7 @@ internal object PlayerPlaybackNetworking {
     }
 
     fun createHttpClient(defaultHeaders: Map<String, String> = emptyMap()): OkHttpClient {
-        val builder = playbackHttpClient.newBuilder()
+        val builder = cookieClientBuilder()
         if (defaultHeaders.any { it.key.equals("Authorization", ignoreCase = true) }) {
             // OkHttp strips the Authorization header on cross-host redirects.
             // WebDAV servers behind reverse proxies commonly redirect to a

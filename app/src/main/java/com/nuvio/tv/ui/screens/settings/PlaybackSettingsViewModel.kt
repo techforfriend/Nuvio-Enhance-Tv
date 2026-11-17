@@ -56,7 +56,9 @@ data class PlaybackSettingsUiState(
     /** Enabled addons that serve streams, by display name (the Allowed addons choices). */
     val streamAddonNames: List<String>,
     val seekThumbnailsEnabled: Boolean,
-    val thisTv: ThisTvState
+    val thisTv: ThisTvState,
+    /** Spec 97 X6: hide addon and service names on this TV (a device setting). */
+    val hideSourceNames: Boolean = false
 )
 
 /**
@@ -131,13 +133,13 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     /** Null until every store has emitted; the pane draws its rows only after that. */
     val uiState: StateFlow<PlaybackSettingsUiState?> = combine(
-        playerSettingsDataStore.playerSettings,
+        playerSettingsDataStore.playerSettings.combine(playerSettingsDataStore.hideSourceNames, ::Pair),
         torrentSettings.settings,
         installedAddonNames,
         SeekThumbnailPreferences.enabledFlow(context),
         thisTvState
-    ) { player, torrent, addonNames, seekThumbnails, thisTv ->
-        PlaybackSettingsUiState(player, torrent, addonNames, seekThumbnails, thisTv)
+    ) { (player, hideSourceNames), torrent, addonNames, seekThumbnails, thisTv ->
+        PlaybackSettingsUiState(player, torrent, addonNames, seekThumbnails, thisTv, hideSourceNames)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // This TV (Spec 33 D5). The actions run on the ViewModel scope, so leaving the pane does not
@@ -300,12 +302,20 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setLoadingOverlayEnabled(enabled)
     }
 
+    suspend fun setHideSourceNames(hidden: Boolean) {
+        playerSettingsDataStore.setHideSourceNames(hidden)
+    }
+
     suspend fun setShowPlayerLoadingStatus(enabled: Boolean) {
         playerSettingsDataStore.setShowPlayerLoadingStatus(enabled)
     }
 
     suspend fun setPauseOverlayEnabled(enabled: Boolean) {
         playerSettingsDataStore.setPauseOverlayEnabled(enabled)
+    }
+
+    suspend fun setResumeRewindSeconds(seconds: Int) {
+        playerSettingsDataStore.setResumeRewindSeconds(seconds)
     }
 
     suspend fun setOsdClockEnabled(enabled: Boolean) {

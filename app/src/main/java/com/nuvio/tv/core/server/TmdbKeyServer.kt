@@ -20,12 +20,6 @@ enum class TmdbKeyAnswer(val status: NanoHTTPD.Response.IStatus, val word: Strin
     CLOSED(NanoHTTPD.Response.Status.GONE, "closed")
 }
 
-/** NanoHTTPD 2.3.1 has no 422; the status line is `HTTP/1.1 ` + [getDescription]. */
-private object UnprocessableEntity : NanoHTTPD.Response.IStatus {
-    override fun getDescription(): String = "422 Unprocessable Entity"
-    override fun getRequestStatus(): Int = 422
-}
-
 /**
  * The LAN page behind the TMDB key panel's QR (Spec 52 S3, sandbox `spec-52-public-build-ui` stage
  * t1-phone). One instance is one panel session: its own 128-bit [token] (every route lives under
@@ -88,7 +82,8 @@ class TmdbKeyServer internal constructor(
 
     private fun page(): Response =
         newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", pageHtml()).apply {
-            addHeader("Content-Security-Policy", PAGE_CSP)
+            // The TMDB link is a plain navigation, so the inline-only CSP covers this page.
+            addHeader("Content-Security-Policy", INLINE_PAGE_CSP)
         }
 
     private fun receive(session: IHTTPSession): Response {
@@ -139,10 +134,6 @@ class TmdbKeyServer internal constructor(
         private const val BAD_REQUEST = "bad request"
         private const val NOT_FOUND = "Not found"
 
-        /** The page is inline only and posts back to itself; the TMDB link is a plain navigation. */
-        private const val PAGE_CSP =
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
-                "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
         fun startOnAvailablePort(
             pageHtml: () -> String,

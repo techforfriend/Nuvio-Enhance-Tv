@@ -46,6 +46,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.text.TextRenderer
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -72,6 +73,7 @@ import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.data.local.PlayerSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -80,6 +82,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.media3.common.Tracks
 
@@ -377,6 +380,7 @@ internal fun PlayerRuntimeController.initializePlayer(
             trackSelection.autoSubtitleSelected = false
             hasScannedTextTracksOnce = false
             backgroundHeldMpvHopReason = null
+            streamOnSavedAccessSite = null
             lastPlaybackDiagnostics = LastPlaybackDiagnostics.EMPTY
             playbackFatalErrorRecorded = false
             playbackAnalyticsDiagnostics.reset()
@@ -447,6 +451,21 @@ internal fun PlayerRuntimeController.initializePlayer(
             if (effectiveInternalPlayerEngine == InternalPlayerEngine.AUTO) {
                 effectiveInternalPlayerEngine = resolveAutoInternalPlayerEngine()
             }
+            // Spec 97 D30: a stream on a saved access site plays on ExoPlayer (per-hop headers), never
+            // on mpv; an mpv override (manual, format hop) becomes ExoPlayer too, so the settings
+            // observer and same-stream restarts agree with the engine that runs.
+            val onSavedSite = withContext(Dispatchers.IO) { isOnSavedAccessSite(url) }
+            streamOnSavedAccessSite = onSavedSite
+            if (onSavedSite && effectiveInternalPlayerEngine == InternalPlayerEngine.MVP_PLAYER) {
+                Log.i(PlayerRuntimeController.TAG, "PLAYER_INIT: saved access site, ExoPlayer instead of mpv (Spec 97 D30)")
+            }
+            val savedSiteEngines = savedSiteStartEngines(
+                effective = effectiveInternalPlayerEngine,
+                override = runtimeInternalPlayerEngineOverride,
+                onSavedSite = onSavedSite
+            )
+            effectiveInternalPlayerEngine = savedSiteEngines.effective
+            runtimeInternalPlayerEngineOverride = savedSiteEngines.override
             // The settings observer re-derives the engine as override ?: this ?: setting on every
             // settings write, so the engine this start runs is kept here: an automatic choice (AUTO
             // or a start-on-mpv name) would flip back, and an engine changed in Settings over the
@@ -2264,6 +2283,15 @@ internal fun PlayerRuntimeController.initializePlayer(
                         error: java.io.IOException,
                         wasCanceled: Boolean
                     ) {
+                        // Spec 113 D1 (F2b): the source's HTTP error, kept for the startup watchdog's box.
+                        PlaybackFailureCauses.startupLoadHttpError(
+                            error = error,
+                            uri = loadEventInfo.dataSpec.uri.toString(),
+                            trackType = mediaLoadData.trackType,
+                            errorAtMs = loadEventInfo.elapsedRealtimeMs,
+                            armedAtMs = startupWatchdogArmedAtMs,
+                            renderedFirstFrame = hasRenderedFirstFrame
+                        )?.let { startupLoadHttpError = it }
                         playbackAnalyticsDiagnostics.onLoadError(
                             eventTime = eventTime,
                             loadEventInfo = loadEventInfo,
@@ -2422,6 +2450,8 @@ internal fun PlayerRuntimeController.currentStreamEngineForRestart(): InternalPl
 internal fun PlayerRuntimeController.forgetStreamEngineForNewStream() {
     runtimeInternalPlayerEngineOverride = null
     sessionPlayerEngine = null
+    // Spec 97 D30: unknown until the new stream's initializePlayer looks it up.
+    streamOnSavedAccessSite = null
     // Spec 85 G1: the new stream (a re-pick of the same URL included) gets its own one automatic
     // engine switch; the guard only has to stop a loop within one stream's starts.
     engineHopStreamUrls.clear()
@@ -2551,6 +2581,7 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream(streamUrl: 
     _uiState.update { it.copy(runtimeMismatch = null) }
     shouldEnforceAutoplayOnFirstReady = true
     userPausedManually = false
+    userPauseStartedAtMs = null
     hasRetriedAfterMimeOverrideClear = false
     isExperimentalDv7ToDv81ActiveForCurrentPlayback = false
     isVc1SoftwareFallbackActiveForCurrentPlayback = false
@@ -2890,7 +2921,8 @@ internal class SubtitleOffsetRenderersFactory(
             videoBoundsFractionProvider = videoBoundsFractionProvider
         )
         val startIndex = out.size
-        super.buildTextRenderers(context, normalizingOutput, outputLooper, extensionRendererMode, out)
+        // Media3's own body (one TextRenderer) with PGS on the multi-object decoder (Spec 93 P4).
+        out.add(TextRenderer(normalizingOutput, outputLooper, PgsSubtitleDecoderFactory))
         // Before the wrap below hides the TextRenderer type.
         RenderTimeSubtitles.enableRenderTimeDecoding(out, startIndex)
         for (index in startIndex until out.size) {

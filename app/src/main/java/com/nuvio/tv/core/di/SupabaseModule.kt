@@ -8,6 +8,8 @@ import com.nuvio.tv.core.network.BackendRateLimitPlugin
 import com.nuvio.tv.core.network.backendRetryDelayMillis
 import com.nuvio.tv.core.network.isRetryableBackendResponse
 import com.nuvio.tv.core.network.isSafeBackendRetryRequest
+import com.nuvio.tv.core.network.access.AccessHeaderInterceptor
+import com.nuvio.tv.core.network.dns.AppDns
 import com.nuvio.tv.data.local.ServerConfigurationStore
 import com.nuvio.tv.domain.model.ServerConfiguration
 import dagger.Module
@@ -23,6 +25,7 @@ import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.storage.Storage
 import io.github.jan.supabase.storage.storage
+import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.defaultRequest
@@ -54,6 +57,13 @@ object SupabaseModule {
             supabaseUrl = serverConfiguration.backendUrl,
             supabaseKey = serverConfiguration.publishableKey
         ) {
+            // Spec 97 A3/N3: the OkHttp engine the SDK would pick anyway (the only one on the classpath),
+            // plus a saved site's secret headers per hop and the app resolver (Private DNS). Not
+            // `preconfigured`: that would bring @BackendAuth's application interceptors.
+            httpEngine = OkHttp.create {
+                config { dns(AppDns) }
+                addNetworkInterceptor(AccessHeaderInterceptor)
+            }
             httpConfig {
                 install(BackendRateLimitPlugin) {
                     coordinator = rateLimitCoordinator

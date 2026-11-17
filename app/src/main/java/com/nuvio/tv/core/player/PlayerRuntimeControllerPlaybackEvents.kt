@@ -1057,6 +1057,32 @@ fun PlayerRuntimeController.hideControls() {
     _uiState.update { it.copy(showControls = false, showSeekOverlay = false, showMoreDialog = false) }
 }
 
+/** Spec 93 P5: remembers when and where Play/Pause (or leaving the app) paused, for [rewindAfterLongPause]. */
+internal fun PlayerRuntimeController.stampUserPause() {
+    userPauseStartedAtMs = android.os.SystemClock.elapsedRealtime()
+    userPausePositionMs = currentPlaybackPositionMs() ?: 0L
+}
+
+/**
+ * Spec 93 P5 (D1): Play after a Play/Pause pause of 30 s or more starts "Rewind on resume" seconds back. The stamp
+ * is spent either way. PREVIOUS_SYNC, as the D-pad rewind: never lands after the target on a long GOP.
+ */
+private fun PlayerRuntimeController.rewindAfterLongPause() {
+    val pausedAt = userPauseStartedAtMs ?: return
+    userPauseStartedAtMs = null
+    val positionMs = currentPlaybackPositionMs() ?: return
+    val target = ResumeRewind.afterPause(
+        pausedAtMs = pausedAt,
+        pausedPositionMs = userPausePositionMs,
+        nowMs = android.os.SystemClock.elapsedRealtime(),
+        positionMs = positionMs,
+        rewindSeconds = currentPlayerSettings.resumeRewindSeconds,
+    ) ?: return
+    Log.i(PlayerRuntimeController.TAG, "RESUME_REWIND from=${positionMs}ms to=${target}ms")
+    seekPlaybackTo(target, SeekParameters.PREVIOUS_SYNC)
+    updatePlaybackTimeline(currentPosition = target)
+}
+
 fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
     onUserInteraction()
     when (event) {
@@ -1068,6 +1094,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                     // resume; restarting the progress job would hide a source advance's loading screen.
                 } else if (playing) {
                     userPausedManually = true
+                    stampUserPause()
                     setPlaybackPaused(true)
                     stopProgressUpdates()
                     stopWatchProgressSaving()
@@ -1075,6 +1102,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                 } else {
                     userPausedManually = false
                     cancelPauseOverlay()
+                    rewindAfterLongPause()
                     setPlaybackPaused(false)
                     startProgressUpdates()
                     startWatchProgressSaving()
@@ -1086,6 +1114,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                     // rebuffering, so pause pressed mid-rebuffer must still pause.
                     if (player.playWhenReady) {
                         userPausedManually = true
+                        stampUserPause()
                         player.pause()
                         schedulePauseOverlay()
                         // nt6: a parked auto-restore subtitle attaches here,
@@ -1095,6 +1124,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                         // After a forced end (Spec 61 Q2) Play would only restart the runaway clock.
                         userPausedManually = false
                         cancelPauseOverlay()
+                        rewindAfterLongPause()
                         player.play()
                     }
                 }

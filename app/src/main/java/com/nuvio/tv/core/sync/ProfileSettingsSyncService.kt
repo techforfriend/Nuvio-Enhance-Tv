@@ -149,7 +149,9 @@ private val localOnlyPlayerProfileSettingsKeys = setOf(
     "device_setup_record",
     "stream_limit_mode",
     "stream_limit_manual_mbps",
-    "resolution_limit_mode"
+    "resolution_limit_mode",
+    // Spec 97 X6 (D8): this TV only.
+    "hide_source_names"
 )
 
 // "debrid_settings": legacy feature passthrough. Its remaining in-app reader is the

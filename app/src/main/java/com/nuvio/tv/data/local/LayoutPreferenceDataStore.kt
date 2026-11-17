@@ -3,6 +3,7 @@ package com.nuvio.tv.data.local
 import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -19,6 +20,8 @@ import com.nuvio.tv.domain.model.ContinueWatchingSortMode
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.model.DetailImdbRatingsVisibility
 import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
+import com.nuvio.tv.domain.model.TrailerPreviewDelay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,6 +91,10 @@ class LayoutPreferenceDataStore @Inject constructor(
     // values stay untouched (never read or rewritten).
     private val focusedPosterBackdropTrailerEnabledKey = booleanPreferencesKey("focused_poster_backdrop_trailer_enabled")
     private val focusedPosterBackdropTrailerMutedKey = booleanPreferencesKey("focused_poster_backdrop_trailer_muted")
+    // Spec 96: with the switch above on, true = the trailer plays in the focused card (TrailerAutoplayMode.CARD).
+    private val trailerCardPreviewKey = booleanPreferencesKey("trailer_card_preview")
+    // Spec 96 D12: seconds, TrailerPreviewDelay range; clamped on read (the profile sync writes any int).
+    private val trailerCardPreviewDelaySecondsKey = intPreferencesKey("trailer_card_preview_delay_seconds")
     // Retired 2026-10-17 (Spec 31 S1: no Marquee card draws card depth): card_depth_enabled,
     // card_depth_edge_strength, card_depth_sheen_strength, card_depth_edge_coverage,
     // card_depth_posters_enabled, card_depth_continue_watching_enabled,
@@ -184,12 +191,20 @@ class LayoutPreferenceDataStore @Inject constructor(
         prefs[catalogTypeSuffixEnabledKey] ?: true
     }
 
-    val focusedPosterBackdropTrailerEnabled: Flow<Boolean> = profileFlow { prefs ->
-        prefs[focusedPosterBackdropTrailerEnabledKey] ?: false
-    }
-
     val focusedPosterBackdropTrailerMuted: Flow<Boolean> = profileFlow { prefs ->
         prefs[focusedPosterBackdropTrailerMutedKey] ?: true
+    }
+
+    val trailerAutoplayMode: Flow<TrailerAutoplayMode> = profileFlow { prefs ->
+        TrailerAutoplayMode.of(
+            enabled = prefs[focusedPosterBackdropTrailerEnabledKey] ?: false,
+            card = prefs[trailerCardPreviewKey] ?: false
+        )
+    }
+
+    val trailerCardPreviewDelaySeconds: Flow<Int> = profileFlow { prefs ->
+        (prefs[trailerCardPreviewDelaySecondsKey] ?: TrailerPreviewDelay.DEFAULT_S)
+            .coerceIn(TrailerPreviewDelay.MIN_S, TrailerPreviewDelay.MAX_S)
     }
 
     val blurUnwatchedEpisodes: Flow<Boolean> = profileFlow { prefs ->
@@ -380,12 +395,20 @@ class LayoutPreferenceDataStore @Inject constructor(
         }
     }
 
-    suspend fun setFocusedPosterBackdropTrailerEnabled(enabled: Boolean) {
+    /** Writes both stored halves of [mode]; Off resets mute as the old switch's Off did. */
+    suspend fun setTrailerAutoplayMode(mode: TrailerAutoplayMode) {
         store().edit { prefs ->
-            prefs[focusedPosterBackdropTrailerEnabledKey] = enabled
-            if (!enabled) {
+            prefs[focusedPosterBackdropTrailerEnabledKey] = mode != TrailerAutoplayMode.OFF
+            prefs[trailerCardPreviewKey] = mode == TrailerAutoplayMode.CARD
+            if (mode == TrailerAutoplayMode.OFF) {
                 prefs[focusedPosterBackdropTrailerMutedKey] = true
             }
+        }
+    }
+
+    suspend fun setTrailerCardPreviewDelaySeconds(seconds: Int) {
+        store().edit { prefs ->
+            prefs[trailerCardPreviewDelaySecondsKey] = seconds.coerceIn(TrailerPreviewDelay.MIN_S, TrailerPreviewDelay.MAX_S)
         }
     }
 

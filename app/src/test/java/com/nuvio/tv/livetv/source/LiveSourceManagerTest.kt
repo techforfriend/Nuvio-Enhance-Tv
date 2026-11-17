@@ -2,6 +2,7 @@ package com.nuvio.tv.livetv.source
 
 import com.nuvio.tv.livetv.data.ChannelRepository
 import com.nuvio.tv.livetv.data.GuideRepository
+import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.EpgOverride
 import com.nuvio.tv.livetv.model.EpgRef
 import com.nuvio.tv.livetv.parse.EpgChannel
@@ -68,7 +69,7 @@ class LiveSourceManagerTest {
         IptvMetadataRepository(tmp.root, SourceFetcher(OkHttpClient(), io), { now }, io, "http://127.0.0.1:1/"),
         SourceFetcher(OkHttpClient(), io, maxTextBytes),
         StremioTvAdapter(SourceFetcher(OkHttpClient(), io)),
-        XmltvNowNextParser({ KXmlParser() }, maxProgrammesPerChannel = LiveSourceManager.DAY_WINDOW_MAX_PROGRAMMES),
+        XmltvNowNextParser({ KXmlParser() }),
         { File(PRESET_PATH).inputStream() },
         { now },
         { "s${++ids}" },
@@ -305,6 +306,72 @@ class LiveSourceManagerTest {
         assertTrue(manager.remove(guide.id))
         assertTrue(guides.guides.value.isEmpty())
         assertTrue(File(tmp.root, "epg-${guide.id}.json").exists().not())
+    }
+
+    // Spec 92 W2: a +3 h channel shows the guide's programme from 3 h ago, so the window starts 3 h before midnight.
+    @Test
+    fun `a guide window starts earlier by the largest positive tvg-shift`() = runTest {
+        now = guideAt
+        val manager = manager()
+        added(manager, playlist("a", "b").replace("tvg-id=\"a.in\"", "tvg-id=\"a.in\" tvg-shift=\"3\"")
+            .replace("tvg-id=\"b.in\"", "tvg-id=\"b.in\" tvg-shift=\"-5\""))
+        server.enqueue(MockResponse().setBody(epgBody()))
+        val guide = (manager.addUrl(server.url("/xmltv/epg_IN.xml.gz").toString()) as LiveSourceManager.AddResult.Added).source
+        val snapshot = guides.guides.value.getValue(guide.id)
+        assertEquals(Instant.parse("2026-10-18T03:00:00Z").toEpochMilli(), snapshot.windowStartMs)
+        assertEquals(Instant.parse("2026-10-20T06:00:00Z").toEpochMilli(), snapshot.windowEndMs)
+    }
+
+    // Spec 92 W2, the symptom: at 01:00 local a +3 h channel shows the 21:00-23:00 programme (guide time, before
+    // local midnight). A dense channel keeps tomorrow's last programme under the grown cap (300 would drop it).
+    @Test
+    fun `a positive tvg-shift channel has its programme after local midnight`() = runTest {
+        val hour = 3_600_000L
+        val dayStart = Instant.parse("2026-10-19T06:00:00Z").toEpochMilli() // local midnight at UTC-6
+        now = dayStart + hour
+        val manager = manager()
+        added(manager, playlist("a", "b").replace("tvg-id=\"a.in\"", "tvg-id=\"a.in\" tvg-shift=\"3\""))
+        fun xt(ms: Long) = java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss Z")
+            .format(Instant.ofEpochMilli(ms).atOffset(ZoneOffset.UTC))
+        val slot = 10 * 60_000L
+        val dense = (dayStart - 3 * hour until dayStart + 48 * hour step slot).toList() // 306 > 300
+        val xml = buildString {
+            append("<tv><channel id=\"a.in\"><display-name>A</display-name></channel>")
+            append("<channel id=\"b.in\"><display-name>B</display-name></channel>")
+            append("<programme channel=\"a.in\" start=\"${xt(dayStart - 3 * hour)}\" stop=\"${xt(dayStart - hour)}\"><title>Late show</title></programme>")
+            append("<programme channel=\"a.in\" start=\"${xt(dayStart + hour)}\" stop=\"${xt(dayStart + 2 * hour)}\"><title>Today</title></programme>")
+            for (t in dense) append("<programme channel=\"b.in\" start=\"${xt(t)}\" stop=\"${xt(t + slot)}\"><title>B$t</title></programme>")
+            append("</tv>")
+        }
+        server.enqueue(MockResponse().setBody(xml))
+        val guide = (manager.addUrl(server.url("/guide.xml").toString()) as LiveSourceManager.AddResult.Added).source
+        val snapshot = guides.guides.value.getValue(guide.id)
+
+        assertEquals("Late show", snapshot.nowNext("a.in", now, 3 * hour).first?.title)
+        assertEquals("Today", snapshot.nowNext("a.in", now).first?.title) // unshifted control
+        assertEquals(dense.size, snapshot.programmes.getValue("b.in").size)
+        assertEquals(dayStart, snapshot.dayStartMs)
+        // Live = a programme not ended by local midnight: yesterday's look-back alone does not count.
+        assertTrue(snapshot.isLive("a.in"))
+        assertFalse(snapshot.copy(programmes = mapOf("a.in" to snapshot.programmes.getValue("a.in").take(1))).isLive("a.in"))
+    }
+
+    @Test
+    fun `guide look-back is the largest positive shift, channel's own over the header's`() {
+        val hour = 3_600_000L
+        fun ch(source: String, shift: String?) = Channel(
+            key = "$source#$shift", sourceId = source, name = "x", streams = emptyList(),
+            attrs = shift?.let { mapOf("tvg-shift" to it) }
+        )
+        val header = LiveSource(id = "p", url = "https://x/p.m3u", name = "p", kind = SourceKind.M3U, addedAtMs = 0, playlistAttrs = mapOf("tvg-shift" to "2"))
+        assertEquals(0L, LiveSourceManager.guideLookBackMs(emptyList(), emptyList()))
+        assertEquals(0L, LiveSourceManager.guideLookBackMs(listOf(ch("q", "-4"), ch("q", null)), listOf(header)))
+        assertEquals(2 * hour, LiveSourceManager.guideLookBackMs(listOf(ch("p", null), ch("q", "1.5")), listOf(header)))
+        assertEquals(hour / 2, LiveSourceManager.guideLookBackMs(listOf(ch("p", "0"), ch("q", ".5")), listOf(header)))
+        assertEquals(24 * hour, LiveSourceManager.guideLookBackMs(listOf(ch("q", "24"), ch("q", "99")), emptyList()))
+        assertEquals(LiveSourceManager.DAY_WINDOW_MAX_PROGRAMMES, LiveSourceManager.dayWindowCap(0))
+        assertEquals(LiveSourceManager.DAY_WINDOW_MAX_PROGRAMMES + 1, LiveSourceManager.dayWindowCap(1))
+        assertEquals(LiveSourceManager.DAY_WINDOW_MAX_PROGRAMMES + 144, LiveSourceManager.dayWindowCap(24 * hour))
     }
 
     @Test

@@ -124,6 +124,7 @@ import com.nuvio.tv.ui.components.errorStateText
 import com.nuvio.tv.ui.components.marquee.MarqueeGlassButton
 import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.marquee.SUFFIX_ALPHA
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.screens.home.HeroBackdropState
 import com.nuvio.tv.ui.screens.home.HeroCarouselRow
 import com.nuvio.tv.ui.screens.home.HomeMessageAction
@@ -680,9 +681,11 @@ fun SearchScreen(
             )
         }
         // Results and the Discover grid: a focused card's bottom goes to the band anchor (rows
-        // move as on Home).
+        // move as on Home). Spec 96 PD2: their cards opt into the trailer preview (the host's In the
+        // card mode decides).
         CompositionLocalProvider(
             LocalBringIntoViewSpec provides if (useBand) bandSpec else defaultBringIntoViewSpec,
+            LocalTrailerPreviewEnabled provides true,
             LocalFastScrollActive provides if (isDiscoverMode) discoverBand.isFastScrolling else LocalFastScrollActive.current
         ) {
             LazyColumn(

@@ -15,6 +15,20 @@ import kotlinx.serialization.json.JsonObject
 
 // Response / lifecycle plumbing shared by the phone-page servers.
 
+/**
+ * CSP of a phone page that is inline only and posts back to itself (TmdbKeyServer,
+ * SavedFiltersConfigServer, AccessHeaderServer); PhotoUploadServer adds its image sources.
+ */
+internal const val INLINE_PAGE_CSP =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+/** NanoHTTPD 2.3.1 has no 422; the status line is `HTTP/1.1 ` + [getDescription]. */
+internal object UnprocessableEntity : Response.IStatus {
+    override fun getDescription(): String = "422 Unprocessable Entity"
+    override fun getRequestStatus(): Int = 422
+}
+
 private const val JSON_MIME = "application/json; charset=utf-8"
 
 internal fun jsonResponse(status: Response.IStatus, body: String): Response =

@@ -10,6 +10,7 @@ import com.nuvio.tv.livetv.data.EpgMatcher
 import com.nuvio.tv.livetv.data.EpgSource
 import com.nuvio.tv.livetv.data.GuideRepository
 import com.nuvio.tv.livetv.data.GuideService
+import com.nuvio.tv.livetv.data.GuideShift
 import com.nuvio.tv.livetv.data.localDayStartMs
 import com.nuvio.tv.livetv.model.Channel
 import com.nuvio.tv.livetv.model.LiveStream
@@ -47,7 +48,7 @@ import javax.inject.Singleton
  * Adds, refreshes and removes Live TV sources (Spec 34 L5): fetches through [SourceFetcher],
  * checks the detected kind, parses, and saves the result: a playlist's channels replace the
  * source's block in [ChannelRepository]; a guide's snapshot of today and tomorrow ([dayWindow],
- * Spec 67 G1c) goes to [GuideRepository].
+ * Spec 67 G1c; started earlier by the largest positive guide shift, [guideLookBackMs]) goes to [GuideRepository].
  * A failed refresh (network, HTTP status, cap, wrong content, empty or cut-short file) keeps the
  * previous data and records the reason on the source. The broadcaster preset (D3, Q7) is an M3U
  * source with the fixed id [PRESET_ID] whose playlist is the bundled asset [PRESET_ASSET]. The
@@ -113,7 +114,8 @@ class LiveSourceManager internal constructor(
         metadata,
         fetcher,
         stremio,
-        XmltvNowNextParser(Xml::newPullParser, maxProgrammesPerChannel = DAY_WINDOW_MAX_PROGRAMMES),
+        // The day-window cap is passed per parse ([dayWindowCap]).
+        XmltvNowNextParser(Xml::newPullParser),
         { context.assets.open(PRESET_ASSET) },
         System::currentTimeMillis,
         { UUID.randomUUID().toString() },
@@ -547,8 +549,11 @@ class LiveSourceManager internal constructor(
         SourceKind.M3U -> Parsed.Ready(parseM3u(sourceId, body))
         SourceKind.XMLTV -> {
             val startNs = System.nanoTime()
-            val (windowStart, windowEnd) = dayWindow(nowMs(), zone())
-            val snapshot = xmltv.parse(body, windowStart, windowEnd - windowStart)
+            val lookBackMs = guideLookBackMs(channels.channels.value, store.sources.value)
+            val (dayStart, windowEnd) = dayWindow(nowMs(), zone())
+            val windowStart = guideWindowStart(dayStart, lookBackMs)
+            val snapshot = xmltv.parse(body, windowStart, windowEnd - windowStart, maxPerChannel = dayWindowCap(lookBackMs))
+                .copy(dayStartMs = dayStart)
             // Spec 12/S57: Shield guide time (D14). The body streams from the network, so this is
             // download + parse together.
             Log.i(TAG, "Guide $sourceId fetched + parsed in ${(System.nanoTime() - startNs) / 1_000_000} ms: " +
@@ -865,10 +870,32 @@ class LiveSourceManager internal constructor(
          */
         const val DAY_WINDOW_MAX_PROGRAMMES = 300
 
+        /** The cap's average slot (300 over 48 h), which [dayWindowCap] keeps for the look-back hours too. */
+        private const val CAP_SLOT_MS = 10 * 60_000L
+
         /**
-         * The window a guide parse keeps (Spec 67 G1c): [local midnight today, local midnight of
-         * the day after tomorrow) in [zone], today and tomorrow as calendar days (a DST day is not
-         * cut or stretched by an hour).
+         * Spec 92 W2: how far before local midnight a guide parse starts, the largest positive guide shift
+         * among [channels] (`tvg-shift`, [GuideShift.of] with each source's header shift), 0 for none. A
+         * channel shifted +N h shows the guide's programme from N h ago, so after local midnight its
+         * current programme is yesterday's in guide time; without these hours it showed nothing. At most
+         * [GuideShift]'s 24 h. Read at parse time: a shift added later counts from the next guide refresh.
+         */
+        internal fun guideLookBackMs(channels: List<Channel>, sources: List<LiveSource>): Long {
+            val headers = GuideShift.headerShifts(sources.associate { it.id to it.playlistAttrs })
+            return channels.maxOfOrNull { GuideShift.of(it, headers[it.sourceId] ?: 0L) }?.coerceAtLeast(0L) ?: 0L
+        }
+
+        /** Where a guide parse's window starts: [dayStartMs] ([dayWindow]'s start) less [lookBackMs]. */
+        internal fun guideWindowStart(dayStartMs: Long, lookBackMs: Long): Long = dayStartMs - lookBackMs
+
+        /** The per-channel cap for a day window started [lookBackMs] early: same average slot over the extra hours. */
+        internal fun dayWindowCap(lookBackMs: Long): Int =
+            DAY_WINDOW_MAX_PROGRAMMES + ((lookBackMs + CAP_SLOT_MS - 1) / CAP_SLOT_MS).toInt()
+
+        /**
+         * Today and tomorrow (Spec 67 G1c): [local midnight today, local midnight of the day after tomorrow) in
+         * [zone], as calendar days (a DST day is not cut or stretched by an hour). A guide parse keeps this window
+         * started [guideLookBackMs] earlier (Spec 92 W2).
          */
         internal fun dayWindow(nowMs: Long, zone: ZoneId): Pair<Long, Long> =
             localDayStartMs(nowMs, zone) to localDayStartMs(nowMs, zone, 2)
@@ -878,9 +905,10 @@ class LiveSourceManager internal constructor(
          * that have not ended by [partial]'s window start, for channels [partial] holds none for and
          * after the end of a channel's cut-off list; [old]'s channel entries only for channels the
          * result holds programmes for. [partial]'s own programmes and entries win. Programmes ended
-         * before the window start never carry over, so across days of cut-short files a list cannot
-         * go all-past (the matcher's live pass reads a non-empty list as current), and a channel the
-         * guide dropped goes at the first refresh whose window starts after its last programme ends.
+         * before the window start never carry over, so across days of cut-short files a list holds at
+         * most the look-back hours of the past (the matcher's live pass skips those, [EpgSnapshot.isLive]),
+         * and a channel the guide dropped goes at the first refresh whose window starts after its last
+         * programme ends.
          */
         internal fun fillFrom(partial: EpgSnapshot, old: EpgSnapshot): EpgSnapshot {
             val current = old.programmes

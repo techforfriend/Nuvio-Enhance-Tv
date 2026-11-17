@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
@@ -45,6 +44,13 @@ class TrailerPlayerPool @Inject constructor(
 
     @Volatile
     private var cachedForceNative: Boolean = false
+
+    /**
+     * Spec 123 C7: the next start may go at 2 s buffered (card previews). Written by each loader immediately before it
+     * loads ([com.nuvio.tv.ui.components.TrailerPlayer]), so the last loader owns it; read on the playback thread.
+     */
+    @Volatile
+    var quickStart: Boolean = false
 
     init {
         Thread {
@@ -124,23 +130,17 @@ class TrailerPlayerPool @Inject constructor(
     private fun createPlayer(): ExoPlayer {
         val forceNative = cachedForceNative
         Log.d(TAG, "Creating shared trailer ExoPlayer instance with forceNativeAllocation = $forceNative")
-        val loadControlBuilder = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                /* minBufferMs = */ 30_000,
-                /* maxBufferMs = */ 120_000,
-                /* bufferForPlaybackMs = */ 5_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 10_000
-            )
-        if (forceNative) {
+        val loadControl = if (forceNative) {
             val allocator = DefaultAllocator(
                 /* trimOnReset = */ true,
                 /* individualAllocationSize = */ 65536,
                 /* initialAllocationCount = */ 0,
                 /* forceNativeAllocation = */ true
             )
-            loadControlBuilder.setAllocator(allocator)
+            TrailerLoadControl({ quickStart }, allocator)
+        } else {
+            TrailerLoadControl({ quickStart })
         }
-        val loadControl = loadControlBuilder.build()
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()

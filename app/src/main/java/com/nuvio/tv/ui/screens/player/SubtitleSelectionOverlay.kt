@@ -115,7 +115,9 @@ internal fun SubtitleSelectionOverlay(
     onAddonSubtitleSelected: (Subtitle) -> Unit,
     onDisableSubtitles: () -> Unit,
     onEvent: (PlayerEvent) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Spec 97 X6 H3: addon subtitles show no source name ("Built in" stays). */
+    hideSourceNames: Boolean = false
 ) {
     val noneLabel = stringResource(R.string.subtitle_none)
     val unknownLabel = stringResource(R.string.subtitle_language_unknown)
@@ -145,7 +147,7 @@ internal fun SubtitleSelectionOverlay(
     // honoured, alphabetical within). The drill-down rails are gone (finding #3); the
     // language ordering machinery is reused as the flat sort. Recomputes on progressive
     // addon arrival (0.8.3 sidecar pipeline) via the sessionAddonSubtitles key.
-    val flatOptions = remember(visible, sessionAddonSubtitles) {
+    val flatOptions = remember(visible, sessionAddonSubtitles, hideSourceNames) {
         val languageItems = buildSubtitleLanguageRailItems(
             internalTracks = sessionInternalTracks,
             addonSubtitles = sessionAddonSubtitles,
@@ -170,7 +172,8 @@ internal fun SubtitleSelectionOverlay(
                     forcedLabel = forcedLabel,
                     defaultLabel = defaultLabel,
                     sdhLabel = sdhLabel,
-                    playingFileName = playingFileName
+                    playingFileName = playingFileName,
+                    hideSourceNames = hideSourceNames
                 ).map { item ->
                     // Flat list needs the language on every row (the drill-down implied
                     // it); keep the track's own name only when it adds information.
@@ -668,7 +671,8 @@ private fun buildSubtitleOptionRailItems(
     forcedLabel: String,
     defaultLabel: String,
     sdhLabel: String,
-    playingFileName: String?
+    playingFileName: String?,
+    hideSourceNames: Boolean
 ): List<SubtitleOptionRailItem> {
     val addonOrderMap = installedAddonOrder.withIndex().associate { (index, name) -> name to index }
     val internalItems = internalTracks
@@ -705,7 +709,7 @@ private fun buildSubtitleOptionRailItems(
                 id = optionId,
                 kind = SubtitleOptionKind.ADDON,
                 title = Subtitle.languageCodeToName(PlayerSubtitleUtils.normalizeLanguageCode(subtitle.lang)),
-                sourceLabel = subtitle.addonName,
+                sourceLabel = if (hideSourceNames) "" else subtitle.addonName,
                 meta = subtitle.releaseName,
                 addonSubtitle = subtitle,
                 matchesFile = subtitleMatchesFile(subtitle.releaseName, subtitle.releaseGroup, playingFileName)

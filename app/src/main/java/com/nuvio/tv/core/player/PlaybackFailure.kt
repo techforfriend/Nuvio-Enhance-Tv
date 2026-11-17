@@ -71,6 +71,27 @@ data class ExhaustedFailover(val endedBy: PlaybackFailure, val tried: List<Tried
 fun exhaustedFailoverOf(failure: PlaybackFailure, tried: List<TriedSource>): ExhaustedFailover? =
     if (tried.isEmpty()) null else ExhaustedFailover(failure, tried)
 
+/**
+ * Spec 75 S5: the failover gave up at [failure] after leaving [tried]; the box counts them (none = a
+ * plain box) and no failover notice is left to toast or draw under it.
+ */
+internal fun PlayerUiState.withFailoverEnded(failure: PlaybackFailure, tried: List<TriedSource>): PlayerUiState =
+    copy(exhaustedFailover = exhaustedFailoverOf(failure, tried), failoverNotice = null)
+
+/**
+ * The startup watchdog's box: [fire] shown unless another error holds the slot (that one keeps its
+ * own handling). A source-facing fire ([PlayerStartupWatchdogPolicy.failsOver]) shown here is one the
+ * failover could not take past this source, so it ends the chain as the failover's own give-up does
+ * and the box counts the sources it left, [tried] (Spec 113 D1). Nothing is marked dead here: a late
+ * first frame may still retract the box.
+ */
+internal fun PlayerUiState.withStartupWatchdogBox(fire: PlaybackFailure, tried: List<TriedSource>): PlayerUiState {
+    if (error != null) return this
+    val shown = copy(error = fire, showLoadingOverlay = false)
+    val sourceFacing = fire.facts.watchdogFire?.let(PlayerStartupWatchdogPolicy::failsOver) == true
+    return if (sourceFacing) shown.withFailoverEnded(fire, tried) else shown
+}
+
 /** The sources tried before [failure] when it is the one the failover gave up at, else none. */
 fun ExhaustedFailover?.triedFor(failure: PlaybackFailure): List<TriedSource> =
     this?.takeIf { it.endedBy == failure }?.tried.orEmpty()

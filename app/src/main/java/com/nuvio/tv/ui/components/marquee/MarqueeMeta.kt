@@ -29,8 +29,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
@@ -126,8 +129,14 @@ internal fun formatRatingScore(rating: Number?): String? =
 /**
  * One meta line: [parts] then the IMDb mark + [imdb], `meta` style in `onImage2`, separated by
  * 3 dp dots at `marquee.metaGap`. Without an IMDb score a TMDB one ([tmdb]) stands in under its
- * own mark (26/B2: a TMDB vote average is never labelled IMDb). [truncateFirst] lets the first
- * part ellipsize (an episode label, the only part long enough to need it).
+ * own mark (26/B2: a TMDB vote average is never labelled IMDb).
+ *
+ * The score is never cut (Spec 118 R2): on a line too wide for its space, [shrinkPart] (the
+ * genres, the long nice-to-have part) gives way first, then the first part when [truncateFirst]
+ * (an episode label), then the other parts from the end ([metaShrinkOrder], [fitMetaParts]).
+ *
+ * [shadow] (Spec 123 D5) lets the line stand on a bright picture with no gradient behind it: every
+ * text carries it and each dot gets a dark disc under it.
  */
 @Composable
 internal fun MarqueeMetaRow(
@@ -135,48 +144,124 @@ internal fun MarqueeMetaRow(
     imdb: String?,
     modifier: Modifier = Modifier,
     truncateFirst: Boolean = false,
-    tmdb: String? = null
+    tmdb: String? = null,
+    shrinkPart: String? = null,
+    shadow: Shadow? = null
 ) {
     val score = imdb ?: tmdb
     if (parts.isEmpty() && score == null) return
     val marquee = NuvioTheme.marquee
-    Row(
+    val metaStyle = NuvioTheme.textStyles.meta.let { if (shadow == null) it else it.copy(shadow = shadow) }
+    val order = remember(parts, truncateFirst, shrinkPart) { metaShrinkOrder(parts, truncateFirst, shrinkPart) }
+    Layout(
         modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(marquee.metaGap)
-    ) {
-        parts.forEachIndexed { index, text ->
-            if (index > 0) MarqueeMetaDot()
-            Text(
-                text = text,
-                style = NuvioTheme.textStyles.meta,
-                color = marquee.onImage2,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = if (index == 0 && truncateFirst) Modifier.weight(1f, fill = false) else Modifier
-            )
-        }
-        if (score != null) {
-            if (parts.isNotEmpty()) MarqueeMetaDot()
-            if (imdb != null) {
-                ImdbRatingSourceLabel()
-            } else {
+        content = {
+            parts.forEach { text ->
                 Text(
-                    text = TMDB_MARK,
-                    style = NuvioTheme.textStyles.meta,
-                    fontWeight = FontWeight.Bold,
-                    color = NuvioPrimitives.tmdb,
-                    maxLines = 1
+                    text = text,
+                    style = metaStyle,
+                    color = marquee.onImage2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text = score,
-                style = NuvioTheme.textStyles.meta,
-                color = marquee.onImage2,
-                maxLines = 1
-            )
+            if (score != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(marquee.metaGap)
+                ) {
+                    if (imdb != null) {
+                        ImdbRatingSourceLabel(style = metaStyle)
+                    } else {
+                        Text(
+                            text = TMDB_MARK,
+                            style = metaStyle,
+                            fontWeight = FontWeight.Bold,
+                            color = NuvioPrimitives.tmdb,
+                            maxLines = 1
+                        )
+                    }
+                    Text(text = score, style = metaStyle, color = marquee.onImage2, maxLines = 1)
+                }
+            }
+            // One dot per gap between shown items: at most parts.size of them.
+            repeat(parts.size) { MarqueeMetaDot(shadow) }
+        }
+    ) { measurables, constraints ->
+        val gap = marquee.metaGap.roundToPx()
+        val scoreItem = if (score != null) measurables[parts.size] else null
+        val dots = measurables.subList(if (score != null) parts.size + 1 else parts.size, measurables.size)
+        val dotSlot = 2 * gap + META_DOT_SIZE.roundToPx()
+        val fixed = scoreItem?.maxIntrinsicWidth(Constraints.Infinity) ?: 0
+        val natural = IntArray(parts.size) { measurables[it].maxIntrinsicWidth(Constraints.Infinity) }
+        val widths = fitMetaParts(
+            natural, fixed, scoreItem != null, constraints.maxWidth, dotSlot, META_MIN_PART.roundToPx(), order
+        )
+        val shown = buildList {
+            parts.indices.forEach { i ->
+                if (widths[i] > 0) add(measurables[i].measure(Constraints(maxWidth = widths[i])))
+            }
+            scoreItem?.let { add(it.measure(Constraints(maxWidth = constraints.maxWidth))) }
+        }
+        val dotPlaceables = dots.take((shown.size - 1).coerceAtLeast(0)).map { it.measure(Constraints()) }
+        val height = (shown + dotPlaceables).maxOfOrNull { it.height } ?: 0
+        val width = (shown.sumOf { it.width } + dotPlaceables.size * dotSlot)
+            .coerceIn(constraints.minWidth, constraints.maxWidth)
+        // Centred and mirrored for RTL exactly as the Row this replaced (CenterVertically, placeRelative).
+        val center = { h: Int -> Alignment.CenterVertically.align(h, height) }
+        layout(width, height) {
+            var x = 0
+            shown.forEachIndexed { index, placeable ->
+                if (index > 0) {
+                    val dot = dotPlaceables[index - 1]
+                    dot.placeRelative(x + gap, center(dot.height))
+                    x += dotSlot
+                }
+                placeable.placeRelative(x, center(placeable.height))
+                x += placeable.width
+            }
         }
     }
+}
+
+/**
+ * The order [MarqueeMetaRow]'s parts give way in: [shrinkPart] (by value), then part 0 when
+ * [truncateFirst], then the rest from the end.
+ */
+internal fun metaShrinkOrder(parts: List<String>, truncateFirst: Boolean, shrinkPart: String?): List<Int> =
+    buildList {
+        shrinkPart?.let { parts.indexOf(it) }?.takeIf { it >= 0 }?.let(::add)
+        if (truncateFirst && parts.isNotEmpty()) add(0)
+        addAll(parts.indices.reversed())
+    }.distinct()
+
+/**
+ * Widths for a meta line's parts ([natural] widths; 0 = hidden) so the line, plus a [fixed]-wide
+ * score when [hasScore], fits [available]. Each gap between two shown items costs [dotSlot]. Parts
+ * give way in [order]: one is cut to what is left (it ellipsizes), or hidden with its dot when that
+ * would leave it under [minPart]. The score is never cut.
+ */
+internal fun fitMetaParts(
+    natural: IntArray,
+    fixed: Int,
+    hasScore: Boolean,
+    available: Int,
+    dotSlot: Int,
+    minPart: Int,
+    order: List<Int>
+): IntArray {
+    val widths = natural.copyOf()
+    fun total(): Int {
+        val items = widths.count { it > 0 } + if (hasScore) 1 else 0
+        return widths.sum() + fixed + (items - 1).coerceAtLeast(0) * dotSlot
+    }
+    for (i in order) {
+        val over = total() - available
+        if (over <= 0) break
+        val cut = widths[i] - over
+        widths[i] = if (cut >= minPart) cut else 0
+    }
+    return widths
 }
 
 /**
@@ -222,16 +307,35 @@ internal fun MarqueeTechBadge(
 
 private const val TICK = "\u2713"
 
-/** 3 dp separator dot, white .50. */
+private val META_DOT_SIZE = 3.dp
+
+// A part cut narrower than this is dropped with its dot rather than shown as a stub ("Sc…").
+private val META_MIN_PART = 40.dp
+
+/** 3 dp separator dot, white .50; with [shadow], a dark disc under it (the meta text's shadow, D5). */
 @Composable
-internal fun MarqueeMetaDot() {
+internal fun MarqueeMetaDot(shadow: Shadow? = null) {
     Box(
         modifier = Modifier
-            .size(3.dp)
+            .size(META_DOT_SIZE)
+            .then(
+                if (shadow == null) Modifier
+                else Modifier.drawBehind {
+                    // Drawn outside the 3 dp box (no clip before it): reaching half the blur past the dot, offset as the text's.
+                    drawCircle(
+                        color = shadow.color.copy(alpha = shadow.color.alpha * DOT_SHADOW_SHARE),
+                        radius = size.minDimension / 2f + shadow.blurRadius / 2f,
+                        center = center + shadow.offset
+                    )
+                }
+            )
             .clip(CircleShape)
             .background(NuvioTheme.marquee.onImage3)
     )
 }
+
+// The dot's shadow disc is solid, not blurred: half the text shadow's alpha reads as the same weight.
+private const val DOT_SHADOW_SHARE = 0.5f
 
 /** [width] x `progressHeight` bar (track white .22, fill [accent]) + an optional label after it. */
 @Composable

@@ -49,6 +49,7 @@ import com.nuvio.tv.ui.components.marquee.FACT_SEPARATOR
 import com.nuvio.tv.ui.components.marquee.MarqueeMessage
 import com.nuvio.tv.ui.components.marquee.MarqueeTab
 import com.nuvio.tv.ui.components.posteroptions.PosterOptionsHost
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.screens.home.HeroBackdropState
 import com.nuvio.tv.ui.screens.home.HomeScreenFocusState
 import com.nuvio.tv.ui.screens.home.LocalFastScrollActive
@@ -140,18 +141,21 @@ fun FolderDetailScreen(
         )
         posterOptionsHost {}
     } else {
-        FolderTabsContent(
-            uiState = uiState,
-            onSelectTab = viewModel::selectTab,
-            onLoadMore = viewModel::loadMoreItems,
-            onRetryTab = viewModel::retrySource,
-            onAddTmdbKey = onAddTmdbKey,
-            onBack = onBack,
-            onPrefetch = viewModel::preloadAdjacentItem,
-            onLongPress = { item, addonBaseUrl -> viewModel.posterOptions.show(item, addonBaseUrl) },
-            onNavigateToDetail = onNavigateToDetail,
-            posterOptionsHost = posterOptionsHost
-        )
+        // Spec 96 PD2: the Tabs grid opts into the trailer preview (In the card mode decides in the host).
+        CompositionLocalProvider(LocalTrailerPreviewEnabled provides true) {
+            FolderTabsContent(
+                uiState = uiState,
+                onSelectTab = viewModel::selectTab,
+                onLoadMore = viewModel::loadMoreItems,
+                onRetryTab = viewModel::retrySource,
+                onAddTmdbKey = onAddTmdbKey,
+                onBack = onBack,
+                onPrefetch = viewModel::preloadAdjacentItem,
+                onLongPress = { item, addonBaseUrl -> viewModel.posterOptions.show(item, addonBaseUrl) },
+                onNavigateToDetail = onNavigateToDetail,
+                posterOptionsHost = posterOptionsHost
+            )
+        }
     }
 }
 

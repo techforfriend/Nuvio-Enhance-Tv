@@ -13,6 +13,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 internal const val SUBTITLE_URI_MARKER = "nuvio_type"
 private const val SUBTITLE_URI_MARKER_PAIR = "$SUBTITLE_URI_MARKER=subtitle"
 
+/** [uri] carries the marker pair [toSubtitleConfiguration] appends: a sidecar subtitle, or an addon URL that looks like one. */
+internal fun hasSubtitleUriMarker(uri: String): Boolean = uri.endsWith(SUBTITLE_URI_MARKER_PAIR)
+
 /**
  * The URL to fetch a sidecar subtitle with no stream credentials, or null when [uri] is not one
  * of this media item's [subtitleUris] or the credentials may go to it
@@ -72,7 +75,7 @@ internal class SubtitleCredentialScopeDataSourceFactory(
 
         override fun open(dataSpec: DataSpec): Long {
             val uri = dataSpec.uri.toString()
-            if (uri.endsWith(SUBTITLE_URI_MARKER_PAIR) && uri !in subtitleUris) {
+            if (hasSubtitleUriMarker(uri) && uri !in subtitleUris) {
                 // Routing keys on exact URI equality with the SubtitleConfiguration; a marked
                 // URI outside the set means the engine rewrote it and routing fails open.
                 Log.w("SubtitleCredScope", "marked subtitle URI not in the item's set; credential scope bypassed")

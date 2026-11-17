@@ -104,8 +104,8 @@ android {
         applicationId = "com.nuvio.tv.ak"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1423
-        versionName = "1.1.1"
+        versionCode = 1435
+        versionName = "1.2.0"
         resValue("string", "app_name", "Nuvio Enhanced")
         // JUnit4 instrumented tests (Spec 55 C5: StripListRowFocusTest); AGP sets no runner by default.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -371,6 +371,8 @@ dependencies {
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
+    // Spec 97 X5: Private DNS (DNS over HTTPS) for app clients.
+    implementation(libs.okhttp.dnsoverhttps)
     // Pin the RESOLVED OkHttp runtime to the 5.3.2 that ke5–ke21 shipped and validated
     // (docs/stack-notes.md: "pin strictly, never drift"). The removed CloudStream library
     // used to raise it transitively; without this the runtime silently fell back to 4.12.0
@@ -378,7 +380,7 @@ dependencies {
     // on BOTH compile and runtime classpaths; only logging-interceptor stays the 4.12.0 artifact
     // (the catalog `okhttp` version now governs logging-interceptor alone).
     constraints {
-        implementation("com.squareup.okhttp3:okhttp") { version { strictly("5.3.2") } }
+        implementation("com.squareup.okhttp3:okhttp") { version { strictly(libs.versions.okhttpRuntime.get()) } }
     }
 
     // Coroutines
@@ -439,7 +441,11 @@ dependencies {
     }
 
     // libass-android for ASS/SSA subtitle support (from Maven Central)
-    implementation("io.github.peerless2012:ass-media:0.4.0")
+    val assAndroidVersion = "0.4.0"
+    implementation("io.github.peerless2012:ass-media:$assAndroidVersion")
+    // ass-media's own runtime dependency, declared so the app can add libass library fonts
+    // directly (Spec 98 S1, PlayerLibassCompat). One version for both.
+    implementation("io.github.peerless2012:ass-kt:$assAndroidVersion")
     // Local nextlib-mediainfo fork (static FFmpeg; no libav*.so in final AAR)
     implementation(files("libs/nextlib-mediainfo-local.aar"))
     implementation("io.github.abdallahmehiz:mpv-android-lib:0.1.12")

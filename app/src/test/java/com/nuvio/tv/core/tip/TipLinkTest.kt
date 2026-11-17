@@ -11,12 +11,19 @@ class TipLinkTest {
 
     private val stripe = "https://buy.stripe.com/7sY4gA2Kq9fW0aE5kk"
     private val sponsors = "https://github.com/sponsors/Arshad-Kamal"
+    private val kofi = "https://ko-fi.com/arshadkamal"
 
     @Test
     fun `a Stripe Payment Link and a GitHub Sponsors page are valid`() {
         assertTrue(validTipLink(stripe))
         assertTrue(validTipLink("https://buy.stripe.com/test_00g5kk"))
         assertTrue(validTipLink(sponsors))
+    }
+
+    @Test
+    fun `the built-in link is Arshad's Ko-fi page, and it is valid`() {
+        assertEquals(kofi, BUILT_IN_TIP_LINK)
+        assertTrue(validTipLink(kofi))
     }
 
     @Test
@@ -38,6 +45,16 @@ class TipLinkTest {
             "https://github.com/Arshad-Kamal",              // github.com, not a sponsors page
             "https://github.com/sponsors/a/b",
             "https://github.com/sponsors/" + "a".repeat(40),
+            "http://ko-fi.com/arshadkamal",                 // not https
+            "https://ko-fi.com/arshadkamal?ref=tv",         // query
+            "https://ko-fi.com/arshadkamal/shop",           // a deeper path
+            "https://ko-fi.com/arshadkamal/",               // trailing slash
+            "https://ko-fi.com/arshad%2Fkamal",             // encoded characters
+            "https://KO-FI.com/arshadkamal",                // not canonical
+            "https://ko-fi.com/",                           // no page
+            "https://www.ko-fi.com/arshadkamal",            // another host
+            "https://ko-fi.com.evil.example/arshadkamal",   // look-alike host
+            "https://ko-fi.com/" + "a".repeat(65),
             "https://buy.stripe.com/" + "a".repeat(65),
             "javascript:alert(1)",
             ""
@@ -94,6 +111,24 @@ class TipLinkTest {
     fun `only a GitHub Sponsors link gets the Sponsors terms line`() {
         assertTrue(isSponsorsLink(sponsors))
         assertFalse(isSponsorsLink(stripe))
+        assertFalse(isSponsorsLink(kofi))
+    }
+
+    @Test
+    fun `only a Ko-fi link gets the Ko-fi card, which has no ladder`() {
+        assertTrue(isKofiLink(kofi))
+        assertFalse(isKofiLink(stripe))
+        assertFalse(isKofiLink(sponsors))
+        assertNull(tipCardLadder(kofi, "IN"))
+        assertEquals(tipLadder("IN"), tipCardLadder(stripe, "IN"))
+        assertEquals(tipLadder("US"), tipCardLadder(sponsors, "US"))
+    }
+
+    @Test
+    fun `a file may carry a Ko-fi link, alone or beside other providers`() {
+        assertEquals(TipLinks(kofi), parseTipFile("""{"link":"$kofi"}"""))
+        assertEquals(TipLinks(kofi, mapOf("IN" to stripe)), parseTipFile("""{"link":"$kofi","links":{"IN":"$stripe"}}"""))
+        assertNull(parseTipFile("""{"link":"$kofi?ref=tv"}"""))
     }
 
     @Test

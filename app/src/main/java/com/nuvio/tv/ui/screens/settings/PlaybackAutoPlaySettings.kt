@@ -64,9 +64,9 @@ internal fun dimmedSubtitle(@StringRes reason: Int?, subtitle: String?): String?
     reason?.let { stringResource(it) } ?: subtitle
 
 /**
- * Player & streams chip (stages playback-streams / -advanced): Auto-play core rows, the rest in the
- * Advanced options group. Rows that depend on another setting dim with the reason
- * ([playbackRowDimReason]).
+ * Player & streams chip (stages playback-streams / -advanced): the Sources switch (Spec 97 X6), the
+ * Auto-play core rows, the rest in the Advanced options group. Rows that depend on another setting
+ * dim with the reason ([playbackRowDimReason]).
  */
 internal fun LazyListScope.streamsItems(
     settings: PlayerSettings,
@@ -84,10 +84,25 @@ internal fun LazyListScope.streamsItems(
     onSetThresholdPercent: (Float) -> Unit,
     onSetThresholdMinutes: (Float) -> Unit,
     onSetShowLoadingStatus: (Boolean) -> Unit,
+    hideSourceNames: Boolean,
+    onSetHideSourceNames: (Boolean) -> Unit,
     groupOpen: Boolean,
     onToggleGroup: () -> Unit,
     entryFocus: FocusRequester?
 ) {
+    // Spec 97 X6 (sandbox s097-x6-hidden-names stage 1): first on the tab, a device setting.
+    item(key = "streams_sources_section") {
+        SettingsSectionLabel(text = stringResource(R.string.playback_section_sources))
+    }
+    item(key = "streams_hide_source_names") {
+        SettingsSwitchRow(
+            title = stringResource(R.string.playback_hide_source_names),
+            subtitle = stringResource(R.string.playback_hide_source_names_sub),
+            checked = hideSourceNames,
+            onCheckedChange = onSetHideSourceNames,
+            modifier = Modifier.optionalFocusRequester(entryFocus)
+        )
+    }
     item(key = "streams_autoplay_section") {
         SettingsSectionLabel(text = stringResource(R.string.playback_section_autoplay))
     }
@@ -95,8 +110,7 @@ internal fun LazyListScope.streamsItems(
         SettingsValueRow(
             title = stringResource(R.string.playback_auto_stream_selection),
             value = streamAutoPlayModeLabel(settings.streamAutoPlayMode),
-            onClick = { onOpenPicker(StreamsPicker.MODE) },
-            modifier = Modifier.optionalFocusRequester(entryFocus)
+            onClick = { onOpenPicker(StreamsPicker.MODE) }
         )
     }
     item(key = "streams_timeout") {

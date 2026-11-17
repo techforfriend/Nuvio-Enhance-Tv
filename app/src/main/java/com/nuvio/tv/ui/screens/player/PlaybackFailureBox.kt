@@ -76,6 +76,7 @@ private const val DETAILS_RULE_ALPHA = 0.18f
  * under the step line) always end it. Every button glass, only the focused one white. Back still
  * leaves (handleBackPress). [tried] = the sources the failover left before this one (S5, stage 6):
  * the eyebrow counts every source tried and a line under the body counts the earlier ones by reason.
+ * [hideSourceNames]: Spec 97 X6, no addon or service name ([PlaybackFailureCopy.of]).
  */
 @Composable
 internal fun PlaybackFailureBox(
@@ -85,11 +86,12 @@ internal fun PlaybackFailureBox(
     onGoBack: () -> Unit,
     backdropUrl: String?,
     modifier: Modifier = Modifier,
-    tried: List<TriedSource> = emptyList()
+    tried: List<TriedSource> = emptyList(),
+    hideSourceNames: Boolean = false
 ) {
     val context = LocalContext.current
-    val copy = remember(failure, tried, context) {
-        PlaybackFailureCopy.of(failure, contextFailureStrings(context), tried)
+    val copy = remember(failure, tried, context, hideSourceNames) {
+        PlaybackFailureCopy.of(failure, contextFailureStrings(context), tried, hideSourceNames)
     }
     var showDetails by remember(failure) { mutableStateOf(false) }
     val actions = options.actionsFor(failure.cause)

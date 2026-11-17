@@ -11,6 +11,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 internal object XtreamUrls {
     private val NUMERIC_ID = Regex("""\d+""")
     private val NUMERIC_FILE = Regex("""\d+(\.[A-Za-z0-9]+)?""")
+    private val LIVE_FILE = Regex("""\d+(\.(ts|m3u8))?""", RegexOption.IGNORE_CASE)
 
     /**
      * A movie or series-episode item of a full `m3u_plus` list (D1: not a channel). Shape only: a
@@ -30,16 +31,25 @@ internal object XtreamUrls {
      * a non-Xtream adaptive stream of this exact shape that its path tokens do not type fails
      * as progressive (accepted in D3).
      */
-    fun isBareLive(url: String): Boolean {
-        val http = url.toHttpUrlOrNull() ?: return false
-        if (http.encodedQuery != null || http.encodedFragment != null) return false
+    fun isBareLive(url: String): Boolean = liveId(url)?.let(NUMERIC_ID::matches) == true
+
+    /**
+     * A live stream, bare or with its `.ts`/`.m3u8` output extension (Spec 90 L5: a 401/403 there is
+     * the panel's connection limit or a lapsed account, not a dead stream). Shape only, as [isBareLive].
+     */
+    fun isLive(url: String): Boolean = liveId(url)?.let(LIVE_FILE::matches) == true
+
+    /** The id segment of `host/[live/]user/pass/<id>` with no query or fragment, else null. */
+    private fun liveId(url: String): String? {
+        val http = url.toHttpUrlOrNull() ?: return null
+        if (http.encodedQuery != null || http.encodedFragment != null) return null
         val segments = http.pathSegments
         val from = when (segments.size) {
             3 -> 0
-            4 -> if (segments[0] == "live") 1 else return false
-            else -> return false
+            4 -> if (segments[0] == "live") 1 else return null
+            else -> return null
         }
-        return hasAccount(segments, from) && NUMERIC_ID.matches(segments[from + 2])
+        return segments[from + 2].takeIf { hasAccount(segments, from) }
     }
 
     /** `user/pass` at [from]: both present. */

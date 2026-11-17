@@ -150,6 +150,8 @@ fun PlayerScreen(
     onOpenNetworkSettings: (() -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    // Spec 97 X6: hide addon and service names on this TV's player surfaces.
+    val hideSourceNames by viewModel.hideSourceNames.collectAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -186,11 +188,19 @@ fun PlayerScreen(
     var networkChipText: String? = null
     uiState.networkTestResult?.let { result ->
         val connections = pluralStringResource(R.plurals.network_test_connections, result.connections, result.connections)
-        networkTestNotice = stringResource(R.string.network_test_notice, result.service, connections)
+        networkTestNotice = if (hideSourceNames) {
+            stringResource(R.string.network_test_notice_hidden, connections)
+        } else {
+            stringResource(R.string.network_test_notice, result.service, connections)
+        }
         // Hidden on mpv: Buffer & network is an ExoPlayer chip, and the mpv view composed on the
         // way back would load the stream afresh.
         if (onOpenNetworkSettings != null && uiState.internalPlayerEngine != InternalPlayerEngine.MVP_PLAYER) {
-            networkChipText = stringResource(R.string.pause_network_chip, result.service, connections)
+            networkChipText = if (hideSourceNames) {
+                stringResource(R.string.pause_network_chip_hidden, connections)
+            } else {
+                stringResource(R.string.pause_network_chip, result.service, connections)
+            }
         }
     }
     val nextEpisodeFocusRequester = remember { FocusRequester() }
@@ -523,7 +533,9 @@ fun PlayerScreen(
             // mode stays; the restore runs when the player itself is left.
             if (activity != null && !leavingForSettings) {
                 if (currentFrameRateMatchingMode == com.nuvio.tv.data.local.FrameRateMatchingMode.START_STOP) {
-                    com.nuvio.tv.core.player.FrameRateUtils.restoreOriginalDisplayMode(activity)
+                    // Spec 93 P1: deferred so the HDR exit (player released by the exit path's
+                    // stopAndRelease) settles before the refresh change.
+                    com.nuvio.tv.core.player.FrameRateUtils.restoreOriginalDisplayModeAfterExit(activity)
                 } else {
                     com.nuvio.tv.core.player.FrameRateUtils.clearOriginalDisplayMode()
                 }
@@ -1079,7 +1091,10 @@ fun PlayerScreen(
             imdb = titleImdb,
             tmdb = titleTmdb,
             eyebrowStatus = stringResource(R.string.loading_eyebrow_starting),
-            headline = networkTestHold?.let { stringResource(R.string.network_test_hold_checking, it.service) },
+            headline = networkTestHold?.let {
+                if (hideSourceNames) stringResource(R.string.network_test_hold_checking_hidden)
+                else stringResource(R.string.network_test_hold_checking, it.service)
+            },
             progressLabel = networkTestHold?.let {
                 stringResource(R.string.network_test_hold_step, networkTestDisplayStep(it.step), NETWORK_TEST_STEPS)
             },
@@ -1090,7 +1105,8 @@ fun PlayerScreen(
             } else {
                 uiState.loadingMessage.takeIf { uiState.showPlayerLoadingStatus || uiState.isTorrentStream }
             },
-            sourceLine = run {
+            // Spec 97 X6 H3: the addon · service line is left out while names are hidden.
+            sourceLine = if (hideSourceNames) null else run {
                 val provider = resolveStreamProvider(
                     streamName = uiState.currentStreamName,
                     streamDescription = null,
@@ -1276,7 +1292,8 @@ fun PlayerScreen(
                 onGoBack = exitPlayerFromError,
                 backdropUrl = uiState.backdrop,
                 modifier = Modifier.zIndex(3f),
-                tried = uiState.exhaustedFailover.triedFor(failure)
+                tried = uiState.exhaustedFailover.triedFor(failure),
+                hideSourceNames = hideSourceNames
             )
         }
 
@@ -1288,7 +1305,7 @@ fun PlayerScreen(
                 title = uiState.contentName?.takeIf { isEpisode } ?: uiState.title,
                 season = uiState.currentSeason,
                 episode = uiState.currentEpisode,
-                sourceLine = uiState.currentStreamAddonName?.takeIf { it.isNotBlank() },
+                sourceLine = uiState.currentStreamAddonName?.takeIf { it.isNotBlank() && !hideSourceNames },
                 filename = viewModel.currentFilename,
                 accent = osdAccent,
                 onPickAnother = { viewModel.onEvent(PlayerEvent.OnRuntimeMismatchChoice(playAnyway = false)) },
@@ -1412,6 +1429,7 @@ fun PlayerScreen(
             onContinueStillWatching = { viewModel.onEvent(PlayerEvent.OnStillWatchingContinue) },
             onDismissStillWatching = { viewModel.onEvent(PlayerEvent.OnDismissStillWatchingPrompt) },
             modifier = postPlayCardModifier,
+            hideSourceNames = hideSourceNames,
         )
 
         // Parental guide overlay (shows when video first starts playing)
@@ -1523,7 +1541,8 @@ fun PlayerScreen(
         }
 
         AnimatedVisibility(
-            visible = uiState.showStreamSourceIndicator,
+            // Spec 97 X6: "Source: <stream label>" names the addon, so it stays hidden.
+            visible = uiState.showStreamSourceIndicator && !hideSourceNames,
             enter = fadeIn(animationSpec = tween(NuvioMotion.tokens.durations.fast)),
             exit = fadeOut(animationSpec = tween(NuvioMotion.tokens.durations.fast)),
             modifier = Modifier
@@ -1677,6 +1696,7 @@ fun PlayerScreen(
                         },
                         contextParts = listOfNotNull(episodeCode, uiState.episodeStreamsTitle?.takeIf { it.isNotBlank() }),
                         missingUpstreams = uiState.episodeMissingUpstreams,
+                        hideSourceNames = hideSourceNames,
                         modifier = panelModifier
                     )
                 } else {
@@ -1763,6 +1783,7 @@ fun PlayerScreen(
                     },
                     failureMarkFor = sourceMarkFor,
                     missingUpstreams = uiState.sourceMissingUpstreams,
+                    hideSourceNames = hideSourceNames,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .padding(NuvioTheme.marquee.stream.panelInset)
@@ -1822,7 +1843,8 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2.6f)
-                .then(controlsDim)
+                .then(controlsDim),
+            hideSourceNames = hideSourceNames
         )
 
         PlayerOverlayScaffold(

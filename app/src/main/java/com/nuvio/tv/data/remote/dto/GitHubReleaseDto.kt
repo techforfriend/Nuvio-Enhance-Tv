@@ -8,7 +8,7 @@ import kotlinx.serialization.Serializable
 data class GitHubReleaseDto(
     @SerialName("name") val name: String? = null,
     @SerialName("tag_name") val tagName: String? = null,
-    /** The list endpoint includes pre-releases (and drafts, for a token with push access); the changelog skips both. */
+    /** The list endpoint includes pre-releases (and drafts, for a token with push access); drafts are always skipped, pre-releases unless Get test releases is on (Spec 89). */
     @SerialName("prerelease") val prerelease: Boolean = false,
     @SerialName("draft") val draft: Boolean = false,
     @SerialName("body") val body: String? = null,

@@ -83,7 +83,9 @@ data class UpdateState(
     val lastCheckFailed: Boolean = false,
     val lastOkCheckMs: Long = 0L,
     val available: KnownRelease? = null,
-    val download: DownloadState = DownloadState.Idle
+    val download: DownloadState = DownloadState.Idle,
+    /** Spec 89: Get test releases. */
+    val testReleases: Boolean = false
 )
 
 /**
@@ -94,7 +96,8 @@ val UpdateState.noticeShown: Boolean
     get() = supported && autoCheck && available != null
 
 /**
- * The update check (Spec 52 P6/P7): the public repo's latest release, at most once a day at app
+ * The update check (Spec 52 P6/P7): the public repo's latest release (with Get test releases on,
+ * its newest release or pre-release: Spec 89 D5), at most once a day at app
  * start while Check automatically is on, or on demand. One check at a time; a second request
  * joins the running one. Runs on its own scope, so leaving About never cuts a check short.
  *
@@ -215,6 +218,33 @@ class UpdateController internal constructor(
     }
 
     /**
+     * Spec 89: Get test releases. False when the store could not be written: the toggle keeps its
+     * value and no check runs. Otherwise a check runs at once (D1). A check already in flight read the
+     * old setting, so the new check starts only after it ends; its answer is not taken as the new one.
+     * A download already past its fresh check is not stopped: it runs only while the update panel (a
+     * dialog over About) or the update's changelog page it opens is on screen, so the toggle cannot be
+     * pressed meanwhile (Spec 80 D14 stops it otherwise; checked in S2's red team 63e98d91).
+     */
+    suspend fun setTestReleases(enabled: Boolean): Boolean {
+        if (!feed.supported) return false
+        loadedRecord()
+        try {
+            write { setTestReleases(enabled) }
+        } catch (_: IOException) {
+            return false
+        }
+        val inFlight = synchronized(lock) { running?.takeIf { it.isActive } }
+        scope.launch {
+            inFlight?.join()
+            awaitCheck()
+        }
+        return true
+    }
+
+    /** Spec 89: pre-releases join the changelog and the What's new lookup: a build with the check, setting on. */
+    suspend fun testReleasesOn(): Boolean = feed.supported && loadedRecord().testReleases
+
+    /**
      * Runs a check, or joins the one running; null on a build without the check. A caller that
      * needs this answer's release (S7: a fresh URL and digest before a download) reads it from the
      * returned [CheckOutcome.Answered], not from [state].
@@ -332,7 +362,7 @@ class UpdateController internal constructor(
 
     private suspend fun downloadAndHandOver(): DownloadState {
         val offer = when (val outcome = awaitCheck()) {
-            is CheckOutcome.Answered -> outcome.offer?.takeIf { it.isNewer() } ?: return DownloadState.Idle
+            is CheckOutcome.Answered -> outcome.offer?.takeIf { it.offered(snapshot.value.record) } ?: return DownloadState.Idle
             CheckOutcome.NoRelease -> return DownloadState.Idle
             CheckOutcome.Failed, CheckOutcome.Unreached, null -> return DownloadState.Failed
         }
@@ -389,6 +419,12 @@ class UpdateController internal constructor(
 
     private fun KnownRelease.isNewer(): Boolean = versionCode > feed.installedCode
 
+    /**
+     * Newer, and a pre-release only while [record]'s Get test releases is on: an offer a check learned
+     * before the setting went off is never shown or installed (Spec 89 D5).
+     */
+    private fun KnownRelease.offered(record: UpdateRecord): Boolean = isNewer() && (!prerelease || record.testReleases)
+
     private suspend fun check(): CheckOutcome {
         loadedRecord()
         snapshot.update { it.copy(checking = true) }
@@ -417,9 +453,16 @@ class UpdateController internal constructor(
         }
     }
 
+    /** Spec 89 D5: Get test releases on reads the release list (pre-releases included), off the latest release. */
     private suspend fun fetch(): CheckOutcome = try {
-        val response = api.latestRelease(feed.owner, feed.repo)
-        checkOutcome(response.code(), response.body(), feed.supportedAbis)
+        if (snapshot.value.record.testReleases) {
+            // The changelog's page size: a test release is among the newest, and it is the same one request.
+            val response = api.releases(feed.owner, feed.repo, CHANGELOG_SIZE)
+            listCheckOutcome(response.code(), response.body(), feed.supportedAbis)
+        } else {
+            val response = api.latestRelease(feed.owner, feed.repo)
+            checkOutcome(response.code(), response.body(), feed.supportedAbis)
+        }
     } catch (e: CancellationException) {
         throw e
     } catch (_: IOException) {
@@ -452,8 +495,9 @@ class UpdateController internal constructor(
         checking = snapshot.checking,
         lastCheckFailed = snapshot.failed,
         lastOkCheckMs = snapshot.record.lastOkCheckMs,
-        available = snapshot.record.knownRelease?.takeIf { it.isNewer() },
-        download = snapshot.download
+        available = snapshot.record.knownRelease?.takeIf { it.offered(snapshot.record) },
+        download = snapshot.download,
+        testReleases = snapshot.record.testReleases
     )
 
     private companion object {

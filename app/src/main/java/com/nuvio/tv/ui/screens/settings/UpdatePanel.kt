@@ -25,6 +25,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
@@ -48,6 +50,8 @@ import com.nuvio.tv.core.update.splitReleaseBody
 import com.nuvio.tv.ui.components.marquee.MarqueeFormRow
 import com.nuvio.tv.ui.components.marquee.MarqueeFormRowIcon
 import com.nuvio.tv.ui.components.PanelEyebrow
+import com.nuvio.tv.ui.components.PanelEyebrowText
+import com.nuvio.tv.ui.components.PanelRule
 import com.nuvio.tv.ui.components.marquee.MarqueePanelActions
 import com.nuvio.tv.ui.components.marquee.MarqueePrimaryButton
 import com.nuvio.tv.ui.components.marquee.MarqueeSidePanelDialog
@@ -152,8 +156,10 @@ internal fun UpdateSidePanel(
         onShown(true)
         onDispose { onShown(false) }
     }
+    // Spec 89 (sandbox spec-89-test-releases v2, stage t-panel): a pre-release reads "Test release · <date>".
+    val released = if (release.prerelease) R.string.update_panel_test_released else R.string.update_panel_released
     val meta = listOfNotNull(
-        release.publishedDate()?.let { stringResource(R.string.update_panel_released, formatShortDate(it)) },
+        release.publishedDate()?.let { stringResource(released, formatShortDate(it)) },
         Formatter.formatShortFileSize(context, release.sizeBytes),
         stringResource(R.string.update_panel_abi, release.abi)
     ).joinToString(" \u00b7 ")
@@ -163,7 +169,21 @@ internal fun UpdateSidePanel(
         insetVertical = marquee.collections.sidePanelInset,
         initialFocus = if (running != null) cancelFocus else actionFocus
     ) {
-        PanelEyebrow(text = stringResource(R.string.update_label))
+        if (release.prerelease) {
+            // PanelEyebrow's layout, the text in amber: TEST UPDATE.
+            Column(modifier = Modifier.fillMaxWidth()) {
+                PanelEyebrowText(
+                    text = AnnotatedString(
+                        stringResource(R.string.update_test_label).uppercase(),
+                        SpanStyle(color = NuvioPrimitives.warning)
+                    ),
+                    modifier = Modifier.padding(start = 10.dp, bottom = 10.dp)
+                )
+                PanelRule()
+            }
+        } else {
+            PanelEyebrow(text = stringResource(R.string.update_label))
+        }
         Column(
             modifier = Modifier
                 .weight(1f)

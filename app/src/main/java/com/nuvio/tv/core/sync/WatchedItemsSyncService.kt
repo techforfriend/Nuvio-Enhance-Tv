@@ -7,6 +7,7 @@ import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.local.WatchedItemsPreferences
 import com.nuvio.tv.data.remote.supabase.SupabaseWatchedItem
 import com.nuvio.tv.data.remote.supabase.SupabaseWatchedItemEvent
+import com.nuvio.tv.data.repository.WatchedArtworkHydrator
 import com.nuvio.tv.domain.model.WatchedItem
 import io.github.jan.supabase.postgrest.Postgrest
 import kotlinx.coroutines.CancellationException
@@ -42,7 +43,8 @@ class WatchedItemsSyncService @Inject constructor(
     private val watchedItemsPreferences: WatchedItemsPreferences,
     private val profileManager: ProfileManager,
     private val syncClientIdentity: SyncClientIdentity,
-    private val pushHealth: SyncPushHealth
+    private val pushHealth: SyncPushHealth,
+    private val artworkHydrator: WatchedArtworkHydrator
 ) {
     private val deltaSyncMutex = Mutex()
     private val watermarkGate = PushWatermarkGate()
@@ -210,7 +212,7 @@ class WatchedItemsSyncService @Inject constructor(
         deltaSyncMutex.withLock {
             syncDeltaFromRemoteLocked(profileId)
         }
-    }
+    }.also { if (it.isSuccess) artworkHydrator.request(profileId) }
 
     suspend fun syncSnapshotFromRemote(
         profileId: Int = profileManager.activeProfileId.value
@@ -218,7 +220,7 @@ class WatchedItemsSyncService @Inject constructor(
         deltaSyncMutex.withLock {
             syncSnapshotFromRemoteLocked(profileId)
         }
-    }
+    }.also { if (it.isSuccess) artworkHydrator.request(profileId) }
 
     private suspend fun syncSnapshotFromRemoteLocked(
         profileId: Int

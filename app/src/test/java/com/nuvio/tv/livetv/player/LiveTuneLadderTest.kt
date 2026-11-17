@@ -38,6 +38,58 @@ class LiveTuneLadderTest {
     }
 
     @Test
+    fun `an HLS link that sent TS is retried once as progressive, before READY only (Spec 90 L2)`() {
+        val parse = LiveFailure(FailureKind.PARSE)
+        val ladder = LiveTuneLadder(2, 0L)
+        ladder.start(0L)
+        assertEquals(LadderAction.ReloadAsProgressive, ladder.onError(parse, false, 1 * s, servedTs = true).action)
+        // The rung re-armed the watchdog: no tick at the old deadline.
+        assertEquals(11 * s, ladder.deadlineMs())
+        // Once per stream; the next TS answer is an ordinary PARSE failure (no reload: permanent).
+        val step = ladder.onError(parse, false, 2 * s, servedTs = true)
+        assertEquals(LadderAction.Play(1), step.action)
+        assertEquals(0, step.abandoned)
+        // A fresh stream gets its own rung.
+        assertEquals(LadderAction.ReloadAsProgressive, ladder.onError(parse, false, 3 * s, servedTs = true).action)
+    }
+
+    @Test
+    fun `the progressive retry spends no reload and sticks to its stream (Spec 90 L2)`() {
+        val ladder = LiveTuneLadder(2, 0L)
+        ladder.start(0L)
+        assertFalse(ladder.asProgressive)
+        assertEquals(LadderAction.ReloadAsProgressive, ladder.onError(LiveFailure(FailureKind.PARSE), false, 1 * s, servedTs = true).action)
+        assertTrue(ladder.asProgressive)
+        // The reload allowance is intact, and the player builds that reload progressive too.
+        assertEquals(LadderAction.Reload, ladder.onError(network, false, 2 * s).action)
+        assertTrue(ladder.asProgressive)
+        assertEquals(LadderAction.Play(1), ladder.onError(network, false, 3 * s).action)
+        assertFalse(ladder.asProgressive)
+    }
+
+    @Test
+    fun `no progressive retry past the budget (Spec 90 L2)`() {
+        val ladder = LiveTuneLadder(2, 0L)
+        ladder.start(0L)
+        val step = ladder.onError(LiveFailure(FailureKind.PARSE), false, LiveTuneLadder.BUDGET_MS, servedTs = true)
+        assertTrue(step.action is LadderAction.Unavailable)
+    }
+
+    @Test
+    fun `a TS answer after READY keeps the ordinary rungs (Spec 90 L2)`() {
+        val parse = LiveFailure(FailureKind.PARSE)
+        val ladder = LiveTuneLadder(2, 0L)
+        ladder.start(0L)
+        ladder.onReady(1 * s)
+        // A sustained play's failure gets its reload, not the progressive retry.
+        assertEquals(LadderAction.Reload, ladder.onError(parse, false, 40 * s, servedTs = true).action)
+        // Without the TS marker a startup PARSE failure moves on as before.
+        val fresh = LiveTuneLadder(2, 0L)
+        fresh.start(0L)
+        assertEquals(LadderAction.Play(1), fresh.onError(parse, false, 1 * s).action)
+    }
+
+    @Test
     fun `a dead-link failure skips the reload, the last stream ends unavailable`() {
         val ladder = LiveTuneLadder(2, 0L)
         ladder.start(0L)
@@ -236,6 +288,17 @@ class LiveTuneLadderTest {
 
     private fun http(code: Int) =
         HttpDataSource.InvalidResponseCodeException(code, null, null, emptyMap(), DataSpec(testUri), ByteArray(0))
+
+    @Test
+    fun `an Xtream panel's 401 or 403 is network-class and keeps its code (Spec 90 L5)`() {
+        val xtream = "http://xt.example/live/u/p/1001.ts"
+        val refused = LiveFailure(FailureKind.BLOCKED, 403)
+        assertEquals(LiveFailure(FailureKind.NETWORK, 403), LiveTuneLadder.panelRefusal(refused, xtream))
+        assertEquals(LiveFailure(FailureKind.NETWORK, 401), LiveTuneLadder.panelRefusal(LiveFailure(FailureKind.BLOCKED, 401), "http://xt.example/u/p/1001"))
+        assertNull(LiveTuneLadder.panelRefusal(LiveFailure(FailureKind.BLOCKED, 451), xtream))
+        assertNull(LiveTuneLadder.panelRefusal(LiveFailure(FailureKind.DEAD, 404), xtream))
+        assertNull(LiveTuneLadder.panelRefusal(refused, "https://cdn.example/live/channel.m3u8"))
+    }
 
     @Test
     fun `player errors classify into failure kinds`() {

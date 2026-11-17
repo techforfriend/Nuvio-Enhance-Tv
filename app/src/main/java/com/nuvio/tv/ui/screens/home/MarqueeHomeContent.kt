@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -38,9 +39,11 @@ import com.nuvio.tv.core.cloudstream.CloudStreamStreamSource
 import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
 import com.nuvio.tv.domain.model.ContinueWatchingItem
 import com.nuvio.tv.domain.model.MetaPreview
+import com.nuvio.tv.domain.model.TrailerAutoplayMode
 import com.nuvio.tv.domain.model.isPlaceholder
 import com.nuvio.tv.ui.components.ContinueWatchingOptionsDialog
 import com.nuvio.tv.ui.components.rememberAmbientAccentProvider
+import com.nuvio.tv.ui.components.trailerpreview.LocalTrailerPreviewEnabled
 import com.nuvio.tv.ui.theme.NuvioTheme
 import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.util.StableRef
@@ -106,8 +109,9 @@ fun MarqueeHomeContent(
     val topBarFocusedState = rememberUpdatedState(topBarFocused)
     val lifecycleOwner = LocalLifecycleOwner.current
     val useLandscapePosters = uiState.modernLandscapePostersEnabled
-    // Trailer autoplay plays behind the hero only (Marquee layout verdicts: EXPANDED_CARD retires).
-    val autoplayEnabled = uiState.focusedPosterBackdropTrailerEnabled
+    // Hero trailer (and its 150 ms prefetch) only in Behind hero mode; In the card (Spec 96) plays in the
+    // card instead, so only one trailer ever plays (D5, D7). The collection-folder hero video is not gated.
+    val autoplayEnabled = uiState.trailerAutoplayMode == TrailerAutoplayMode.HERO
     val continueWatchingPoster = uiState.continueWatchingCardStyle == ContinueWatchingCardStyle.POSTER
     // Home rows = addon catalog rows + the CloudStream section (appended last).
     // Everything below (hero, focus, lookups) works off this merged list.
@@ -535,36 +539,41 @@ fun MarqueeHomeContent(
             )
         }
 
-        MarqueeHomeRowsList(
-            carouselRows = carouselRows,
-            verticalRowListState = verticalRowListState,
-            isVerticalRowsScrollingState = isVerticalRowsScrollingState,
-            focusedItemByRow = remember { StableRef<MutableMap<String, Int>>(focusedItemByRow) },
-            rowListStates = remember { StableRef<MutableMap<String, LazyListState>>(rowListStates) },
-            loadMoreRequestedTotals = remember { StableRef<MutableMap<String, Int>>(loadMoreRequestedTotals) },
-            focusState = focusState,
-            focus = focus,
-            activeRowIndex = activeRowIndexState,
-            contentFocusRequester = LocalContentFocusRequester.current,
-            topPadding = topPadding,
-            bottomPadding = bandBottomInset,
-            verticalRowBringIntoViewSpec = verticalRowBringIntoViewSpec,
-            useLandscapePosters = useLandscapePosters,
-            continueWatchingCardStyle = uiState.continueWatchingCardStyle,
-            blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
-            useEpisodeThumbnails = uiState.useEpisodeThumbnailsInCw,
-            accent = accentProvider,
-            isCatalogItemWatched = isCatalogItemWatched,
-            onCatalogItemLongPress = onCatalogItemLongPress,
-            onPreloadAdjacentItem = onPreloadAdjacentItem,
-            onNavigateToDetail = navigateToDetailOrCloudStream,
-            onNavigateToFolderDetail = onNavigateToFolderDetail,
-            onLoadMoreCatalog = onLoadMoreCatalog,
-            onContinueWatchingClick = onContinueWatchingClick,
-            onContinueWatchingOptions = remember { { item: ContinueWatchingItem -> optionsItem.value = item } },
-            onRequestLazyCatalogLoad = onRequestLazyCatalogLoad,
-            onRowItemFocused = onRowItemFocusedCallback
-        )
+        // Spec 96: In the card mode opts the rows into the trailer preview (TMDB pages force Off, PD2).
+        CompositionLocalProvider(
+            LocalTrailerPreviewEnabled provides (uiState.trailerAutoplayMode == TrailerAutoplayMode.CARD)
+        ) {
+            MarqueeHomeRowsList(
+                carouselRows = carouselRows,
+                verticalRowListState = verticalRowListState,
+                isVerticalRowsScrollingState = isVerticalRowsScrollingState,
+                focusedItemByRow = remember { StableRef<MutableMap<String, Int>>(focusedItemByRow) },
+                rowListStates = remember { StableRef<MutableMap<String, LazyListState>>(rowListStates) },
+                loadMoreRequestedTotals = remember { StableRef<MutableMap<String, Int>>(loadMoreRequestedTotals) },
+                focusState = focusState,
+                focus = focus,
+                activeRowIndex = activeRowIndexState,
+                contentFocusRequester = LocalContentFocusRequester.current,
+                topPadding = topPadding,
+                bottomPadding = bandBottomInset,
+                verticalRowBringIntoViewSpec = verticalRowBringIntoViewSpec,
+                useLandscapePosters = useLandscapePosters,
+                continueWatchingCardStyle = uiState.continueWatchingCardStyle,
+                blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
+                useEpisodeThumbnails = uiState.useEpisodeThumbnailsInCw,
+                accent = accentProvider,
+                isCatalogItemWatched = isCatalogItemWatched,
+                onCatalogItemLongPress = onCatalogItemLongPress,
+                onPreloadAdjacentItem = onPreloadAdjacentItem,
+                onNavigateToDetail = navigateToDetailOrCloudStream,
+                onNavigateToFolderDetail = onNavigateToFolderDetail,
+                onLoadMoreCatalog = onLoadMoreCatalog,
+                onContinueWatchingClick = onContinueWatchingClick,
+                onContinueWatchingOptions = remember { { item: ContinueWatchingItem -> optionsItem.value = item } },
+                onRequestLazyCatalogLoad = onRequestLazyCatalogLoad,
+                onRowItemFocused = onRowItemFocusedCallback
+            )
+        }
     }
 
     val selectedOptionsItem = optionsItem.value

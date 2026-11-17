@@ -191,7 +191,8 @@ internal fun SourcesSheet(
     onTogglePin: (StreamPin) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    onEditOnPhone: (() -> Unit)? = null
+    onEditOnPhone: (() -> Unit)? = null,
+    hideNames: Boolean = false
 ) {
     val initialFocus = remember(sheet) { FocusRequester() }
     LaunchedEffect(initialFocus) { initialFocus.requestFocusAfterFrames() }
@@ -227,6 +228,7 @@ internal fun SourcesSheet(
                 onListSelected(if (showing) StreamListSelection.All else StreamListSelection.Hidden)
                 onClose()
             },
+            hideNames = hideNames,
             modifier = modifier
         )
     }
@@ -724,6 +726,7 @@ private fun HiddenSheet(
     view: StreamListView,
     initialFocus: FocusRequester,
     onToggleHiddenView: () -> Unit,
+    hideNames: Boolean,
     modifier: Modifier = Modifier
 ) {
     val marquee = NuvioTheme.marquee
@@ -736,7 +739,7 @@ private fun HiddenSheet(
         eyebrow = pluralStringResource(R.plurals.stream_sheet_hidden_eyebrow, view.hiddenCount, view.hiddenCount),
         modifier = modifier
     ) {
-        if (bitrate != null || resolution != null) HiddenStreamsLine(bitrate = bitrate, resolution = resolution)
+        if (bitrate != null || resolution != null) HiddenStreamsLine(bitrate = bitrate, resolution = resolution, hideNames = hideNames)
         entries.forEachIndexed { index, entry ->
             key(entry.reason) {
                 // The network test's limit names its figure beside the count; the others in the label.

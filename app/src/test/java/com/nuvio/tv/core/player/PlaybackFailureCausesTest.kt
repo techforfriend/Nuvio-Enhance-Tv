@@ -99,6 +99,56 @@ class PlaybackFailureCausesTest {
     }
 
     @Test
+    fun `the server's answer names a data fire's cause (Spec 113 F2b)`() {
+        // Shield window 12b: every request answered 503, 0.0 Mbit/s over 20 s.
+        assertEquals(FailureCause.SERVER_DOWN, PlaybackFailureCauses.ofStartupWatchdog(FireReason.TracksNotRead, 0.0, null, httpCode = 503))
+        assertEquals(FailureCause.RATE_LIMITED, PlaybackFailureCauses.ofStartupWatchdog(FireReason.NoVideoTrack, 0.0, 70.0, httpCode = 429))
+        // A fire about the TV, not the source, keeps its cause.
+        assertEquals(FailureCause.DECODER_STUCK, PlaybackFailureCauses.ofStartupWatchdog(FireReason.DecoderUnresponsive, 0.0, 70.0, httpCode = 503))
+        assertEquals(FailureCause.VIDEO_UNSUPPORTED, PlaybackFailureCauses.ofStartupWatchdog(FireReason.VideoTrackUnsupported, null, null, httpCode = 503))
+    }
+
+    @Test
+    fun `only the source's HTTP errors in this start are kept (Spec 113 F2b)`() {
+        val spec = DataSpec.Builder().setUri(mockk<Uri>(relaxed = true)).build()
+        val http503 = HttpDataSource.InvalidResponseCodeException(503, "Service Unavailable", null, emptyMap(), spec, byteArrayOf())
+        val video = "https://host.example/A.mkv"
+        fun keep(
+            error: Throwable = http503,
+            uri: String = video,
+            trackType: Int = C.TRACK_TYPE_UNKNOWN,
+            errorAtMs: Long = 2_000L,
+            renderedFirstFrame: Boolean = false
+        ) = PlaybackFailureCauses.startupLoadHttpError(error, uri, trackType, errorAtMs, armedAtMs = 1_000L, renderedFirstFrame)
+
+        assertEquals(FailureFacts(httpCode = 503, httpStatus = "Service Unavailable"), keep())
+        // Wrapped as the loader delivers it.
+        assertEquals(503, keep(error = java.io.IOException(http503))?.httpCode)
+        // Raised in the arm's own millisecond.
+        assertEquals(503, keep(errorAtMs = 1_000L)?.httpCode)
+        // A replaced source's late error, after the first frame, a sidecar subtitle, an HLS/DASH text rendition, no HTTP.
+        assertNull(keep(errorAtMs = 999L))
+        assertNull(keep(renderedFirstFrame = true))
+        assertNull(keep(uri = "https://subs.example/en.srt?nuvio_type=subtitle"))
+        assertNull(keep(trackType = C.TRACK_TYPE_TEXT))
+        assertNull(keep(error = java.net.SocketTimeoutException()))
+    }
+
+    @Test
+    fun `a kept HTTP error names the fire only when nothing arrived (Spec 113 F2b)`() {
+        val kept = FailureFacts(httpCode = 503, httpStatus = "Service Unavailable")
+        assertEquals(kept, PlaybackFailureCauses.startupHttpAnswer(FireReason.TracksNotRead, 0L, kept))
+        assertEquals(kept, PlaybackFailureCauses.startupHttpAnswer(FireReason.NoVideoTrack, 0L, kept))
+        // Bytes arrived: the error was passing; not measured (mpv): unknown.
+        assertNull(PlaybackFailureCauses.startupHttpAnswer(FireReason.DataStillArriving, 4096L, kept))
+        assertNull(PlaybackFailureCauses.startupHttpAnswer(FireReason.TracksNotRead, null, kept))
+        // A fire about the TV, or nothing kept.
+        assertNull(PlaybackFailureCauses.startupHttpAnswer(FireReason.DecoderUnresponsive, 0L, kept))
+        assertNull(PlaybackFailureCauses.startupHttpAnswer(FireReason.TracksNotRead, 0L, null))
+        assertNull(PlaybackFailureCauses.startupHttpAnswer(FireReason.TracksNotRead, 0L, FailureFacts()))
+    }
+
+    @Test
     fun `a probe finding sharpens the fallback, nothing found keeps it`() {
         fun finding(kind: ServerResponseFinding.Kind, status: Int = 200) = ServerResponseFinding(kind, status, null, null)
         assertEquals(FailureCause.UNREADABLE, PlaybackFailureCauses.ofProbe(null, FailureCause.UNREADABLE))

@@ -78,6 +78,7 @@ private fun PlayerRuntimeController.mpvHopGateInput() = MpvEngineHopPolicy.GateI
     firstFrameRendered = hasRenderedFirstFrame,
     inBackground = isInBackground,
     switchUsedForUrl = currentStreamUrl in engineHopStreamUrls,
+    mpvBarred = mpvBarredForStream,
     videoMime = currentVideoTrackMimeType,
     videoCodecs = currentVideoTrackCodecs,
     dvSourceProfile = DolbyVisionConversionStats.getLastSourceProfile()
@@ -197,7 +198,12 @@ internal fun PlayerRuntimeController.manualEngineSwitchTarget(): InternalPlayerE
 internal fun PlayerRuntimeController.switchInternalPlayerEngineManually() {
     if (currentStreamUrl.isBlank()) return
 
-    val targetEngine = manualEngineSwitchTarget()
+    // Spec 97 D30: a stream on a saved access site never plays on mpv.
+    val targetEngine = allowedSwitchTarget(manualEngineSwitchTarget(), onSavedSite = mpvBarredForStream)
+        ?: run {
+            Log.i(PlayerRuntimeController.TAG, "Engine switch to mpv skipped: saved access site or not looked up yet (Spec 97 D30)")
+            return
+        }
     val targetEngineLabel = targetEngineLabel(targetEngine)
     val switchMessage = context.getString(R.string.player_engine_switching_manual_message, targetEngineLabel)
 

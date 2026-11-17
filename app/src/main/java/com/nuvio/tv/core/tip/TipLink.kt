@@ -28,10 +28,10 @@ private data class TipFileDto(
 
 /**
  * The link every build carries for when no `tip.json` has answered (D9: a constant, not a build
- * setting; it is in every QR, so it is not secret). Empty = none, so Tip stays hidden until Arshad's
- * Stripe Payment Link exists. Must pass [validTipLink] to be used.
+ * setting; it is in every QR, so it is not secret): Arshad's Ko-fi page (Spec 125 D1). Empty would
+ * mean none (Tip hidden). Must pass [validTipLink] to be used.
  */
-const val BUILT_IN_TIP_LINK = ""
+const val BUILT_IN_TIP_LINK = "https://ko-fi.com/arshadkamal"
 
 /** Bytes read from the answer at most; a longer body is unusable, never truncated and parsed. */
 internal const val TIP_FILE_MAX_BYTES = 4 * 1024
@@ -44,12 +44,14 @@ private val tipFileJson = Json { ignoreUnknownKeys = true }
 private val COUNTRY = Regex("^[A-Z]{2}$")
 private val STRIPE_PATH = Regex("^/[A-Za-z0-9_-]{1,64}$")
 private val SPONSORS_PATH = Regex("^/sponsors/[A-Za-z0-9-]{1,39}$")
+private val KOFI_PATH = Regex("^/[A-Za-z0-9_-]{1,64}$")
 
 /**
  * A link the QR may carry: at most [TIP_LINK_MAX_CHARS], https on the default port, no user info,
  * query or fragment, already in canonical form (what OkHttp would print), and either a Stripe
- * Payment Link (`buy.stripe.com/<id>`, D1) or a GitHub Sponsors page (`github.com/sponsors/<user>`,
- * D1's backup). Anything else is refused, so a tampered file can only point at those two.
+ * Payment Link (`buy.stripe.com/<id>`, D1), a GitHub Sponsors page (`github.com/sponsors/<user>`,
+ * D1's backup) or a Ko-fi page (`ko-fi.com/<page>`, Spec 125 D1). Anything else is refused, so a
+ * tampered file can only point at those three.
  */
 fun validTipLink(url: String): Boolean {
     if (url.length > TIP_LINK_MAX_CHARS) return false
@@ -62,6 +64,7 @@ fun validTipLink(url: String): Boolean {
     return when (parsed.host) {
         "buy.stripe.com" -> STRIPE_PATH.matches(path)
         "github.com" -> SPONSORS_PATH.matches(path)
+        "ko-fi.com" -> KOFI_PATH.matches(path)
         else -> false
     }
 }
@@ -71,6 +74,12 @@ fun validTipLink(url: String): Boolean {
  * names GitHub Sponsors instead of Stripe (D11).
  */
 fun isSponsorsLink(link: String): Boolean = link.startsWith("https://github.com/sponsors/")
+
+/**
+ * [link] (one that passed [validTipLink]) is a Ko-fi page, whose card drops the amount ladder and
+ * the pay line (Ko-fi's page sets both) and names Ko-fi in its terms (Spec 125 D2).
+ */
+fun isKofiLink(link: String): Boolean = link.startsWith("https://ko-fi.com/")
 
 /**
  * [body] (already capped at [TIP_FILE_MAX_BYTES]) as links, or null when it is unusable: not a JSON
@@ -112,6 +121,12 @@ fun tipEntryShown(link: String?, settingsLocked: Boolean): Boolean = link != nul
  * ("hi", "en"), which would hide India's override and ladder. Empty when unknown.
  */
 fun tvCountry(): String = Resources.getSystem().configuration.locales[0]?.country.orEmpty()
+
+/**
+ * The ladder the card for [link] shows on a TV in [country]: none for a Ko-fi page, whose own page
+ * sets amount and payment (Spec 125 D2), else [tipLadder].
+ */
+fun tipCardLadder(link: String, country: String): TipLadder? = if (isKofiLink(link)) null else tipLadder(country)
 
 /** What the tip card suggests (D2, R2 report section 1): three amounts, and whether the pay line leads with UPI. */
 data class TipLadder(val amounts: List<String>, val upiFirst: Boolean = false)

@@ -10,6 +10,7 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
@@ -22,6 +23,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import com.nuvio.tv.ui.screens.CatalogSeeAllScreen
 import com.nuvio.tv.ui.screens.detail.DetailPlayHandler
@@ -37,6 +39,7 @@ import com.nuvio.tv.ui.screens.player.PlayerBackRoute
 import com.nuvio.tv.core.player.PlayerExitReason
 import com.nuvio.tv.ui.screens.player.PlayerScreen
 import com.nuvio.tv.ui.screens.player.playerBackRoute
+import com.nuvio.tv.ui.screens.player.playerRestoredAfterProcessDeath
 import com.nuvio.tv.core.player.PlaceholderStreamPolicy.runtimeMinutesFromProgress
 import com.nuvio.tv.ui.screens.search.DiscoverScreen
 import com.nuvio.tv.ui.screens.search.SearchScreen
@@ -435,6 +438,40 @@ fun NuvioNavHost(
                 optionalStringArg("sourcesFoundMs")
             )
         ) { backStackEntry ->
+            // Spec 113 D1 (F3): a player Android restored after killing the app never starts (its
+            // route names the launch episode and stream); leave for the title's Details, else the
+            // screen below. PlayerScreen is not composed, so no PlayerViewModel and no playback.
+            val restoredAfterProcessDeath = remember(backStackEntry) {
+                playerRestoredAfterProcessDeath(
+                    launchStartedAtMs = backStackEntry.arguments?.getString("launchStartedAtMs")?.toLongOrNull(),
+                    processStartElapsedMs = android.os.Process.getStartElapsedRealtime()
+                )
+            }
+            if (restoredAfterProcessDeath) {
+                // Only from the top: a launch delivered on the same relaunch (Watch Next, a deep
+                // link) may already sit above it, and the leave would pop it. It leaves whenever it
+                // is on top again while composed (a Back mid-fade keeps it composed). A Back that
+                // pops past it (the player's own Back to a Stream entry below) takes it along unseen.
+                val onTop = navController.currentBackStackEntryAsState().value?.id == backStackEntry.id
+                LaunchedEffect(backStackEntry, onTop) {
+                    if (!onTop) return@LaunchedEffect
+                    val args = backStackEntry.arguments
+                    val contentId = args?.getString("contentId").orEmpty()
+                    if (contentId.isNotBlank()) {
+                        navController.returnToDetailFromPlayer(
+                            contentId = contentId,
+                            contentType = args?.getString("contentType").orEmpty(),
+                            focusSeason = args?.getString("season")?.toIntOrNull(),
+                            focusEpisode = args?.getString("episode")?.toIntOrNull(),
+                            returnToHomeOnBack = args?.getString("returnToHomeOnBack")?.toBooleanStrictOrNull() == true,
+                            heroBackdropUrl = args?.getString("backdrop")
+                        )
+                    } else {
+                        navController.popBackStack()
+                    }
+                }
+                return@composable
+            }
             PlayerScreen(
                 // Pushed over the film: the scaffold hides the top bar there, so Back returns here.
                 onOpenNetworkSettings = if (settingsLocked) null else {

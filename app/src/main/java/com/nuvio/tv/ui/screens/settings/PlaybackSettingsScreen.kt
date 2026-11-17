@@ -168,8 +168,11 @@ internal fun PlaybackSettingsContent(
             coroutineScope.launch { viewModel.setStillWatchingEpisodeThreshold(threshold) }
         },
         onSetShowPlayerLoadingStatus = { enabled -> coroutineScope.launch { viewModel.setShowPlayerLoadingStatus(enabled) } },
+        hideSourceNames = state.hideSourceNames,
+        onSetHideSourceNames = { hidden -> coroutineScope.launch { viewModel.setHideSourceNames(hidden) } },
         onSetLoadingOverlayEnabled = { enabled -> coroutineScope.launch { viewModel.setLoadingOverlayEnabled(enabled) } },
         onSetPauseOverlayEnabled = { enabled -> coroutineScope.launch { viewModel.setPauseOverlayEnabled(enabled) } },
+        onSetResumeRewindSeconds = { seconds -> coroutineScope.launch { viewModel.setResumeRewindSeconds(seconds) } },
         onSetOsdClockEnabled = { enabled -> coroutineScope.launch { viewModel.setOsdClockEnabled(enabled) } },
         onSetSkipIntroEnabled = { enabled -> coroutineScope.launch { viewModel.setSkipIntroEnabled(enabled) } },
         onSetParentalGuideEnabled = { enabled -> coroutineScope.launch { viewModel.setParentalGuideEnabled(enabled) } },

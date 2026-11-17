@@ -1256,6 +1256,9 @@ internal fun PlayerRuntimeController.retryFromFailureBox() {
 /** Spec 86 R3: the error box's Play with: the manual engine switch, this source no longer dead. */
 internal fun PlayerRuntimeController.switchEngineFromFailureBox() {
     if (_uiState.value.error == null || currentStreamUrl.isBlank()) return
+    // Box options remembered before a change (Spec 97 D30 saved site, a used switch) may name a
+    // target that no longer exists: the source stays dead and the box stays.
+    if (failureBoxEngineTarget() == null) return
     unmarkPlayingSourceDead()
     switchInternalPlayerEngineManually()
 }
@@ -1267,7 +1270,8 @@ internal fun PlayerRuntimeController.switchEngineFromFailureBox() {
  */
 internal fun PlayerRuntimeController.failureBoxEngineTarget(): InternalPlayerEngine? {
     if (currentStreamUrl.isBlank() || currentStreamUrl in engineHopStreamUrls) return null
-    return manualEngineSwitchTarget()
+    // Spec 97 D30: never mpv for a stream on a saved access site.
+    return allowedSwitchTarget(manualEngineSwitchTarget(), onSavedSite = mpvBarredForStream)
 }
 
 /**
@@ -1287,9 +1291,7 @@ internal fun PlayerRuntimeController.loadSourceListForFailureBox() {
  * sources this chain left (none = a plain box).
  */
 private fun PlayerRuntimeController.markFailoverExhausted(failure: PlaybackFailure) {
-    val exhausted = exhaustedFailoverOf(failure, failedOverSources)
-    // The failover is over: no notice left to toast or draw under the box.
-    _uiState.update { it.copy(exhaustedFailover = exhausted, failoverNotice = null) }
+    _uiState.update { it.withFailoverEnded(failure, failedOverSources) }
 }
 
 /**

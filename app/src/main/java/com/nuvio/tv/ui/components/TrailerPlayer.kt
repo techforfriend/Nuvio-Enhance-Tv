@@ -25,8 +25,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import com.nuvio.tv.core.player.LocalTrailerPlayerPool
 import com.nuvio.tv.core.player.TrailerPlayerPool
@@ -34,6 +37,8 @@ import com.nuvio.tv.data.trailer.YoutubeChunkedDataSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import android.view.LayoutInflater
+import android.view.TextureView
+import androidx.media3.common.VideoSize
 import com.nuvio.tv.R
 import kotlinx.coroutines.delay
 
@@ -56,7 +61,27 @@ fun TrailerPlayer(
     modifier: Modifier = Modifier,
     enter: EnterTransition = fadeIn(animationSpec = tween(800)),
     exit: ExitTransition = fadeOut(animationSpec = tween(500)),
-    trailerPlayerPool: TrailerPlayerPool? = null
+    trailerPlayerPool: TrailerPlayerPool? = null,
+    // Where a (re)start begins; read when playback starts, so changing it alone does not restart.
+    startPositionMs: Long = 0L,
+    onError: () -> Unit = {},
+    // False for an overlay that must never take D-pad focus (Spec 96's card preview).
+    focusable: Boolean = true,
+    // Player.Listener.onIsPlayingChanged (Spec 123's timing trace).
+    onPlayingChanged: (Boolean) -> Unit = {},
+    // The frame's display aspect (width x pixel ratio / height), on each change; zero sizes are not reported
+    // (Spec 123 C4).
+    onVideoSizeChanged: (frameAspect: Float) -> Unit = {},
+    // The player view's TextureView while it exists, null once released, so no reference outlives the view
+    // (Spec 123 C4 reads frames from it).
+    onVideoSurface: (TextureView?) -> Unit = {},
+    // Spec 123 C2: a start (and an app resume) honours isPaused, so a preview prepares paused and holds its first
+    // frame. Off for the other callers: they start playing and let the isPaused effect pause them, as before.
+    startPaused: Boolean = false,
+    // The 300 ms fade-in at the first frame; off where the caller fades the player itself (Spec 123 C2's preview).
+    fadeInFirstFrame: Boolean = true,
+    // Spec 123 C7: start at 2 s buffered instead of 5 s (card previews); written to the pool before every load.
+    quickStart: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -68,6 +93,14 @@ fun TrailerPlayer(
     val currentOnFirstFrameRendered by rememberUpdatedState(onFirstFrameRendered)
     val currentOnProgressChanged by rememberUpdatedState(onProgressChanged)
     val currentOnRemoteKey by rememberUpdatedState(onRemoteKey)
+    val currentOnError by rememberUpdatedState(onError)
+    val currentOnPlayingChanged by rememberUpdatedState(onPlayingChanged)
+    val currentOnVideoSizeChanged by rememberUpdatedState(onVideoSizeChanged)
+    val currentOnVideoSurface by rememberUpdatedState(onVideoSurface)
+    val currentStartPositionMs by rememberUpdatedState(startPositionMs)
+    val currentMuted by rememberUpdatedState(muted)
+    val currentPlayWhenReady by rememberUpdatedState(!(startPaused && isPaused))
+    val currentQuickStart by rememberUpdatedState(quickStart)
     var hasRenderedFirstFrame by remember(trailerUrl) { mutableStateOf(false) }
     val playerAlphaState = animateFloatAsState(
         targetValue = if (isPlaying && hasRenderedFirstFrame) 1f else 0f,
@@ -100,21 +133,16 @@ fun TrailerPlayer(
         }
     }
 
-    LaunchedEffect(isPlaying, trailerUrl, trailerAudioUrl, muted, trailerPlayer) {
+    // Not keyed on muted: a mute change only sets the volume (effect above) and never restarts the trailer.
+    LaunchedEffect(isPlaying, trailerUrl, trailerAudioUrl, trailerPlayer) {
         val player = trailerPlayer ?: return@LaunchedEffect
-        player.volume = if (muted) 0f else 1f
         if (isPlaying && trailerUrl != null) {
             hasRenderedFirstFrame = false
-            if (!trailerAudioUrl.isNullOrBlank()) {
-                val mediaSourceFactory = DefaultMediaSourceFactory(YoutubeChunkedDataSourceFactory())
-                val videoSource = mediaSourceFactory.createMediaSource(MediaItem.fromUri(trailerUrl))
-                val audioSource = mediaSourceFactory.createMediaSource(MediaItem.fromUri(trailerAudioUrl))
-                player.setMediaSource(MergingMediaSource(videoSource, audioSource))
-            } else {
-                player.setMediaItem(MediaItem.fromUri(trailerUrl))
-            }
-            player.prepare()
-            player.playWhenReady = true
+            // Each start sets the volume too: the pooled player may come from another caller.
+            player.volume = if (currentMuted) 0f else 1f
+            resolvedPool?.quickStart = currentQuickStart
+            player.loadTrailer(trailerUrl, trailerAudioUrl, currentStartPositionMs)
+            player.playWhenReady = currentPlayWhenReady
         } else {
             hasRenderedFirstFrame = false
             player.playWhenReady = false
@@ -175,23 +203,28 @@ fun TrailerPlayer(
                 hasRenderedFirstFrame = true
                 currentOnFirstFrameRendered()
             }
+
+            override fun onPlayerError(error: PlaybackException) {
+                currentOnError()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                currentOnPlayingChanged(isPlaying)
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                videoSize.frameAspect()?.let { currentOnVideoSizeChanged(it) }
+            }
         }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     if (currentIsPlaying && !currentTrailerUrl.isNullOrBlank()) {
                         if (player.currentMediaItem == null) {
-                            if (!currentTrailerAudioUrl.isNullOrBlank()) {
-                                val mediaSourceFactory = DefaultMediaSourceFactory(YoutubeChunkedDataSourceFactory())
-                                val videoSource = mediaSourceFactory.createMediaSource(MediaItem.fromUri(currentTrailerUrl!!))
-                                val audioSource = mediaSourceFactory.createMediaSource(MediaItem.fromUri(currentTrailerAudioUrl!!))
-                                player.setMediaSource(MergingMediaSource(videoSource, audioSource))
-                            } else {
-                                player.setMediaItem(MediaItem.fromUri(currentTrailerUrl!!))
-                            }
-                            player.prepare()
+                            resolvedPool?.quickStart = currentQuickStart
+                            player.loadTrailer(currentTrailerUrl!!, currentTrailerAudioUrl, currentStartPositionMs)
                         }
-                        player.playWhenReady = true
+                        player.playWhenReady = currentPlayWhenReady
                     }
                 }
                 Lifecycle.Event.ON_PAUSE,
@@ -206,6 +239,8 @@ fun TrailerPlayer(
             }
         }
         player.addListener(listener)
+        // A size reported before this listener attached (the size callback fires only on a change).
+        player.videoSize.frameAspect()?.let { currentOnVideoSizeChanged(it) }
         activityLifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             runCatching { activityLifecycleOwner.lifecycle.removeObserver(observer) }
@@ -225,8 +260,8 @@ fun TrailerPlayer(
                 factory = { ctx ->
                     (LayoutInflater.from(ctx).inflate(R.layout.trailer_player_view, null) as PlayerView).apply {
                         player = trailerPlayer
-                        isFocusable = true
-                        isFocusableInTouchMode = true
+                        isFocusable = focusable
+                        isFocusableInTouchMode = focusable
                         setOnKeyListener { _, keyCode, event ->
                             currentOnRemoteKey(keyCode, event.action, event.repeatCount)
                         }
@@ -236,6 +271,7 @@ fun TrailerPlayer(
                         } else {
                             AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
+                        currentOnVideoSurface(videoSurfaceView as? TextureView)
                     }
                 },
                 update = { view ->
@@ -250,15 +286,46 @@ fun TrailerPlayer(
                     }
                 },
                 onRelease = { view ->
+                    currentOnVideoSurface(null)
                     view.player = null
                     view.keepScreenOn = false
                 },
                 modifier = modifier
                     .clipToBounds()
                     .graphicsLayer {
-                        alpha = playerAlphaState.value
+                        alpha = if (fadeInFirstFrame) playerAlphaState.value else 1f
                     }
             )
         }
     }
+}
+
+/** Display aspect of the frame, pixel aspect included; null while the size is unknown. */
+private fun VideoSize.frameAspect(): Float? =
+    if (width > 0 && height > 0) width * (pixelWidthHeightRatio.takeIf { it > 0f } ?: 1f) / height else null
+
+/**
+ * Loads [videoUrl] (with a separate [audioUrl] track when given) and prepares. [startPositionMs] > 0 starts
+ * there (Spec 96 resume); otherwise the item's default start, exactly as before the parameter existed.
+ */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal fun ExoPlayer.loadTrailer(
+    videoUrl: String,
+    audioUrl: String?,
+    startPositionMs: Long,
+    mediaSourceFactory: () -> MediaSource.Factory = { DefaultMediaSourceFactory(YoutubeChunkedDataSourceFactory()) }
+) {
+    val start = startPositionMs.takeIf { it > 0L }
+    if (!audioUrl.isNullOrBlank()) {
+        val factory = mediaSourceFactory()
+        val source = MergingMediaSource(
+            factory.createMediaSource(MediaItem.fromUri(videoUrl)),
+            factory.createMediaSource(MediaItem.fromUri(audioUrl))
+        )
+        if (start != null) setMediaSource(source, start) else setMediaSource(source)
+    } else {
+        val item = MediaItem.fromUri(videoUrl)
+        if (start != null) setMediaItem(item, start) else setMediaItem(item)
+    }
+    prepare()
 }

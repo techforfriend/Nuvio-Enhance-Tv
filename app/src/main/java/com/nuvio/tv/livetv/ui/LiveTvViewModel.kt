@@ -8,6 +8,7 @@ import com.nuvio.tv.livetv.data.ChannelRepository
 import com.nuvio.tv.livetv.data.GuideCandidate
 import com.nuvio.tv.livetv.data.GuideCandidates
 import com.nuvio.tv.livetv.data.GuideRepository
+import com.nuvio.tv.livetv.data.GuideShift
 import com.nuvio.tv.livetv.data.HiddenChannelStore
 import com.nuvio.tv.livetv.data.LiveTvUserState
 import com.nuvio.tv.livetv.data.LiveTvUserStore
@@ -158,7 +159,10 @@ class LiveTvViewModel internal constructor(
     private val _previousKey = MutableStateFlow<String?>(null)
     val previousKey: StateFlow<String?> = _previousKey
 
-    private val sourceIds = sourceManager.sources.map { list -> list.map { it.id } }.distinctUntilChanged()
+    // Source ids in order and each playlist's header tvg-shift (Spec 94 T2): what the lineup reads of the sources.
+    private val sourceFacts = sourceManager.sources
+        .map { list -> list.map { it.id } to GuideShift.headerShifts(list.associate { it.id to it.playlistAttrs }) }
+        .distinctUntilChanged()
     private val guideCountries = sourceManager.sources.map(LiveTvModel::guideCountries).distinctUntilChanged()
     private val hasChannelSources = sourceManager.sources
         .map { list -> list.any { it.kind != SourceKind.XMLTV } }
@@ -166,16 +170,18 @@ class LiveTvViewModel internal constructor(
 
     /**
      * Null until the stores have loaded and the first lineup is derived from them, so the screen
-     * never shows an empty or guide-less list on open. Keyed on source ids only: a source's
-     * status writes during refresh do not rerun enrichment. Shared: rows and matching both read it.
+     * never shows an empty or guide-less list on open. Keyed on source ids and header shifts only: a
+     * source's status writes during refresh do not rerun enrichment. Shared: rows and matching both read it.
      */
     private val lineup: StateFlow<Lineup?> = combine(
         loaded,
         channelRepository.channels,
-        sourceIds,
+        sourceFacts,
         metadataRepository.metadata,
         hiddenStore.keys
-    ) { loaded, all, ids, meta, hidden -> if (loaded) LiveTvModel.lineup(all, ids, meta, hidden) else null }
+    ) { loaded, all, (ids, shifts), meta, hidden ->
+        if (loaded) LiveTvModel.lineup(all, ids, meta, hidden, shifts) else null
+    }
         .flowOn(derive)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
@@ -336,7 +342,7 @@ class LiveTvViewModel internal constructor(
         val key = open?.key
         val channel = key?.let { lineup?.channel(it) }
         val ref = key?.let { refs?.get(it) }
-        val programmes = ref?.let { guides[it.epgSourceId]?.programmes?.get(it.epgChannelId) }
+        val programmes = ref?.let { guides[it.epgSourceId]?.programmesOf(it.epgChannelId, channel?.guideShiftMs ?: 0L) }
         if (lineup == null || refs == null || channel == null || ref == null || programmes == null) {
             null
         } else {
@@ -464,10 +470,13 @@ class LiveTvViewModel internal constructor(
     /** A listable or lost channel by key (the banner's last channel); null before the first lineup. */
     fun channel(key: String): Channel? = lineup.value?.channel(key)
 
-    /** Every tune goes through here: a different channel makes the current one the last channel. */
+    /**
+     * Every tune goes through here: a different channel makes the current one the last channel. The
+     * player gets the channel with its guide logo (Spec 94 T1), so the preview tile matches its row.
+     */
     private fun tune(channel: Channel) {
         player.state.value.channel?.key?.takeIf { it != channel.key }?.let { _previousKey.value = it }
-        player.tune(channel)
+        player.tune(LiveTvModel.withGuideLogo(channel, refs.value?.get(channel.key), guideRepository.guides.value))
     }
 
     /**
@@ -542,7 +551,9 @@ class LiveTvViewModel internal constructor(
         LiveGuidePanel(
             current = current,
             pickedNone = channelRepository.overrides.value[key]?.let { it.ref == null } == true,
-            currentNow = current?.let { guides[it.epgSourceId]?.nowNext(it.epgChannelId, nowMs)?.first?.title },
+            currentNow = current?.let {
+                guides[it.epgSourceId]?.nowNext(it.epgChannelId, nowMs, channel.guideShiftMs)?.first?.title
+            },
             guides = epgSources.size,
             candidates = GuideCandidates.rank(channel, epgSources, current, nowMs),
             sourceNames = sources.associate { it.id to it.name }

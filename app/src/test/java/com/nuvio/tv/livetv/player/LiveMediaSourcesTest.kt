@@ -37,6 +37,24 @@ class LiveMediaSourcesTest {
         LiveMediaSources.normalize(LiveStream(server.url(path).toString(), headers))
 
     @Test
+    fun `rtsp keeps its URL and needs no request, other non-http schemes are named (Spec 90 L4)`() = runTest {
+        // A .ts path would type as MPEG-TS without the rtsp guard.
+        val rtsp = LiveMediaSources.normalize(LiveStream("rtsp://user:pw@cam.example:554/ch1.ts", mapOf("Referer" to "x")))
+        assertEquals("rtsp://user:pw@cam.example:554/ch1.ts", rtsp.url)
+        assertEquals(emptyMap<String, String>(), rtsp.headers)
+        assertNull(LiveMediaSources.resolveMimeType(rtsp, client))
+
+        assertNull(LiveMediaSources.unsupportedScheme("http://x/a.ts"))
+        assertNull(LiveMediaSources.unsupportedScheme(" HTTPS://x/a.m3u8"))
+        assertNull(LiveMediaSources.unsupportedScheme("rtsp://x/live"))
+        assertNull(LiveMediaSources.unsupportedScheme("not a url"))
+        assertEquals("rtmp", LiveMediaSources.unsupportedScheme("rtmp://x/live/stream"))
+        assertEquals("udp", LiveMediaSources.unsupportedScheme("UDP://@239.0.0.1:1234"))
+        assertEquals("srt", LiveMediaSources.unsupportedScheme("srt://x:9000"))
+        assertNull(LiveMediaSources.unsupportedScheme("host.example/u/p/live?ref=http://x"))
+    }
+
+    @Test
     fun `an extension decides without a request`() = runTest {
         assertEquals(MimeTypes.APPLICATION_M3U8, LiveMediaSources.resolveMimeType(request("/live/index.m3u8"), client))
         assertEquals(MimeTypes.APPLICATION_MPD, LiveMediaSources.resolveMimeType(request("/live/manifest.mpd"), client))
@@ -52,7 +70,14 @@ class LiveMediaSourcesTest {
     }
 
     @Test
-    fun `an HLS content type decides before the body`() = runTest {
+    fun `a TS body is progressive whatever its content type says (Spec 90 L2)`() = runTest {
+        val ts = ByteArray(400).also { it[0] = 0x47; it[188] = 0x47 }
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/vnd.apple.mpegurl").setBody(okio.Buffer().write(ts)))
+        assertNull(LiveMediaSources.resolveMimeType(request("/play/44"), client))
+    }
+
+    @Test
+    fun `an HLS content type decides before the playlist text`() = runTest {
         server.enqueue(MockResponse().setHeader("Content-Type", "application/vnd.apple.mpegurl").setBody("x"))
         assertEquals(MimeTypes.APPLICATION_M3U8, LiveMediaSources.resolveMimeType(request("/play/43"), client))
     }
